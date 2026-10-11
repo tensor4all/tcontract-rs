@@ -1,21 +1,21 @@
 [package]
-name = "tprims-bench"
+name = "tcontract-bench"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT"
 publish = false
-description = "Benchmarks for the tprims stack"
+description = "Benchmarks for the tcontract stack"
 
 [lib]
 path = "src/lib.rs"
 bench = false
 
 [dependencies]
-tprims-exec = { workspace = true, features = ["strided"] }
-tprims-kernel = { workspace = true }
-tprims-contract = { workspace = true }
-tprims-capi = { workspace = true }
+tcontract-exec = { workspace = true, features = ["strided"] }
+tcontract-kernel = { workspace = true }
+tcontract = { workspace = true }
+tcontract-capi = { workspace = true }
 strided-basic = { workspace = true }
 strided-view = { workspace = true }
 num-complex = { workspace = true }
@@ -29,7 +29,7 @@ serde_json = "1"
 [features]
 # Re-export the packed driver's per-phase timing so a harness can report which phase
 # an anomalous case spends its time in.
-phase-timing = ["tprims-contract/phase-timing"]
+phase-timing = ["tcontract/phase-timing"]
 default = []
 # Link the C++ TBLIS baseline. Requires TBLIS_ROOT to point at an install
 # prefix containing lib/libtblis.{so,a}.
@@ -57,11 +57,11 @@ accelerate = ["blas"]
 
 [[bin]]
 name = "capi_rust"
-path = "benchmarks/tprims/capi_rust.rs"
+path = "benchmarks/tcontract/capi_rust.rs"
 
 [[bin]]
 name = "contract"
-path = "benchmarks/tprims/contract/contract.rs"
+path = "benchmarks/tcontract/contract/contract.rs"
 
 [[bin]]
 name = "tcbench"
@@ -73,7 +73,7 @@ path = "benchmarks/lukbench/main.rs"
 
 [[bin]]
 name = "exec_entry"
-path = "benchmarks/tprims/exec_entry/exec_entry.rs"
+path = "benchmarks/tcontract/exec_entry/exec_entry.rs"
 
 [lints]
 workspace = true

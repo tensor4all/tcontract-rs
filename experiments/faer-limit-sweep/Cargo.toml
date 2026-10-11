@@ -3,20 +3,20 @@ name = "faer-limit-sweep"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Where the planner's faer route and the packed driver cross over, per dtype and thread count (tprims-rs#63/#69)"
+description = "Where the planner's faer route and the packed driver cross over, per dtype and thread count (tcontract-rs#63/#69)"
 
 # A standalone crate: excluded from the root workspace, like the other probes
 # under `experiments/`. `rayon` must resolve to the same version as the one
-# `tprims-exec` was built against, so the host's `ThreadPool` is the type
+# `tcontract-exec` was built against, so the host's `ThreadPool` is the type
 # `Pool::borrow` accepts; the plain `1.10` requirement is what the root
 # workspace resolves.
 [dependencies]
 num-complex = "0.4"
 rayon = "1.10"
 strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "12ff2de906f4d894a4329f7dbf195b0f874f846e", version = "=0.4.6" }
-tprims-contract = { path = "../../crates/tprims-contract" }
-tprims-exec = { path = "../../crates/tprims-exec" }
-tprims-kernel = { path = "../../crates/tprims-kernel" }
+tcontract = { path = "../../crates/tcontract" }
+tcontract-exec = { path = "../../crates/tcontract-exec" }
+tcontract-kernel = { path = "../../crates/tcontract-kernel" }
 
 # Same release profile as the root workspace, so the probe measures the
 # shipped codegen.

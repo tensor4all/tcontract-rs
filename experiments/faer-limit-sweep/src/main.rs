@@ -28,13 +28,13 @@
 //! `absent` oracle is the bare product; the `output` oracle is `alpha * sum +
 //! beta * D_old`.
 //!
-//! This answers the size question of [tprims-rs#63] / [#69]: the crossover of
+//! This answers the size question of [tcontract-rs#63] / [#69]: the crossover of
 //! the two engines on the classes that fuse to one strided batched GEMM is a
 //! measurement, at 1T and 4T, for `f32`, `f64`, `c32` and `c64`. Nothing here
 //! decides a `FaerLimit` value; it records the two arms.
 //!
-//! [tprims-rs#63]: https://github.com/tensor4all/tprims-rs/issues/63
-//! [#69]: https://github.com/tensor4all/tprims-rs/issues/69
+//! [tcontract-rs#63]: https://github.com/tensor4all/tcontract-rs/issues/63
+//! [#69]: https://github.com/tensor4all/tcontract-rs/issues/69
 //!
 //! Shape classes, column-major contiguous, labels as in
 //! `experiments/three-engine-contract`:
@@ -54,12 +54,12 @@ use std::time::{Duration, Instant};
 
 use num_complex::{Complex32 as C32, Complex64 as C64};
 use strided_view::{StridedView, StridedViewMut};
-use tprims_contract::api::{
+use tcontract::api::{
     AccumulationSource, CSpec, DType, Labels, LayoutSpec, Op, OperandSpec, Problem, Scalar,
 };
-use tprims_contract::{FaerLimit, Plan, PlanConfig, Reason};
-use tprims_exec::{Exec, Pool};
-use tprims_kernel::{Element, Real};
+use tcontract::{FaerLimit, Plan, PlanConfig, Reason};
+use tcontract_exec::{Exec, Pool};
+use tcontract_kernel::{Element, Real};
 
 // ---------------------------------------------------------------------------
 // Cases
@@ -672,7 +672,7 @@ fn main() {
 
     let mut checks = vec![format!(
         "# faer-limit-sweep {} threads={threads} reps={reps} prime_ms={prime_ms} \
-         arms={} (tprims-contract execution only, prebuilt plans, preallocated output)",
+         arms={} (tcontract execution only, prebuilt plans, preallocated output)",
         env!("CARGO_PKG_VERSION"),
         arms.join(","),
     )];

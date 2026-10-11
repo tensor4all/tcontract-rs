@@ -13,7 +13,7 @@
 //!
 //! Defaults to one thread; `--threads N` selects an enforced host budget. The `sweep`, `shapes`, `orient`
 //! and `premise` analyses of the original harness were retired with the move into
-//! `tprims-bench`; `docs/migration-2026-10.md` records where they went.
+//! `tcontract-bench`; `docs/migration-2026-10.md` records where they went.
 
 mod blas;
 mod corpus;
@@ -36,7 +36,7 @@ fn main() -> ExitCode {
     }
     let opts = Options::parse(&args[2.min(args.len())..]);
 
-    let threads = tprims_bench::threads::BenchThreads::from_args();
+    let threads = tcontract_bench::threads::BenchThreads::from_args();
     threads.verify();
     engines::configure_threads(threads.requested);
     match cmd {

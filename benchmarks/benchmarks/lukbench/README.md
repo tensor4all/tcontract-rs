@@ -1,9 +1,9 @@
 # Lukas Devos's per-shape corpus
 
 `lukbench` is the second suite the
-[tprims-benchmark campaign](https://github.com/tensor4all/tprims-benchmark)
+[tcontract-benchmark campaign](https://github.com/tensor4all/tcontract-benchmark)
 drives out of this repository, beside `tcbench`. It runs the per-shape corpus
-that [tprims-rs#61](https://github.com/tensor4all/tprims-rs/issues/61) rebuilt —
+that [tcontract-rs#61](https://github.com/tensor4all/tcontract-rs/issues/61) rebuilt —
 Lukas Devos's tensorcontract/tenferro figure shapes — with a TBLIS arm.
 
 The case definitions and step programs are copied from
@@ -53,12 +53,12 @@ at startup and refuses to run on a mismatch.
 ## Procedure
 
 The source of truth is
-[the tprims-benchmark skill](../../../.agents/skills/tprims-benchmark/SKILL.md).
+[the tcontract-benchmark skill](../../../.agents/skills/tcontract-benchmark/SKILL.md).
 Use `RUSTFLAGS="-C target-cpu=native"` and release for all Rust code.
 
 ```sh
 export CARGO_BUILD_JOBS=16
-RUSTFLAGS="-C target-cpu=native" cargo build --release -p tprims-bench --bin lukbench
+RUSTFLAGS="-C target-cpu=native" cargo build --release -p tcontract-bench --bin lukbench
 cpus=$(python3 benchmarks/scripts/idle_cpus.py pick 4)
 benchmarks/scripts/pinned.sh "${cpus%%,*}" -- target/release/lukbench verify --threads 1
 benchmarks/scripts/pinned.sh "$cpus"       -- target/release/lukbench run --threads 4 --csv /tmp/lukbench-4t.csv
@@ -66,7 +66,7 @@ benchmarks/scripts/pinned.sh "$cpus"       -- target/release/lukbench run --thre
 
 - **A prebuilt plan and a preallocated output.** All steps are planned before
   the timed region; each timed call runs the whole program into slots allocated
-  once. Planning, input generation and (`N > 1`) tprims's pool construction are
+  once. Planning, input generation and (`N > 1`) tcontract's pool construction are
   excluded.
 - **Time-based priming, then best of `--reps`.** 1500 ms of untimed, wall-clock
   priming per arm by default (`--prime-ms`, echoed by `run` in its

@@ -1,10 +1,10 @@
 //! `--partition static|dynamic:JM,JN` for the packed-driver benchmarks.
 //!
 //! The comparison of the default static grid with the opt-in
-//! `Partition::DynamicTiles` is run later, with the `tprims-benchmark`
+//! `Partition::DynamicTiles` is run later, with the `tcontract-benchmark`
 //! protocol; this flag only makes the two separately selectable and their rows
 //! separately identifiable. Absent, every benchmark behaves exactly as before.
-use tprims_contract::{Partition, PlanConfig};
+use tcontract::{Partition, PlanConfig};
 
 /// The requested policy, or `None` for the default (static) behaviour.
 ///
@@ -42,8 +42,8 @@ pub fn parse(value: &str) -> Option<Option<Partition>> {
 /// execute the same geometry for the same problem at the same width; two rows
 /// that differ here need not, and a row that says `auto` still says which grid
 /// that was only together with the width it ran at.
-pub fn describe(report: &tprims_contract::PackedReport) -> String {
-    use tprims_kernel::PartitionPolicy;
+pub fn describe(report: &tcontract::PackedReport) -> String {
+    use tcontract_kernel::PartitionPolicy;
     let g = match report.partition {
         // `pm == 0` is the automatic policy's sentinel, not a 0x0 grid.
         PartitionPolicy::StaticGrid { pm: 0, pn: 0 } => "auto".into(),

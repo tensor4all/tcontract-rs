@@ -1,4 +1,4 @@
-//! Minimal median timing shared by the tprims benchmark binaries.
+//! Minimal median timing shared by the tcontract benchmark binaries.
 
 use std::time::Instant;
 

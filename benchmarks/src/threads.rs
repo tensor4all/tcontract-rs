@@ -1,6 +1,6 @@
 //! Enforced thread counts for benchmark binaries.
 
-use tprims_exec::{ArenaProvider, Exec, Pool};
+use tcontract_exec::{ArenaProvider, Exec, Pool};
 
 /// Thread environment variables that must agree with `--threads`.
 pub const THREAD_ENV_VARS: [&str; 3] = [
@@ -22,7 +22,7 @@ pub fn conflicting_env(
 }
 
 /// Name prefixes of the environment variables the libraries read before
-/// tprims-rs#37 and no longer do. A benchmark that finds one set would silently
+/// tcontract-rs#37 and no longer do. A benchmark that finds one set would silently
 /// measure something other than what the caller asked for, so it refuses to
 /// run: use the benchmark's own flags, or `tcbench`, whose knobs are `TCBENCH_*`.
 pub const REMOVED_ENV_PREFIXES: [&str; 2] = ["TENSORCONTRACT_", "TPRIMS_GEMM_"];
@@ -74,11 +74,11 @@ impl BenchThreads {
         }
         if let Some((name, value)) = forbidden_env(std::env::vars()) {
             fail(&format!(
-                "{name}={value}: this variable was removed in tprims-rs#37 and is not read; use the benchmark's flags"
+                "{name}={value}: this variable was removed in tcontract-rs#37 and is not read; use the benchmark's flags"
             ));
         }
         // Accidental ambient Rayon use runs on a one-thread global pool, so it
-        // cannot inflate a row; tprims paths use the borrowed pool below.
+        // cannot inflate a row; tcontract paths use the borrowed pool below.
         let _ = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build_global();

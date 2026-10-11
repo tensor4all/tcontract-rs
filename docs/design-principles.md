@@ -4,7 +4,7 @@
 
 ## What the library is
 
-tprims is a CPU library for dense binary tensor contraction: an execution context, a kernel layer, a contraction planner and drivers, and a C ABI. It is meant to sit **underneath** other libraries and applications, in Rust or through a C ABI from C, C++, Julia or Python. It is not an end-user array library and not tied to any one consumer.
+tcontract is a CPU library for dense binary tensor contraction: an execution context, a kernel layer, a contraction planner and drivers, and a C ABI. It is meant to sit **underneath** other libraries and applications, in Rust or through a C ABI from C, C++, Julia or Python. It is not an end-user array library and not tied to any one consumer.
 
 ## 1. Few crates, each at a real boundary
 
@@ -16,28 +16,28 @@ Every crate has a separate consumer or a stable interface; there is no umbrella 
 
 ## 2. One direction of dependency
 
-The dependency graph is acyclic: `tprims-exec` and `tprims-kernel` at the bottom, `tprims-contract` on top of both, `tprims-capi` on top of `tprims-contract`; `tprims-testkit` and the benchmarks consume them.
+The dependency graph is acyclic: `tcontract-exec` and `tcontract-kernel` at the bottom, `tcontract` on top of both, `tcontract-capi` on top of `tcontract`; `tcontract-testkit` and the benchmarks consume them.
 
 - A lower crate never learns about a higher one.
-- A crate depends on the narrowest lower contract it needs. `tprims-contract` depends on the packed-kernel contract of `tprims-kernel`, because that is what direct contraction requires.
+- A crate depends on the narrowest lower contract it needs. `tcontract` depends on the packed-kernel contract of `tcontract-kernel`, because that is what direct contraction requires.
 
 ## 3. One representation, one validator, one error
 
-A contraction is one lowered, role-grouped `Problem` with `Labels` and `DotGeneral` as front ends. Validation lives in `tprims-contract`; the C ABI lowers its labels into the same `Problem` and maps the one `tprims_contract::Error` to one status table. There is no second validator, no duplicated executor and no per-layer error type.
+A contraction is one lowered, role-grouped `Problem` with `Labels` and `DotGeneral` as front ends. Validation lives in `tcontract`; the C ABI lowers its labels into the same `Problem` and maps the one `tcontract::Error` to one status table. There is no second validator, no duplicated executor and no per-layer error type.
 
 ## 4. Short names under one prefix
 
-Crates are named `tprims-<part>` with a part name that says what it does: `tprims-exec`, `tprims-kernel`, `tprims-contract`, `tprims-capi`.
+Crates are named `tcontract-<part>` with a part name that says what it does: `tcontract-exec`, `tcontract-kernel`, `tcontract`, `tcontract-capi`.
 
 - The prefix identifies the family and avoids claiming generic crates.io names.
 - The prefix is neutral: no consumer or project name, because the library is meant for users beyond its original project.
 
 ## 5. One C library, the standard ABI
 
-`tprims-capi` is the only crate with C symbols and builds `libtprims` (`cdylib`, `staticlib`, `rlib`). It contains no algorithm.
+`tcontract-capi` is the only crate with C symbols and builds `libtcontract_capi` (`cdylib`, `staticlib`, `rlib`). It contains no algorithm.
 
 - Everything in the library shares one execution runtime and one set of handle types, so an executor is valid in every call. The executor is the standard `TAPP_executor`, created and destroyed through the C API; the C host owns it and it owns its Rayon pool. Handles of another TAPP provider cannot be mixed in.
-- Where a standard exists, the ABI is the standard: contraction is [TAPP](https://arxiv.org/abs/2601.07827) with the prototypes of the pinned upstream headers, and tprims adds only named extensions (`tprims_tapp_*`, DLPack operands, status codes). Nonzero error codes are provider-defined, so callers test success with `TAPP_check_success`.
+- Where a standard exists, the ABI is the standard: contraction is [TAPP](https://arxiv.org/abs/2601.07827) with the prototypes of the pinned upstream headers, and tcontract adds only named extensions (`tcontract_tapp_*`, DLPack operands, status codes). Nonzero error codes are provider-defined, so callers test success with `TAPP_check_success`.
 - Separate libraries per part are not supported: they would duplicate handle types, thread pools and, for static libraries, Rust runtime symbols.
 - There is no C tuning API; kernel and blocking choices are Rust `PlanConfig` inputs.
 - The ABI is versioned from the start, panics are caught at every entry point, errors are returned as status codes, and the version and contents are queryable at run time.
@@ -81,9 +81,9 @@ Published algorithms are implemented independently and cited. Translated code an
 
 Kept out of the stack, on purpose:
 
-- N-ary einsum and contraction-order planning: frontends call `tprims-contract` per binary step.
+- N-ary einsum and contraction-order planning: frontends call `tcontract` per binary step.
 - Automatic differentiation, tracing, device transfer and GPU backends.
 - Array container types and ecosystem adapters.
-- Dense linear algebra, BLAS entry points and iterative solvers: GEMM is a contraction, and the other capabilities were removed ([#37](https://github.com/tensor4all/tprims-rs/issues/37), [migration guide](migration-2026-10.md)).
+- Dense linear algebra, BLAS entry points and iterative solvers: GEMM is a contraction, and the other capabilities were removed ([#37](https://github.com/tensor4all/tcontract-rs/issues/37), [migration guide](migration-2026-10.md)).
 
 A narrow scope is what lets each crate stay small enough to be reused on its own.

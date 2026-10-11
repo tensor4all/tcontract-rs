@@ -5,7 +5,7 @@ use std::process::Command;
 fn replay(bin: &str) -> String {
     let corpus = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/benchmarks/tprims/corpus/example.json"
+        "/benchmarks/tcontract/corpus/example.json"
     );
     let out = Command::new(bin)
         .args(["--threads", "1", "--corpus", corpus])

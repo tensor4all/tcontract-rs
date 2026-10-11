@@ -8,9 +8,9 @@ use std::process::ExitCode;
 use num_complex::Complex;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use tprims_contract::{Plan, PlanConfig};
-use tprims_exec::Exec;
-use tprims_kernel::Element;
+use tcontract::{Plan, PlanConfig};
+use tcontract_exec::Exec;
+use tcontract_kernel::Element;
 
 use super::{gflops, problem_of, rel_error, timed, timed_prepare, BenchElem};
 use crate::corpus::{self, Sized};
@@ -235,7 +235,7 @@ where
                 r.mc,
                 r.kc,
                 r.nc,
-                tprims_bench::partition::describe(r),
+                tcontract_bench::partition::describe(r),
                 check(name, &d, &mut reference)
             ),
             None => format!(

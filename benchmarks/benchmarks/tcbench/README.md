@@ -8,8 +8,8 @@ without Transposition*, [arXiv:1607.00291](https://arxiv.org/abs/1607.00291).
 
 | Engine | What is measured |
 | --- | --- |
-| `plan` | tprims's default planner: packed or copy-free faer |
-| `packed` | tprims packed driver forced (diagnostic) |
+| `plan` | tcontract's default planner: packed or copy-free faer |
+| `packed` | tcontract packed driver forced (diagnostic) |
 | `ttgt` | CBLAS TTGT baseline (`--features blas`, needs a BLAS) |
 | `tblis` | Actual C++ TBLIS through the direct FFI adapter, the independent reference |
 
@@ -22,7 +22,7 @@ Do not label `packed` as external TBLIS.
 ## Fixed procedure
 
 The source of truth is
-[the tprims-benchmark skill](../../../.agents/skills/tprims-benchmark/SKILL.md).
+[the tcontract-benchmark skill](../../../.agents/skills/tcontract-benchmark/SKILL.md).
 Use `RUSTFLAGS="-C target-cpu=native"` and release for all Rust code. TBLIS must be
 a Release build of a tagged release with an explicitly chosen BLIS configuration
 family - `benchmarks/scripts/build_tblis.sh` picks one for the host (it does not use
@@ -57,7 +57,7 @@ five repetitions, best wall time, including packing, executor/FFI entry and
 provider-internal allocation. Priming is time-based, not a call count: a fixed
 number of warm-up calls removes a different share of the clock ramp in every arm,
 most in the fastest one. Input generation, planning/descriptor construction and
-tprims pool construction are excluded. tprims retains a caller-owned scratch
+tcontract pool construction are excluded. tcontract retains a caller-owned scratch
 arena/pool. These are library execution comparisons, not isolated microkernel
 timings. The CSV carries, beside the best time, the `spread` across the
 repetitions, `(max - min) / best`.
@@ -76,7 +76,7 @@ blocking and partition policy must agree.
 
 
 CSV rows include the thread budget, dtype, equivalent M/N/K, GFLOP/s, latency
-and tprims strategy/kernel notes. `manifest.txt` records the base commit,
+and tcontract strategy/kernel notes. `manifest.txt` records the base commit,
 dirty status, binary SHA256, compiler, flags and actual topology;
 `source.patch` records tracked local harness edits. Archive new source files
 next to results too. The legacy `info` cache

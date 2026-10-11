@@ -1,6 +1,6 @@
-# tprims-rs
+# tcontract-rs
 
-tprims is a CPU library for dense tensor contraction in Rust, with a C ABI. It
+tcontract is a CPU library for dense tensor contraction in Rust, with a C ABI. It
 computes `D = alpha * op(A) * op(B) + beta * op(C)` for strided operands of
 `f32`, `f64`, `c32` and `c64`, including batch indices, repeated indices
 (diagonals), reductions and conjugation, without transposing or copying the
@@ -13,7 +13,7 @@ environment variable that changes behavior.
 The C ABI is the standard [TAPP](https://arxiv.org/abs/2601.07827) tensor
 product interface, declared by the pinned upstream headers, plus DLPack
 operands and a few named extensions. It builds into one shared library,
-`libtprims`.
+`libtcontract_capi`.
 
 AI-assisted contributions are welcome; see [AGENTS.md](AGENTS.md) and
 [REPOSITORY_RULES.md](REPOSITORY_RULES.md).
@@ -22,30 +22,30 @@ AI-assisted contributions are welcome; see [AGENTS.md](AGENTS.md) and
 
 | Crate | Owns |
 | --- | --- |
-| `tprims-exec` | Execution context: serial, or the host's borrowed/owned/shared-`Arc` Rayon pool (or created and joined through the C API); width chosen from work; reusable, wrapper-owned scratch. |
-| `tprims-kernel` | The kernel layer: packed formats, kernel-family descriptors and their registry, resolution with frozen blocking, packing and write-back, cache blocking, and every microkernel family (scalar, AVX2, AVX-512 and NEON register-tile kernels, portable reference kernels, native complex kernels). |
-| `tprims-contract` | Binary contraction over one validated `Problem` (from `DotGeneral` or from labels): `Plan<T>`, `PlanConfig`, the packed, faer and elementwise strategies chosen by the planner, `contract_batched`, the labels-based unary update (`unary`), shared errors, and the backend trait. |
-| `tprims-capi` | `libtprims` (cdylib, staticlib, rlib): the TAPP C ABI over `tprims-contract`, DLPack operands, executors. The only crate that produces a library for C. |
-| `tprims-testkit` | Test support: an independent label oracle, seeded fixtures, a naive second backend, downstream-kernel fixtures. Not a production fallback. |
-| `tprims-bench` (`benchmarks/`) | Benchmark harness (`tcbench`, C and Rust ABI rows); not part of the library. |
+| `tcontract-exec` | Execution context: serial, or the host's borrowed/owned/shared-`Arc` Rayon pool (or created and joined through the C API); width chosen from work; reusable, wrapper-owned scratch. |
+| `tcontract-kernel` | The kernel layer: packed formats, kernel-family descriptors and their registry, resolution with frozen blocking, packing and write-back, cache blocking, and every microkernel family (scalar, AVX2, AVX-512 and NEON register-tile kernels, portable reference kernels, native complex kernels). |
+| `tcontract` | Binary contraction over one validated `Problem` (from `DotGeneral` or from labels): `Plan<T>`, `PlanConfig`, the packed, faer and elementwise strategies chosen by the planner, `contract_batched`, the labels-based unary update (`unary`), shared errors, and the backend trait. |
+| `tcontract-capi` | `libtcontract_capi` (cdylib, staticlib, rlib): the TAPP C ABI over `tcontract`, DLPack operands, executors. The only crate that produces a library for C. |
+| `tcontract-testkit` | Test support: an independent label oracle, seeded fixtures, a naive second backend, downstream-kernel fixtures. Not a production fallback. |
+| `tcontract-bench` (`benchmarks/`) | Benchmark harness (`tcbench`, C and Rust ABI rows); not part of the library. |
 
-strided-rs is an external dependency pinned to its published v0.4.6 release,
+strided-rs is an external dependency pinned to its published v0.4.8 release,
 including #290's terminal-pointer correction. Consumers must use the same source
 revision to share `StridedView` types.
 
 Arrows mean "depends on" and are drawn from `cargo tree` (normal and build
-dependencies; `tprims-testkit` is a dev-dependency of `tprims-contract` and
-`tprims-capi`, which creates no cycle because it is only linked into tests).
+dependencies; `tcontract-testkit` is a dev-dependency of `tcontract` and
+`tcontract-capi`, which creates no cycle because it is only linked into tests).
 
 ```mermaid
 flowchart TB
-    CAPI["<b>tprims-capi</b><br/>libtprims: TAPP, DLPack, executors"]
-    CT["<b>tprims-contract</b><br/>Problem, Plan, strategies"]
-    GK["<b>tprims-kernel</b><br/>families, registry, packing, microkernels"]
-    EX["<b>tprims-exec</b><br/>execution context"]
+    CAPI["<b>tcontract-capi</b><br/>libtcontract_capi: TAPP, DLPack, executors"]
+    CT["<b>tcontract</b><br/>Problem, Plan, strategies"]
+    GK["<b>tcontract-kernel</b><br/>families, registry, packing, microkernels"]
+    EX["<b>tcontract-exec</b><br/>execution context"]
     FA["faer"]
     ST["strided-rs (external)"]
-    TK["tprims-testkit"]
+    TK["tcontract-testkit"]
     CAPI --> CT
     CAPI --> EX
     CT --> GK
@@ -62,21 +62,21 @@ flowchart TB
 ```
 
 Not in scope: N-ary einsum and contraction ordering (they sit above, calling
-`tprims-contract` per binary step), dense linear algebra, BLAS entry points
+`tcontract` per binary step), dense linear algebra, BLAS entry points
 (GEMM is a contraction), AD and GPU backends.
 
 ## A contraction from Rust
 
-`crates/tprims-contract/examples/readme.rs` (compiled and run in CI; a test
+`crates/tcontract/examples/readme.rs` (compiled and run in CI; a test
 checks that this text is that file):
 
 ```rust
 //! The minimal example of the repository README (a test checks that the README
 //! shows this file verbatim): `D = A * B` through `DotGeneral`, `Plan`, execute.
 use strided_view::{StridedView, StridedViewMut};
-use tprims_contract::api::{DType, DotGeneral, LayoutSpec, OperandSpec, Problem};
-use tprims_contract::{Plan, PlanConfig, Result};
-use tprims_exec::Exec;
+use tcontract::api::{DType, DotGeneral, LayoutSpec, OperandSpec, Problem};
+use tcontract::{Plan, PlanConfig, Result};
+use tcontract_exec::Exec;
 
 fn main() -> Result<()> {
     // D[i, k] = sum_j A[i, j] * B[j, k], all 2 x 2 and column-major.
@@ -99,10 +99,10 @@ fn main() -> Result<()> {
     let a = [1.0, 2.0, 3.0, 4.0];
     let b = [0.0, 1.0, 1.0, 0.0]; // swaps the columns of A
     let mut d = [0.0; 4];
-    let av = StridedView::new(&a, &[2, 2], &[1, 2], 0).map_err(tprims_contract::Error::backend)?;
-    let bv = StridedView::new(&b, &[2, 2], &[1, 2], 0).map_err(tprims_contract::Error::backend)?;
-    let mut dv = StridedViewMut::new(&mut d, &[2, 2], &[1, 2], 0)
-        .map_err(tprims_contract::Error::backend)?;
+    let av = StridedView::new(&a, &[2, 2], &[1, 2], 0).map_err(tcontract::Error::backend)?;
+    let bv = StridedView::new(&b, &[2, 2], &[1, 2], 0).map_err(tcontract::Error::backend)?;
+    let mut dv =
+        StridedViewMut::new(&mut d, &[2, 2], &[1, 2], 0).map_err(tcontract::Error::backend)?;
     plan.execute_into(&Exec::serial(), 1.0, &av, &bv, &mut dv)?;
 
     assert_eq!(d, [3.0, 4.0, 1.0, 2.0]);
@@ -113,13 +113,13 @@ fn main() -> Result<()> {
 
 ## A contraction from C
 
-`crates/tprims-capi/tests/c/standard_consumer.c`: includes only the pinned
-upstream header `<tapp.h>`, compiles as C and as C++, and links `-ltprims`
+`crates/tcontract-capi/tests/c/standard_consumer.c`: includes only the pinned
+upstream header `<tapp.h>`, compiles as C and as C++, and links `-ltcontract_capi`
 (compiled and run in CI, with the same verbatim check):
 
 ```c
-/* A consumer that includes only the pinned upstream TAPP headers (no tprims
-   header) and performs a serial contraction D = A * B through libtprims:
+/* A consumer that includes only the pinned upstream TAPP headers (no tcontract
+   header) and performs a serial contraction D = A * B through libtcontract_capi:
    the standard ABI is enough for serial use. */
 #include <stdio.h>
 #include <tapp.h>
@@ -177,12 +177,12 @@ int main(void) {
 }
 ```
 
-Build the library with `cargo build --release -p tprims-capi`, install it with
-`crates/tprims-capi/install.sh --prefix=DIR` (headers, library, `tprims.pc`),
+Build the library with `cargo build --release -p tcontract-capi`, install it with
+`crates/tcontract-capi/install.sh --prefix=DIR` (headers, library, `tcontract_capi.pc`),
 and see [`examples/c-consumer`](examples/c-consumer/README.md) for a CMake
 project that consumes it three ways. The extension headers are
-`<tprims/tprims.h>` (DLPack operands, status codes, `tprims_abi_version`) and
-`<tprims/tapp_ext.h>` (a Rayon-pool executor owned by the C host). Executor
+`<tcontract/tcontract.h>` (DLPack operands, status codes, `tcontract_abi_version`) and
+`<tcontract/tapp_ext.h>` (a Rayon-pool executor owned by the C host). Executor
 handles are valid for every plan of the library; handles of another TAPP
 provider cannot be mixed in.
 
@@ -195,7 +195,7 @@ silent fallback), `isa` (`KernelForce`), `method` (complex method), `blocking`,
 `partition` and the other fields. Family ids have the form
 `{isa}.{dtype}.{scheme}.{MR}x{NR}`, for example `avx2.f64.real.8x6`,
 `avx512.c32.planar.32x6` or `ref.f64.real.4x4`, where `isa` is `ref`, `avx2`,
-`avx512` or `neon`; `tprims_kernel::list_kernels` lists what this CPU offers
+`avx512` or `neon`; `tcontract_kernel::list_kernels` lists what this CPU offers
 and the x86-64 manifest is pinned by a snapshot test. Downstream crates can
 supply their own kernels through a caller-scoped catalog
 (`Plan::new_with_selector`). The full old-to-new id table is in the
@@ -207,9 +207,9 @@ Rust 1.89 or newer. CI runs on Linux (x86-64) and macOS (arm64); the aarch64
 kernels are also checked with `cargo check --target aarch64-apple-darwin`.
 
 ```sh
-cargo build -p tprims-capi            # libtprims; the C tests link it
+cargo build -p tcontract-capi            # libtcontract_capi; the C tests link it
 cargo test --workspace
-cargo run --release -p tprims-contract --example readme
+cargo run --release -p tcontract --example readme
 python3 scripts/check-agent-skills.py
 ```
 
@@ -226,7 +226,7 @@ regress. There is no stable API or ABI yet and no crate has been published.
 Performance claims need recorded measurements ([PERFORMANCE_TIPS.md](PERFORMANCE_TIPS.md),
 [docs/experiments.md](docs/experiments.md)). The source integration that
 produced this layout is described in [docs/migration-2026-10.md](docs/migration-2026-10.md)
-and [issue #37](https://github.com/tensor4all/tprims-rs/issues/37).
+and [issue #37](https://github.com/tensor4all/tcontract-rs/issues/37).
 
 ## Provenance and authorship
 
@@ -246,8 +246,8 @@ Design documents: [design principles](docs/design-principles.md),
 
 ## Acknowledgements and citation
 
-tprims builds on [faer](https://github.com/sarah-quinones/faer-rs) by Sarah
-Quiñones El Kazdadi. If you use tprims in published work, please also cite the
+tcontract builds on [faer](https://github.com/sarah-quinones/faer-rs) by Sarah
+Quiñones El Kazdadi. If you use tcontract in published work, please also cite the
 faer paper:
 
 > S. Q. El Kazdadi, "faer: A linear algebra library for the Rust programming

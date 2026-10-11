@@ -126,7 +126,7 @@ pub fn print_environment() {
         println!();
     }
     {
-        use tprims_kernel::blocking as cache;
+        use tcontract_kernel::blocking as cache;
         let h = cache::hierarchy();
         let one = |l: &cache::CacheLevel| {
             format!(

@@ -6,7 +6,7 @@ Items marked **[inf]** are my own inferences or arithmetic from the source. They
 Abbreviations:
 - `PG` = private-gemm-x86 0.1.20, `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/private-gemm-x86-0.1.20/`
 - `FA` = faer 0.24.4, same registry directory
-- `TC` = `~/tensor4all/tprims-rs/tensorprimitives/crates/tensorcontract/src/`
+- `TC` = `~/tensor4all/tcontract-rs/tensorprimitives/crates/tensorcontract/src/`
 
 ## 0. Machine and build facts (verified)
 
@@ -17,13 +17,13 @@ Abbreviations:
   - L2: 512K, 8-way, private.
   - L3: 32768K, 16-way, shared by CPUs 0-7 (one CCD).
 - `rustc --print cfg` with no flags enables only fxsr, sse and sse2. With `-C target-cpu=native` it adds avx, avx2, fma and bmi2.
-- tprims-rs has no `.cargo/config*`. `~/.cargo/config.toml` sets only kache and incremental. `$RUSTFLAGS` is empty. CI sets only `RUSTFLAGS=-D warnings` (.github/workflows/ci.yml:10).
+- tcontract-rs has no `.cargo/config*`. `~/.cargo/config.toml` sets only kache and incremental. `$RUSTFLAGS` is empty. CI sets only `RUSTFLAGS=-D warnings` (.github/workflows/ci.yml:10).
   - So **no target-cpu is used**. Everything outside explicit `#[target_feature]` code and inline asm is compiled for baseline SSE2.
 - Release profile: `opt-level=3`, `lto="thin"`, `codegen-units=1` (Cargo.toml:69-73).
 - Cargo.lock versions: faer 0.24.4, faer-traits 0.24.0, gemm/gemm-common/gemm-f64/gemm-c64 0.19.0, nano-gemm 0.2.2 (f64 and c64 0.2.1), **private-gemm-x86 0.1.20**, spindle 0.2.6, pulp 0.22.3, rayon 1.12.0, num_cpus 1.17.0.
-- Benchmark path (benchmarks/benchmarks/tprims/contract/contract.rs:204): `Strategy::PermuteGemm` (faer) is compared with `Strategy::Tblis` (tensorcontract). Both run on the same dedicated rayon pool (`benchmarks/src/threads.rs:80-96`), pinned with taskset inside one CCD.
+- Benchmark path (benchmarks/benchmarks/tcontract/contract/contract.rs:204): `Strategy::PermuteGemm` (faer) is compared with `Strategy::Tblis` (tensorcontract). Both run on the same dedicated rayon pool (`benchmarks/src/threads.rs:80-96`), pinned with taskset inside one CCD.
   - faer is entered with `exec.install` and then `faer::Par::rayon(n)` (tprims-blas/src/gemm.rs:34-37, 142-146).
-  - tensorcontract is entered with `Plan::run_raw_with(&ExecSpmd)`, which calls rayon `ThreadPool::broadcast` (tprims-contract/src/tblis.rs:15-27, 113-126; tprims-exec/src/exec.rs:200-245).
+  - tensorcontract is entered with `Plan::run_raw_with(&ExecSpmd)`, which calls rayon `ThreadPool::broadcast` (tcontract/src/tblis.rs:15-27, 113-126; tcontract-exec/src/exec.rs:200-245).
   - Both backends get the same width model (`width_for`: serial below 50 µs, otherwise cost = 5 µs + 5 µs·k + S/k, at 0.05 ns/flop).
   - **So thread count and pool are the same for both. The gap is inside the libraries.**
 
@@ -156,7 +156,7 @@ These are at driver.rs:500-503, 543-544 and 575-576, and they are freed on retur
 
 ## 5. Threading
 
-### faer / PG (with `Par::rayon(n)`, n from tprims `width_for`)
+### faer / PG (with `Par::rayon(n)`, n from tcontract `width_for`)
 
 **Serial threshold.** `n_threads = par.degree()` only if M·N·K ≥ 4096·sizeof(T), i.e. ≥ 32768 for f64 and ≥ 65536 for c64. Otherwise 1 (FA mod.rs:1403-1411).
 
@@ -199,14 +199,14 @@ Details:
 - Static partition, no work stealing. Each thread owns disjoint output rows, so results are bitwise identical for any thread count (plan.rs:570-584).
 
 **Entry and thresholds.**
-- Default thread count comes from `TENSORCONTRACT_THREADS` or 1 (plan.rs:1173-1179). tprims overrides it with the spmd width.
+- Default thread count comes from `TENSORCONTRACT_THREADS` or 1 (plan.rs:1173-1179). tcontract overrides it with the spmd width.
 - If spmd `broadcast` fails, it runs single-threaded; with no spmd, it spawns scoped threads per call (driver.rs:586-608).
-- There is no small-problem serial threshold inside tensorcontract. tprims's `width_for` is the only guard.
+- There is no small-problem serial threshold inside tensorcontract. tcontract's `width_for` is the only guard.
 
 ## 6. Other notable differences
 
 - **alpha/beta.**
-  - PG: beta is either Replace (overwrite, C not read, so NaN in C is not propagated) or Add. It becomes Add after the first kc slab (lib.rs:1356-1360, 1503). Alpha is applied in registers in every epilogue, including when alpha == 1 (build.rs:2248-2265). tprims pre-scales C when beta ∉ {0, 1} (tprims-blas gemm.rs:84-94).
+  - PG: beta is either Replace (overwrite, C not read, so NaN in C is not propagated) or Add. It becomes Add after the first kc slab (lib.rs:1356-1360, 1503). Alpha is applied in registers in every epilogue, including when alpha == 1 (build.rs:2248-2265). tcontract pre-scales C when beta ∉ {0, 1} (tprims-blas gemm.rs:84-94).
   - tensorcontract: `writeback` has a "plain" fast path (beta == 0, alpha == 1, no conj). Every later kc block runs the general path: `from_parts(...).mul(alpha)` (a complex multiply for c64 even when alpha == 1), then a load of D, an add and a store of D, all scalar (writeback.rs:112-184, 234-260).
   - Consequence: tensorcontract makes **ceil(k/kc) scalar read-modify-write passes over D, with kc = 256**. PG makes ceil(k/512) register-epilogue passes.
 - **Edges.**

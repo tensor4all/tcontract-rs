@@ -63,6 +63,6 @@ with (out / "comparison.csv").open("w") as f:
     writer = csv.DictWriter(f, fieldnames=fields)
     writer.writeheader()
     writer.writerows(comparison)
-print("| MiB target | dtype | T | tprims 1T speedup | A/A median | A/A max |")
+print("| MiB target | dtype | T | tcontract 1T speedup | A/A median | A/A max |")
 print("| --- | --- | --- | --- | --- | --- |")
 print("\n".join(summary))

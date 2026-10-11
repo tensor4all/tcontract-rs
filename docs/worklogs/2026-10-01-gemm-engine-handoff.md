@@ -80,7 +80,7 @@ The spec and Task 8 now reflect that correction.
 - DynamicTiles (faer-style) is designed but **not implemented** in this
   phase.
 - The spec was reviewed by Fable before approval.
-- P3 (tenferro-benchmark acceptance) stays cancelled until tprims is
+- P3 (tenferro-benchmark acceptance) stays cancelled until tcontract is
   optimized standalone.
 
 ## Rulings already made in the plan (flag them in the PR)
@@ -88,16 +88,16 @@ The spec and Task 8 now reflect that correction.
 - `KernelFamily<R>` is keyed by the real scalar, not by the element type,
   because kernels operate on `T::Real` today.
 - Workspace ownership correction: no process-global `ARENA`. Each
-  `tprims_exec::Pool` owns its provider; both blas/contract `ExecSpmd` (since removed in #37)
-  adapters borrow it. `tprims-exec` may depend on the thread-free
-  `tprims-gemm-kernel` contract (now `tprims-kernel`, #37) without a cycle. A/tile buffers are
+  `tcontract_exec::Pool` owns its provider; both blas/contract `ExecSpmd` (since removed in #37)
+  adapters borrow it. `tcontract-exec` may depend on the thread-free
+  `tprims-gemm-kernel` contract (now `tcontract-kernel`, #37) without a cycle. A/tile buffers are
   worker-local and owner-keyed; B/team sets are leased exclusively and
   returned only to their originating provider, never another pool. Serial
   typed plans own their workspace rather than using a hidden global cache.
   Owner drop/trim releases idle payloads even for borrowed host pools.
 - Block-scatter vectors are filled by the caller into the leased arena. The
   spec's cooperative fill is deferred.
-- `SelectedGemm` wraps `Selected` (additive) so tenferro-cpu-tprims, pinned
+- `SelectedGemm` wraps `Selected` (additive) so tenferro-cpu-tcontract, pinned
   at `d8e565a`, does not break.
 - Custom packers (`pack_override`) are declared but have no exerciser until
   a port needs them. Packers are otherwise layout-selected and
@@ -127,15 +127,15 @@ The spec and Task 8 now reflect that correction.
 - This host: EPYC 7713P, 1 NUMA node, 8 L3 domains × 8 cores. Build with
   `CARGO_BUILD_JOBS=16`. While measuring on CCD 0, build with `taskset -c
   16-63`.
-- tprims-rs main is at `690794c` (README faer citation, PR #25, merged).
+- tcontract-rs main is at `690794c` (README faer citation, PR #25, merged).
 
 ## Loose ends outside this plan
 
 - Worktrees `~/tensor4all/tenferro-rs-main` and
   `~/tensor4all/tenferro-benchmark-p1` are leftovers from Phase 1e and can be
   removed.
-- tenferro's `ext/tenferro-cpu-tprims` pins tprims at `d8e565a`, before the
-  copy-aware Auto change. Bump it when tprims next changes behaviour
+- tenferro's `ext/tenferro-cpu-tcontract` pins tcontract at `d8e565a`, before the
+  copy-aware Auto change. Bump it when tcontract next changes behaviour
   tenferro should see.
 
 ## State at the end of the switchable-engine session (2026-10-01)
@@ -147,7 +147,7 @@ checked without a quiet host is green:
 - `cargo fmt --all --check`;
 - `cargo +1.98.0 clippy --workspace --all-targets -- -D warnings`;
 - `cargo test --workspace --release` (89 green test binaries);
-- `cargo test -p tprims-exec --release --no-default-features`;
+- `cargo test -p tcontract-exec --release --no-default-features`;
 - `cargo test -p tprims-blas --release --features kernel-gemm,kernel-pgx86` (those features were removed in #37);
 - the kernel crates for `wasm32-unknown-unknown` and `aarch64-apple-darwin`,
   and `tprims-kernel-pgx86` on both (it is inert off x86-64);
@@ -160,7 +160,7 @@ pre-existing and unrelated.)
 ## What is left before this can be merged
 
 The performance gate now **passes** (see below and
-`benchmarks/benchmarks/tprims/{contract,blas}/results/2026-10-01-gemm-engine/decision.txt`);
+`benchmarks/benchmarks/tcontract/{contract,blas}/results/2026-10-01-gemm-engine/decision.txt`);
 what remains is the merge itself.
 
 1. ~~**The performance gate.**~~ **Done.** Contract corpus: `tblis_exec`
@@ -188,13 +188,13 @@ what remains is the merge itself.
    with the default `BENCH_RUNS`:
 
    ```
-   CORPUS=benchmarks/benchmarks/tprims/corpus/tenferro-p1.json \
+   CORPUS=benchmarks/benchmarks/tcontract/corpus/tenferro-p1.json \
      benchmarks/scripts/paired.sh <old contract> OUT-old CPUS 1 4 8
-   CORPUS=benchmarks/benchmarks/tprims/corpus/tenferro-p1.json \
+   CORPUS=benchmarks/benchmarks/tcontract/corpus/tenferro-p1.json \
      benchmarks/scripts/paired.sh <new contract> OUT-new CPUS 1 4 8
-   CORPUS=benchmarks/benchmarks/tprims/corpus/tenferro-p1-gemm.json \
+   CORPUS=benchmarks/benchmarks/tcontract/corpus/tenferro-p1-gemm.json \
      benchmarks/scripts/paired.sh <old blas> OUT-old-blas CPUS 1 4 8
-   CORPUS=benchmarks/benchmarks/tprims/corpus/tenferro-p1-gemm.json \
+   CORPUS=benchmarks/benchmarks/tcontract/corpus/tenferro-p1-gemm.json \
      benchmarks/scripts/paired.sh <new blas> OUT-new-blas CPUS 1 4 8
    ```
 

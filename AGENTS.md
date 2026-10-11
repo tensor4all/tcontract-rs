@@ -20,19 +20,19 @@ This is a research repository, not a production tensor-algebra library. Read `RE
 
 ## Layout
 
-- `crates/`: `tprims-exec`, `tprims-kernel`, `tprims-contract`, `tprims-testkit`
-  and `tprims-capi` (libtprims). Much of the kernel, driver and C ABI code is
+- `crates/`: `tcontract-exec`, `tcontract-kernel`, `tcontract`, `tcontract-testkit`
+  and `tcontract-capi` (libtcontract_capi). Much of the kernel, driver and C ABI code is
   tensorprimitives-rs by Lukas Devos, moved here with history and authorship
   (`docs/provenance.md`); the old tree is archived in
   `docs/archive/tensorprimitives/`.
-- `benchmarks/`: package `tprims-bench` (started as an import of
+- `benchmarks/`: package `tcontract-bench` (started as an import of
   strided-rs-benchmark-suite). Every new operation adds rows here at 1T and 4T.
 - `experiments/`: standalone measurement probes, excluded from the workspace.
 - `.agents/skills/` (canonical, read by Codex and pi), mirrored byte for byte
   in `.claude/skills/`, with OpenCode commands in `.opencode/commands/`;
   `python3 scripts/check-agent-skills.py` checks the mirrors. Run benchmarks
-  with the `tprims-benchmark` skill.
-- strided-rs is an external git dependency pinned to published v0.4.6 with
+  with the `tcontract-benchmark` skill.
+- strided-rs is an external git dependency pinned to published v0.4.8 with
   all four crates at one rev (`Cargo.toml`); consumers coordinate that source
   to share view types. strided changes and
   strided benchmarks go to tensor4all/strided-rs and
@@ -44,12 +44,12 @@ This is a research repository, not a production tensor-algebra library. Read `RE
   shared 64-core EPYC workstation); scripts and CI do not hardcode `-j`.
 - Local gate before a PR: `cargo fmt --all -- --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`,
-  `cargo test --workspace`, `cargo test -p tprims-exec` (without the `strided`
-  feature the workspace unifies on), `cargo test -p tprims-contract --release`,
+  `cargo test --workspace`, `cargo test -p tcontract-exec` (without the `strided`
+  feature the workspace unifies on), `cargo test -p tcontract --release`,
   `cargo check --workspace --all-targets --target aarch64-apple-darwin` and a
   build on the MSRV (`cargo +1.89.0 build --workspace --all-targets`). Build
-  `cargo build -p tprims-capi` before the workspace tests (the C ABI test links
-  the built `libtprims.so`). CI uses stable clippy, which may be newer than a
+  `cargo build -p tcontract-capi` before the workspace tests (the C ABI test links
+  the built `libtcontract_capi.so`). CI uses stable clippy, which may be newer than a
   local toolchain.
 - Before a PR, also check README and `docs/` against the implementation
   (REPOSITORY_RULES.md, Public Surface Drift): diagrams and dependency tables

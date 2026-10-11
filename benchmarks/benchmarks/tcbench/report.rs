@@ -130,7 +130,7 @@ pub fn print_environment() {
     // make every derived parameter conservative — should be visible here rather
     // than inferred from a disappointing number.
     {
-        use tprims_kernel::blocking as cache;
+        use tcontract_kernel::blocking as cache;
         let h = cache::hierarchy();
         let one = |l: &cache::CacheLevel| {
             format!(

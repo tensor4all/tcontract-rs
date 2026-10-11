@@ -2,10 +2,10 @@
 //!
 //! Vendors OpenBLAS's `dgemm_kernel_16x2_skylakex` (commit
 //! `31e82fa8c509e6f0d96288de3c20d8916d894e72`) as an external
-//! [`KernelFamily`](tprims_kernel::KernelFamily) for the tprims packed driver.
+//! [`KernelFamily`](tcontract_kernel::KernelFamily) for the tcontract packed driver.
 //!
 //! The kernel is a `MR=16 x NR=2` panel-panel product over column-major packed
-//! panels, which matches tprims's `PackFormat::Real` / `TileFormat::Real`
+//! panels, which matches tcontract's `PackFormat::Real` / `TileFormat::Real`
 //! contract exactly: A is packed `A[i + MR*p]`, B is packed `B[j + NR*p]`, and
 //! the tile is `C[j*MR + i]`. The only adapter needed is the scratch-tile
 //! wrapper: zero the `MR x NR` tile, then call the OpenBLAS kernel with
@@ -20,11 +20,11 @@
 //! # Safety
 //!
 //! [`OPENBLAS_FAMILY`] is only admitted through
-//! [`KernelCatalog::from_static_families`](tprims_kernel::KernelCatalog::from_static_families),
+//! [`KernelCatalog::from_static_families`](tcontract_kernel::KernelCatalog::from_static_families),
 //! which is the single `unsafe` trust boundary for external kernels. See
 //! `PROVENANCE.md` for the source, license and the callable symbol.
 
-use tprims_kernel::{
+use tcontract_kernel::{
     BAccess, Blocksizes, CPref, CUpdate, Caps, CpuFeatures, Isa, KernelCatalog, KernelFamily,
     KernelImpl, Origin, UkrFn,
 };
@@ -133,7 +133,7 @@ unsafe fn tile_ukr_wide(kc: usize, a: *const f64, b: *const f64, tile: *mut f64)
     if kc > MAX_K {
         // SAFETY: the same validated 16 x kc, 12 x kc and 16 x 12 buffers.
         unsafe {
-            tprims_kernel::kernels::reference::portable::real_tile::<f64, MR, 12>(kc, a, b, tile)
+            tcontract_kernel::kernels::reference::portable::real_tile::<f64, MR, 12>(kc, a, b, tile)
         };
         return;
     }

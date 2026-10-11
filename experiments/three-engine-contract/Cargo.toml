@@ -3,18 +3,18 @@ name = "three-engine-contract"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "tprims vs tensorprimitives-rs vs tenferro on the per-shape corpus of issue #61"
+description = "tcontract vs tensorprimitives-rs vs tenferro on the per-shape corpus of issue #61"
 
 # A standalone crate (the root workspace excludes `experiments/`): tenferro-rs
-# pins strided-rs v0.4.4 and tprims v0.4.5, and the two must not be unified.
+# pins strided-rs v0.4.4 and tcontract v0.4.5, and the two must not be unified.
 [dependencies]
 num-complex = "0.4"
 rand = "0.8"
 rand_chacha = "0.3"
 strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "c12d96fa4cfef622bc1f15fd9940fd418fb686ac", version = "0.4.5" }
-tprims-contract = { path = "../../crates/tprims-contract" }
-tprims-exec = { path = "../../crates/tprims-exec", features = ["strided"] }
-# cpueinsum-rs (local checkout) for the cpueinsum arms; its tprims git
+tcontract = { path = "../../crates/tcontract" }
+tcontract-exec = { path = "../../crates/tcontract-exec", features = ["strided"] }
+# cpueinsum-rs (local checkout) for the cpueinsum arms; its tcontract git
 # dependency is patched onto this tree so the two unify.
 cpueinsum = { path = "../../../cpueinsum-rs/crates/cpueinsum" }
 # lkdvos/tensorprimitives-rs, the commit docs/provenance.md records.
@@ -30,9 +30,9 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 
-[patch."https://github.com/tensor4all/tprims-rs.git"]
-tprims-contract = { path = "../../crates/tprims-contract" }
-tprims-exec = { path = "../../crates/tprims-exec" }
-tprims-kernel = { path = "../../crates/tprims-kernel" }
+[patch."https://github.com/tensor4all/tcontract-rs.git"]
+tcontract = { path = "../../crates/tcontract" }
+tcontract-exec = { path = "../../crates/tcontract-exec" }
+tcontract-kernel = { path = "../../crates/tcontract-kernel" }
 
 [workspace]

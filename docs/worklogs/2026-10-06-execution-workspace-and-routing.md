@@ -1,6 +1,6 @@
 # Execution workspace/lease boundary and worker-context routing (#70)
 
-tprims-side prerequisite for tensor4all/tenferro-rs#2004. Design:
+tcontract-side prerequisite for tensor4all/tenferro-rs#2004. Design:
 `docs/superpowers/specs/2026-10-06-execution-workspace-and-routing-design.md`.
 
 ## What changed
@@ -59,10 +59,10 @@ hold without a lease spanning the two.
 
 ## Verification
 
-- `cargo test -p tprims-exec`: checkout/return reuse, re-entry, exclusivity, panic
+- `cargo test -p tcontract-exec`: checkout/return reuse, re-entry, exclusivity, panic
   recovery, both-direction accounting, trim-versus-live-lease, and a two-thread
   `stats`/`trim`-against-a-running-worker stress test.
-- `cargo test -p tprims-contract`: worker-context refusals now assert the typed error, an
+- `cargo test -p tcontract`: worker-context refusals now assert the typed error, an
   untouched sentinel output and unmoved counters (`packed_exec_pool.rs`,
   `packed_exec_seam.rs`, `packed_exec_pin.rs`, `custom_concurrency.rs`, the DynamicTiles
   refusal in `driver/tests/dynamic.rs`); the batch worker case asserts barrier-free lanes
@@ -132,5 +132,5 @@ is `k <= budget`; the dispatch width is the pool). All three are corrected.
   not covered.
 - `contract_batched` keeps its validate-all-then-execute preflight, but a route error in a
   later item is not rolled back; the all-or-nothing claim now says so.
-- cpueinsum's pin (`fed859ac`) and the tenferro `ext/tenferro-cpu-tprims` extension still
+- cpueinsum's pin (`fed859ac`) and the tenferro `ext/tenferro-cpu-tcontract` extension still
   predate this change and are migrated by their own issues (#4, #2004).

@@ -1,7 +1,7 @@
 # neutral-dispatch
 
 What the neutral contraction interface costs per call — the item
-[tprims-rs#31](https://github.com/tensor4all/tprims-rs/issues/31) deferred:
+[tcontract-rs#31](https://github.com/tensor4all/tcontract-rs/issues/31) deferred:
 "the paired 1T/4T timing comparison of the concrete and trait paths. It was
 deferred; only allocation parity was checked."
 
@@ -19,7 +19,7 @@ anything per call, that would be a reason not to put it on a hot path.
 | `exec_concrete` | `Plan::execute_into` on a prebuilt plan |
 | `exec_trait` | `BoxedPlan<T>::execute_into` on the plan the trait prepared |
 
-Both arms run the same kernels by construction: `TprimsBackend::prepare` is
+Both arms run the same kernels by construction: `TcontractBackend::prepare` is
 `Plan::new` with the trait's `no_materialize` OR-ed in, and the trait's
 `execute_into` forwards to the same execution. Any difference is dispatch and
 boxing, not arithmetic. Views are descriptors over fixed buffers, built outside
@@ -72,7 +72,7 @@ everywhere.
 
 So a consumer that keeps a prepared plan pays nothing measurable for runtime
 backend selection, and pays it once at preparation. Allocation counts are not
-re-measured here: `crates/tprims-contract/tests/plan_alloc.rs` pins the
+re-measured here: `crates/tcontract/tests/plan_alloc.rs` pins the
 *concrete* planning counts and `tests/neutral_alloc.rs` pins that the
 **execution** boundary adds no allocation and no copy. The preparation-time
 `Box` this probe measures in time is not allocation-counted by either, so that

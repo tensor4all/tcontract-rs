@@ -36,8 +36,8 @@ Those gates passed on the actual published strided revision (no path patches):
 
 - workspace fmt check, C API build;
 - workspace/all-target clippy `-D warnings`;
-- workspace debug tests and standalone `tprims-exec` tests;
-- release `tprims-contract` tests, including the original planning allocation gate;
+- workspace debug tests and standalone `tcontract-exec` tests;
+- release `tcontract` tests, including the original planning allocation gate;
 - workspace/all-target `aarch64-apple-darwin` check;
 - Rust 1.89.0 workspace/all-target check;
 - workspace docs with `RUSTDOCFLAGS=-D warnings`.
@@ -53,7 +53,7 @@ A/B/C/D conjugation masks, all C modes, initialized/fresh output, K=3/513,
 zero-scale NaNs, negative strides and pooled broadcast/reversal. cpueinsum's
 final gate is separately rerun against this prerequisite's published revision.
 
-Provenance: local changes reusing existing tprims and strided APIs; no external
+Provenance: local changes reusing existing tcontract and strided APIs; no external
 bodies copied or notices removed. Existing tensorprimitives/Lukas Devos and
 strided lineage remains applicable. No extra bridge, ambient pool, hidden fill,
 result temporary, execution-time planning, provider probe or serial retry.

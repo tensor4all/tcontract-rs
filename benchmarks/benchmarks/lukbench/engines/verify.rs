@@ -9,8 +9,8 @@
 use std::process::ExitCode;
 
 use num_complex::Complex;
-use tprims_contract::PlanConfig;
-use tprims_exec::Exec;
+use tcontract::PlanConfig;
+use tcontract_exec::Exec;
 
 use super::run::{self, ENGINE_ORDER};
 use super::{max_rel_err, sample_inputs, tol, BenchElem};

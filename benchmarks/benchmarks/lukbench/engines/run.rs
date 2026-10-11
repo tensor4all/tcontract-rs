@@ -9,9 +9,9 @@ use std::process::ExitCode;
 
 use num_complex::Complex;
 use strided_view::{StridedView, StridedViewMut};
-use tprims_contract::{Plan, PlanConfig};
-use tprims_exec::Exec;
-use tprims_kernel::Element;
+use tcontract::{Plan, PlanConfig};
+use tcontract_exec::Exec;
+use tcontract_kernel::Element;
 
 use super::{
     gflops, max_rel_err, problem_of, sample_inputs, steps_with, timed, timed_prepare, tol,
@@ -173,8 +173,8 @@ pub fn run_plans<T: BenchElem>(
     exec: &Exec<'_>,
     reps: usize,
     prime_ms: u64,
-) -> Result<(f64, f64, f64, String), tprims_contract::Error> {
-    let (plans, prepare) = timed_prepare(3, || -> Result<Vec<Plan<T>>, tprims_contract::Error> {
+) -> Result<(f64, f64, f64, String), tcontract::Error> {
+    let (plans, prepare) = timed_prepare(3, || -> Result<Vec<Plan<T>>, tcontract::Error> {
         (0..p.steps.len())
             .map(|k| Plan::<T>::new(&problem_of::<T>(p, k)?, config))
             .collect::<Result<_, _>>()
@@ -213,7 +213,7 @@ fn strategies<T: BenchElem>(plans: &[Plan<T>]) -> String {
                 x.mc,
                 x.kc,
                 x.nc,
-                tprims_bench::partition::describe(x)
+                tcontract_bench::partition::describe(x)
             ),
             None => r.algorithm.name().to_string(),
         };

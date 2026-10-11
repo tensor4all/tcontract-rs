@@ -1,5 +1,5 @@
 # The frozen assembly is the `-C target-cpu=native` build; compile this crate
-# (and its path dependency tprims-kernel) the same way so the intrinsic arm is
+# (and its path dependency tcontract-kernel) the same way so the intrinsic arm is
 # the exact function the frozen `.S` was copied from.
 [build]
 rustflags = ["-C", "target-cpu=native"]

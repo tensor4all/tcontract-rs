@@ -2,14 +2,14 @@
 
 [Back to the overview](../README.md). These notes retain the detailed rationale, numerical requirements, and primary sources of the current design. There is no stable API, ABI or performance claim yet. AI-assisted design and implementation are welcome; contributors remain responsible for correctness, measurements, and code provenance.
 
-tprims is a CPU library for dense binary tensor contraction, usable from Rust and, through the TAPP C ABI, from C, Julia or Python hosts. It is not tied to one consumer.
+tcontract is a CPU library for dense binary tensor contraction, usable from Rust and, through the TAPP C ABI, from C, Julia or Python hosts. It is not tied to one consumer.
 
 ## Working hypotheses
 
 - **Contraction:** one validated `Problem` is planned once and run by one of three strategies: a packed, block-scatter (TBLIS-style) driver that packs general strides straight into microkernel panels, faer on problems that fuse into one copy-free batched GEMM, and an elementwise pass for all-batch problems. Measurement, not assertion, decides which one a plan selects.
 - **Phase 2 goal:** optimize the packed driver until it replaces faer, leaving one route for contractions with a K role that differs only by kernel family; all-batch problems stay delegated to strided-rs. Small, Hadamard-like and batched shapes (`hadamard.json`) must not regress while doing so.
 - **Execution ownership:** the effective thread budget, pool and scratch lifetime are explicit. A Rust caller supplies an execution context. A C, Julia or Python caller creates, uses and closes a pool through the C ABI, without the library taking over the host's threads.
-- **No configuration through the environment.** No library crate reads an environment variable; every knob is an explicit input (`PlanConfig`).
+- **No configuration through the environment.** No library crate reads an environment variable for numerical, threading or routing policy; every such knob is an explicit input (`PlanConfig`, `Exec`). The only environment read is the opt-in `TCONTRACT_PHASE` per-call phase-timing toggle behind the `phase-timing` feature.
 
 These are hypotheses until evidence exists. [The research map](research-map.md) distinguishes published evidence from project-specific hypotheses, and [the experiment plan](experiments.md) defines how to compare them.
 
@@ -18,8 +18,8 @@ These are hypotheses until evidence exists. [The research map](research-map.md) 
 The full statement and rationale are in [design principles](design-principles.md). In short:
 
 1. **Few crates with real boundaries.** Each crate has a separate consumer or a stable interface; there is no facade.
-2. **Short names under one prefix.** Crates are named `tprims-<part>`.
-3. **One C ABI crate.** `tprims-capi` builds `libtprims` (`cdylib`, `staticlib`, `rlib`). The standard TAPP interface is the contraction ABI; tprims adds named extensions.
+2. **Short names under one prefix.** Crates are named `tcontract-<part>`.
+3. **One C ABI crate.** `tcontract-capi` builds `libtcontract_capi` (`cdylib`, `staticlib`, `rlib`). The standard TAPP interface is the contraction ABI; tcontract adds named extensions.
 4. **Zero copy at the boundary.** Data crosses the C ABI as DLPack descriptors; operands are borrowed.
 5. **Caller-owned execution.** Every expensive operation receives an explicit execution context. No ambient global pool.
 
@@ -29,81 +29,81 @@ Dependencies are those of `cargo tree` (normal and build edges):
 
 | Crate | Responsibility | Depends on |
 | --- | --- | --- |
-| `tprims-exec` | Execution context: serial, a host's Rayon pool through a borrowed, owned or shared-`Arc` wrapper, width chosen from work, kernel-level entry, SPMD `broadcast`, and the workspace provider (`ArenaProvider`, `WorkspaceReq`, `TeamLease`: pool-owned, reusable scratch); `strided::run_with_exec` bridges strided-rs kernels (feature `strided`). | rayon, thiserror; strided-basic (optional) |
-| `strided-view`, `strided-basic` (external, strided-rs) | Checked borrowed strided views, scalar and conjugation contracts; copy, permutation and elementwise kernels. | none in tprims |
-| `tprims-kernel` | The kernel crate: packed formats, kernel-family descriptors, CPU masks and validation, the registry with deterministic built-in families, resolution with a frozen blocking policy (explicit inputs, no environment reads), the partition policy, caller-scoped `KernelCatalog`/`KernelHandle` for downstream kernels, packing, scatter and write-back, cache blocking (`blocking::{probe,model}`), and the microkernel families: Lukas Devos's scalar, AVX2, AVX-512 and NEON register-tile kernels (`kernels::{reference,x86,aarch64}`), the portable reference kernels and the native interleaved complex kernels. Ids: `{isa}.{dtype}.{scheme}.{MR}x{NR}`. No executor and no ambient state. | num-complex |
-| `tprims-contract` | Binary contraction with free, contracted and batch indices (`dot_general` and label semantics) over one validated `Problem` (`api`: `Labels` and `DotGeneral` front ends, one lowering, one `Error`, the object-safe `ContractionBackend<T>` / `PreparedContraction<T>` traits taking an `&Exec`), planned once into a `Plan<T>` (`plan`: role folding and orientation, offsets, family and strategy resolution, an immutable `PlanReport`) and executed by one of three strategies (`strategy`, `driver`): the packed driver (packing traversal, loop nest, write-back, static and dynamic partition), faer on a copy-free batched-GEMM fusion, and an elementwise pass. Threads and workspace come from a `tprims_exec::Exec`. Thin permute / add wrappers, the labels-based unary update (`unary`: `Unary`, `add`, one operation for a permutation, a diagonal and a reduction, lowered to a rank-zero `B`), `contract_batched`; `check_raw` / `execute_raw` are the pointer-level entry of the C adapter; `execute_slices` runs a plan on plain slices without building views. | faer, num-complex, thiserror, `tprims-kernel`, `tprims-exec`, `strided-view`, `strided-basic` |
-| `tprims-capi` | `libtprims` (`cdylib`, `staticlib`, `rlib`): the TAPP C ABI (tensor infos, label-based products lowered once into a `tprims_contract::Problem`, run through `Plan<T>::execute_raw`, batched products as sequential items), DLPack types and operand borrowing, the one status table (behind `TAPP_check_success` / `TAPP_explain_error`), the thread-local last-error message, the `TAPP_executor` (including the Rayon extension) and ABI version queries. Contains no algorithm and no second validator. Modules: `abi`, `handle`, `tensor_info`, `product`, `execute`, `executor`, `status`, `dlpack`, `tensor`. | `tprims-contract`, `tprims-exec`, num-complex, rayon, strided-view |
-| `tprims-testkit` | Test support: an independent label oracle, seeded fixtures, a naive second backend (naive loop nest over the problem's roles) proving the trait seam, and the downstream-kernel fixture `custom_kernels`. Not a production fallback; never published or selected by default. | `tprims-contract`, `tprims-kernel`, `tprims-exec`, strided-view, rand |
-| `tprims-bench` (`benchmarks/`) | The benchmark harness: `tcbench` over the contraction corpus, Rust and C ABI rows at 1 and 4 threads. Not part of the library. | `tprims-capi`, `tprims-contract`, `tprims-kernel`, `tprims-exec`, strided-rs |
+| `tcontract-exec` | Execution context: serial, a host's Rayon pool through a borrowed, owned or shared-`Arc` wrapper, width chosen from work, kernel-level entry, SPMD `broadcast`, and the workspace provider (`ArenaProvider`, `WorkspaceReq`, `TeamLease`: pool-owned, reusable scratch); `strided::run_with_exec` bridges strided-rs kernels (feature `strided`). | rayon, thiserror; strided-basic (optional) |
+| `strided-view`, `strided-basic` (external, strided-rs) | Checked borrowed strided views, scalar and conjugation contracts; copy, permutation and elementwise kernels. | none in tcontract |
+| `tcontract-kernel` | The kernel crate: packed formats, kernel-family descriptors, CPU masks and validation, the registry with deterministic built-in families, resolution with a frozen blocking policy (explicit inputs, no environment reads), the partition policy, caller-scoped `KernelCatalog`/`KernelHandle` for downstream kernels, packing, scatter and write-back, cache blocking (`blocking::{probe,model}`), and the microkernel families: Lukas Devos's scalar, AVX2, AVX-512 and NEON register-tile kernels (`kernels::{reference,x86,aarch64}`), the portable reference kernels and the native interleaved complex kernels. Ids: `{isa}.{dtype}.{scheme}.{MR}x{NR}`. No executor and no ambient state. | num-complex |
+| `tcontract` | Binary contraction with free, contracted and batch indices (`dot_general` and label semantics) over one validated `Problem` (`api`: `Labels` and `DotGeneral` front ends, one lowering, one `Error`, the object-safe `ContractionBackend<T>` / `PreparedContraction<T>` traits taking an `&Exec`), planned once into a `Plan<T>` (`plan`: role folding and orientation, offsets, family and strategy resolution, an immutable `PlanReport`) and executed by one of three strategies (`strategy`, `driver`): the packed driver (packing traversal, loop nest, write-back, static and dynamic partition), faer on a copy-free batched-GEMM fusion, and an elementwise pass. Threads and workspace come from a `tcontract_exec::Exec`. Thin permute / add wrappers, the labels-based unary update (`unary`: `Unary`, `add`, one operation for a permutation, a diagonal and a reduction, lowered to a rank-zero `B`), `contract_batched`; `check_raw` / `execute_raw` are the pointer-level entry of the C adapter; `execute_slices` runs a plan on plain slices without building views. | faer, num-complex, thiserror, `tcontract-kernel`, `tcontract-exec`, `strided-view`, `strided-basic` |
+| `tcontract-capi` | `libtcontract_capi` (`cdylib`, `staticlib`, `rlib`): the TAPP C ABI (tensor infos, label-based products lowered once into a `tcontract::Problem`, run through `Plan<T>::execute_raw`, batched products as sequential items), DLPack types and operand borrowing, the one status table (behind `TAPP_check_success` / `TAPP_explain_error`), the thread-local last-error message, the `TAPP_executor` (including the Rayon extension) and ABI version queries. Contains no algorithm and no second validator. Modules: `abi`, `handle`, `tensor_info`, `product`, `execute`, `executor`, `status`, `dlpack`, `tensor`. | `tcontract`, `tcontract-exec`, num-complex, rayon, strided-view |
+| `tcontract-testkit` | Test support: an independent label oracle, seeded fixtures, a naive second backend (naive loop nest over the problem's roles) proving the trait seam, and the downstream-kernel fixture `custom_kernels`. Not a production fallback; never published or selected by default. | `tcontract`, `tcontract-kernel`, `tcontract-exec`, strided-view, rand |
+| `tcontract-bench` (`benchmarks/`) | The benchmark harness: `tcbench` over the contraction corpus, Rust and C ABI rows at 1 and 4 threads. Not part of the library. | `tcontract-capi`, `tcontract`, `tcontract-kernel`, `tcontract-exec`, strided-rs |
 
 The name `contract` was chosen over `tensordot` because NumPy, PyTorch and JAX `tensordot` has no batch indices; the operation here does, as in cuTENSOR's contraction entry point.
 
-`tprims-kernel` has no C ABI: the packed format is an internal contract between the driver and the kernels. `tprims-testkit` is a dev-dependency of `tprims-contract` and `tprims-capi`; it is linked only into tests, so it creates no cycle.
+`tcontract-kernel` has no C ABI: the packed format is an internal contract between the driver and the kernels. `tcontract-testkit` is a dev-dependency of `tcontract` and `tcontract-capi`; it is linked only into tests, so it creates no cycle.
 
 ### Dependency rules
 
-- `tprims-exec` and `tprims-kernel` are the bottom of the tprims graph and depend on no other tprims crate. strided-rs depends on nothing in tprims.
-- The kernel layer takes no execution context of its own; drivers take a `tprims_exec::Exec` for parallelism and, through it, a workspace by borrowing the host's provider.
-- `tprims-contract` sits on `tprims-kernel` and `tprims-exec` and takes an explicit `Exec` for every expensive operation.
-- `tprims-capi` is the only crate with C symbols and depends on `tprims-contract` and `tprims-exec`.
+- `tcontract-exec` and `tcontract-kernel` are the bottom of the tcontract graph and depend on no other tcontract crate. strided-rs depends on nothing in tcontract.
+- The kernel layer takes no execution context of its own; drivers take a `tcontract_exec::Exec` for parallelism and, through it, a workspace by borrowing the host's provider.
+- `tcontract` sits on `tcontract-kernel` and `tcontract-exec` and takes an explicit `Exec` for every expensive operation.
+- `tcontract-capi` is the only crate with C symbols and depends on `tcontract` and `tcontract-exec`.
 - No cycle between crates.
 
 ### What is excluded
 
-- **N-ary einsum.** Index notation and contraction-order planning stay above the stack (the published `strided-opteinsum` releases, or the consumer) and call `tprims-contract` for each binary step. The stack exposes no index-string API.
+- **N-ary einsum.** Index notation and contraction-order planning stay above the stack (the published `strided-opteinsum` releases, or the consumer) and call `tcontract` for each binary step. The stack exposes no index-string API.
 - **AD, traced execution, device transfer, GPU backends**, and adapters for `ndarray` / `mdarray`. These sit above the stack.
 - **Matrix-level libraries.** GEMM and batched GEMM are contractions; dense linear algebra and Krylov solvers are not provided.
 
-> **Removed in #37.** The former BLAS crate and its C ABI, the engine and adapter layers, and the dense linear-algebra crate were deleted in the source integration ([#37](https://github.com/tensor4all/tprims-rs/issues/37)). What replaces each, and the old-to-new names, are in the [migration guide](migration-2026-10.md).
+> **Removed in #37.** The former BLAS crate and its C ABI, the engine and adapter layers, and the dense linear-algebra crate were deleted in the source integration ([#37](https://github.com/tensor4all/tcontract-rs/issues/37)). What replaces each, and the old-to-new names, are in the [migration guide](migration-2026-10.md).
 
 ## The C library
 
-`tprims-capi` is one crate and one shared (or static) library, so every handle, in particular an executor, is valid in every call of the library: there is one copy of the execution runtime, one Rayon runtime and one status table. Separate shared libraries per part are not supported: an opaque handle is a Rust type, two libraries would each carry their own copy of `tprims-exec` (so a pool created in one is not a valid object in the other), each with its own Rayon runtime, and two Rust static libraries linked into one C program duplicate Rust standard library symbols.
+`tcontract-capi` is one crate and one shared (or static) library, so every handle, in particular an executor, is valid in every call of the library: there is one copy of the execution runtime, one Rayon runtime and one status table. Separate shared libraries per part are not supported: an opaque handle is a Rust type, two libraries would each carry their own copy of `tcontract-exec` (so a pool created in one is not a valid object in the other), each with its own Rayon runtime, and two Rust static libraries linked into one C program duplicate Rust standard library symbols.
 
-Headers live in `crates/tprims-capi/include/`: the pinned upstream TAPP headers verbatim (`tapp.h`, `tapp/*.h`, BSD-3-Clause, commit and checksums in `tapp/README.md`), DLPack (`dlpack/`, Apache-2.0), and tprims' own `tprims/tprims.h` (umbrella), `tprims/core.h` (DLPack operands, status codes, library identity) and `tprims/tapp_ext.h` (the Rayon executor). `crates/tprims-capi/install.sh` installs the header tree, the library and a `tprims.pc` file.
+Headers live in `crates/tcontract-capi/include/`: the pinned upstream TAPP headers verbatim (`tapp.h`, `tapp/*.h`, BSD-3-Clause, commit and checksums in `tapp/README.md`), DLPack (`dlpack/`, Apache-2.0), and tcontract' own `tcontract/tcontract.h` (umbrella), `tcontract/core.h` (DLPack operands, status codes, library identity) and `tcontract/tapp_ext.h` (the Rayon executor). `crates/tcontract-capi/install.sh` installs the header tree, the library and a `tcontract_capi.pc` file.
 
 ### ABI conventions
 
-- Symbols: the contraction and executor API keeps the standard `TAPP_*` names; tprims extensions to it are `tprims_tapp_<object>_<operation>` (for example `tprims_tapp_executor_create_rayon`); library-level symbols are `tprims_<object>_<operation>`.
-- Every entry point catches panics and returns a status (a `TAPP_error` is a `tprims_status`: zero is success and the other values are provider-defined, so callers test success with `TAPP_check_success`); `tprims_last_error()` returns a thread-local message.
-- `tprims_abi_version()` and `TPRIMS_ABI_VERSION` (header) state the ABI number; `TAPP_implementation_version()` states the crate version of the loaded library; `tprims_has_part("tapp")` answers what the library contains. A header and a library from different versions are detectable.
+- Symbols: the contraction and executor API keeps the standard `TAPP_*` names; tcontract extensions to it are `tcontract_tapp_<object>_<operation>` (for example `tcontract_tapp_executor_create_rayon`); library-level symbols are `tcontract_<object>_<operation>`.
+- Every entry point catches panics and returns a status (a `TAPP_error` is a `tcontract_status`: zero is success and the other values are provider-defined, so callers test success with `TAPP_check_success`); `tcontract_last_error()` returns a thread-local message.
+- `tcontract_abi_version()` and `TCONTRACT_ABI_VERSION` (header) state the ABI number; `TAPP_implementation_version()` states the crate version of the loaded library; `tcontract_has_part("tapp")` answers what the library contains. A header and a library from different versions are detectable.
 - There is no C tuning API: kernel and blocking choices are Rust `PlanConfig` inputs.
 
 ## Zero-copy data exchange
 
 The C ABI uses [DLPack](https://dmlc.github.io/dlpack/latest/) so that NumPy, PyTorch, JAX, CuPy and Julia arrays pass without copying.
 
-- **Operand descriptor.** Every `tprims_*` tensor argument is a borrowed `tprims_tensor`, a view plus the DLPack flags that `DLTensor` alone does not carry (`DLPACK_FLAG_BITMASK_READ_ONLY` lives in `DLManagedTensorVersioned.flags`):
+- **Operand descriptor.** Every `tcontract_*` tensor argument is a borrowed `tcontract_tensor`, a view plus the DLPack flags that `DLTensor` alone does not carry (`DLPACK_FLAG_BITMASK_READ_ONLY` lives in `DLManagedTensorVersioned.flags`):
 
   ```c
   typedef struct {
-      DLTensor *view;      /* borrowed; never freed by tprims */
+      DLTensor *view;      /* borrowed; never freed by tcontract */
       uint64_t  flags;     /* DLPACK_FLAG_BITMASK_* */
-  } tprims_tensor;
+  } tcontract_tensor;
 
   /* Borrow a versioned tensor: copies view pointer and flags; takes no ownership, never calls the deleter. */
-  tprims_tensor tprims_tensor_borrow_versioned(DLManagedTensorVersioned *m);
+  tcontract_tensor tcontract_tensor_borrow_versioned(DLManagedTensorVersioned *m);
   /* Raw DLTensor (DLPack 0.x producers): the caller asserts the memory is writable if used as an output. */
-  tprims_tensor tprims_tensor_borrow_raw(DLTensor *t, uint64_t flags);
+  tcontract_tensor tcontract_tensor_borrow_raw(DLTensor *t, uint64_t flags);
   ```
 
   The descriptor is valid only for the duration of the call; ownership and lifetime stay with the caller. Standard TAPP products take raw pointers described by `TAPP_tensor_info` (extents and element strides) instead.
 - **Inputs** are read through `view`; the READ_ONLY flag is permitted and no copy is made. The library honours `byte_offset`, arbitrary element strides (column-major and negative strides included) and a NULL `strides` meaning compact row-major. `lanes` must be 1. Accepted devices are `kDLCPU` and `kDLCUDAHost`.
-- **Outputs** are written in place with `D = alpha * op(A, B) + beta * op(C)` semantics and defined zero-size behaviour. An output whose span overlaps an input's span is rejected (`TPRIMS_ERR_ALIASED`), even when the element sets are disjoint; a `C == D` in-place update is accepted only when both describe the same elements.
+- **Outputs** are written in place with `D = alpha * op(A, B) + beta * op(C)` semantics and defined zero-size behaviour. An output whose span overlaps an input's span is rejected (`TCONTRACT_ERR_ALIASED`), even when the element sets are disjoint; a `C == D` in-place update is accepted only when both describe the same elements.
 - **Conjugation** is a per-operand argument, since DLPack has no conjugation flag. It maps to the lazy conjugation of `strided-view`.
-- **Read-only outputs** are rejected with `TPRIMS_ERR_READ_ONLY` during validation, before any write. For a descriptor made with `tprims_tensor_borrow_raw`, the check sees only the flags the caller passed; writability of the memory is the caller's precondition.
+- **Read-only outputs** are rejected with `TCONTRACT_ERR_READ_ONLY` during validation, before any write. For a descriptor made with `tcontract_tensor_borrow_raw`, the check sees only the flags the caller passed; writability of the memory is the caller's precondition.
 - **Materialization** is never hidden: no strategy copies a whole operand (`PlanReport::materialized` is all false), and the bounded packing inside the packed driver is not a materialization.
 - **Dtypes** in ABI v1: `f32`, `f64`, `complex64`, `complex128`; others (`bf16`) are rejected with a datatype error.
 
-The DLPack header is Apache-2.0; `tprims-capi` mirrors its `#[repr(C)]` layout and records the upstream version.
+The DLPack header is Apache-2.0; `tcontract-capi` mirrors its `#[repr(C)]` layout and records the upstream version.
 
 ## Execution context
 
-`tprims-exec` defines the Rust contract and `tprims-capi` its C face. A context is one of:
+`tcontract-exec` defines the Rust contract and `tcontract-capi` its C face. A context is one of:
 
 - **Serial:** work runs on the calling thread.
-- **Rayon pool:** a pool borrowed from the host (for example the pool of tenferro-rs) for the duration of a call, or created through `tprims_tapp_executor_create_rayon` by a C host that has none. The global Rayon pool is never used implicitly.
+- **Rayon pool:** a pool borrowed from the host (for example the pool of tenferro-rs) for the duration of a call, or created through `tcontract_tapp_executor_create_rayon` by a C host that has none. The global Rayon pool is never used implicitly.
 - **Host callbacks:** a vtable through which a Julia, Python or C host schedules tasks on its own threads. Not part of the TAPP redesign; if added later it starts with barrier-free outer batches and serial inner operations, since an arbitrary task-submission callback does not guarantee SPMD co-scheduling.
 
 The C face is the standard `TAPP_executor` (`intptr_t`; the signatures are those of the pinned upstream `executor.h`) plus three extensions. See [decision-log](decision-log.md#execution) for the choice.
@@ -111,15 +111,15 @@ The C face is the standard `TAPP_executor` (`intptr_t`; the signatures are those
 ```c
 TAPP_error TAPP_create_executor(TAPP_executor *exec);   /* serial executor, no workers */
 TAPP_error TAPP_destroy_executor(TAPP_executor exec);   /* owned pool: stops and joins it */
-TAPP_error tprims_tapp_executor_create_rayon(TAPP_executor *out, size_t nthreads, const tprims_rayon_opts *opts); /* stack size */
-TAPP_error tprims_tapp_executor_set_budget(TAPP_executor exec, size_t budget);
-TAPP_error tprims_tapp_executor_get_threads(TAPP_executor exec, size_t *pool_size, size_t *budget);
+TAPP_error tcontract_tapp_executor_create_rayon(TAPP_executor *out, size_t nthreads, const tcontract_rayon_opts *opts); /* stack size */
+TAPP_error tcontract_tapp_executor_set_budget(TAPP_executor exec, size_t budget);
+TAPP_error tcontract_tapp_executor_get_threads(TAPP_executor exec, size_t *pool_size, size_t *budget);
 ```
 
-- **Default and width:** executor `0` is the default serial executor (a tprims policy). `nthreads == 0` is an error; `nthreads == 1` is a serial executor and creates no workers; the width is never inferred from `RAYON_NUM_THREADS` or the CPU count. The pool width is fixed at creation. The budget is positive, clamped to the pool width and snapshotted at the start of each call. A serial executor reports `pool_size == 0`, `budget == 1`. The query promises neither an active width nor an affinity.
+- **Default and width:** executor `0` is the default serial executor (a tcontract policy). `nthreads == 0` is an error; `nthreads == 1` is a serial executor and creates no workers; the width is never inferred from `RAYON_NUM_THREADS` or the CPU count. The pool width is fixed at creation. The budget is positive, clamped to the pool width and snapshotted at the start of each call. A serial executor reports `pool_size == 0`, `budget == 1`. The query promises neither an active width nor an affinity.
 - **Lifetime:** the C host owns the executor; the executor owns the pool; plans do not bind an executor, so one plan runs on serial and 4T executors. There is no retain/release and no separate pool handle: bindings own the executor and keep it alive for every borrower. Sharing one executor across plans shares its pool.
-- **Destruction of an owned pool is synchronous and joins the threads.** A pool created by `tprims_tapp_executor_create_rayon` is built with `ThreadPoolBuilder::spawn_handler`, which spawns each worker with `std::thread::Builder` and keeps its `JoinHandle`. `TAPP_destroy_executor` returns `TPRIMS_ERR_WOULD_DEADLOCK` from a worker of the same pool and `TPRIMS_BUSY` if calls are in flight (the handle stays live in both cases and the caller may retry); otherwise it drops the pool to start shutdown, joins every handle and frees the executor. An exit-handler notification is not sufficient: in rayon-core 1.13 it runs inside the worker's main loop, before thread-local destructors ([probe](../experiments/pool-close/README.md)). After a successful destroy no tprims worker code, including TLS teardown, is running. A failed creation joins the workers it had started. Destroying the default executor `0` succeeds as a no-op. A live handle is destroyed successfully once: double destruction and stale or foreign handles are unsupported, and the caller synchronizes destruction with the start of new calls (BUSY detection does not make a race between raw-handle use and destruction safe).
-- **Borrowed pools** (the Rust `Exec::Rayon` case) are governed by Rust lifetimes; tprims never stops the host's threads, and a Rust host shares one `Pool` wrapper per `ThreadPool`, because the SPMD gate belongs to the wrapper.
+- **Destruction of an owned pool is synchronous and joins the threads.** A pool created by `tcontract_tapp_executor_create_rayon` is built with `ThreadPoolBuilder::spawn_handler`, which spawns each worker with `std::thread::Builder` and keeps its `JoinHandle`. `TAPP_destroy_executor` returns `TCONTRACT_ERR_WOULD_DEADLOCK` from a worker of the same pool and `TCONTRACT_BUSY` if calls are in flight (the handle stays live in both cases and the caller may retry); otherwise it drops the pool to start shutdown, joins every handle and frees the executor. An exit-handler notification is not sufficient: in rayon-core 1.13 it runs inside the worker's main loop, before thread-local destructors ([probe](../experiments/pool-close/README.md)). After a successful destroy no tcontract worker code, including TLS teardown, is running. A failed creation joins the workers it had started. Destroying the default executor `0` succeeds as a no-op. A live handle is destroyed successfully once: double destruction and stale or foreign handles are unsupported, and the caller synchronizes destruction with the start of new calls (BUSY detection does not make a race between raw-handle use and destruction safe).
+- **Borrowed pools** (the Rust `Exec::Rayon` case) are governed by Rust lifetimes; tcontract never stops the host's threads, and a Rust host shares one `Pool` wrapper per `ThreadPool`, because the SPMD gate belongs to the wrapper.
 - **Tests:** a TLS-destructor handshake with a bounded wait proving destroy does not return early; busy, self-worker and failed-creation cases; bounded-time nested and concurrent SPMD on one executor.
 - **Thread budget:** one budget controls batch-level and inner-matrix parallelism so nested parallelism does not oversubscribe.
 - **Scratch:** `PackedReport::scratch_bytes` reports the serial packed estimate. The execution workspace is owned by the context, not the plan: a pool or a serial caller lends an `ArenaProvider`, which reports its retained and leased bytes and can release the idle half.
@@ -135,11 +135,11 @@ pub enum Exec<'a> {
 }
 ```
 
-Implemented in Phase 1a as `crates/tprims-exec` (`install`, `for_each_partition`, `broadcast`, `width_for`); see the [decision log](decision-log.md#execution).
+Implemented in Phase 1a as `crates/tcontract-exec` (`install`, `for_each_partition`, `broadcast`, `width_for`); see the [decision log](decision-log.md#execution).
 
 **Three widths, kept distinct.**
 
-- *Budget* `b`: the most threads a kernel may occupy, set by the host (`tprims_tapp_executor_set_budget`, never above the pool size). tprims never creates threads beyond the pool; there is no scoped-thread fallback.
+- *Budget* `b`: the most threads a kernel may occupy, set by the host (`tcontract_tapp_executor_set_budget`, never above the pool size). tcontract never creates threads beyond the pool; there is no scoped-thread fallback.
 - *Active width* `k`: the number of workers doing arithmetic, chosen from the work, `k ≤ b`.
 - *Dispatch width* `d`: the number of workers woken. It sets the entry cost. For Rayon `ThreadPool::broadcast`, `d` is always the whole pool, whatever `k` is: on a fixed 18-worker pool, a broadcast with one active worker costs as much as one with 18 (about 165 µs from idle, [measurement](../experiments/rayon-entry/README.md#active-width-on-a-fixed-pool)).
 
@@ -210,7 +210,7 @@ id, a CPU without the required instructions, a blocking override that is not
 positive or exclusive. `list_kernels` returns the registry for diagnostics.
 
 The packed driver is told where its scratch lives: a host that owns threads
-passes a `tprims_exec::Exec` that lends a workspace (per-thread A block and tile,
+passes a `tcontract_exec::Exec` that lends a workspace (per-thread A block and tile,
 a page-aligned shared B panel, scatter vectors and barriers). A pool owns one for
 every operation on it; a serial caller that wants reuse passes an
 `Exec::serial_with_workspace`; a plan owns none. Implementations not given an
@@ -258,7 +258,7 @@ run (maintainer decision); the policy stays opt-in and makes no speed claim.
 ### Custom kernels with a safe selector
 
 A downstream crate can supply its own packed microkernels *and* its own
-selection policy without editing tprims or touching the process defaults.
+selection policy without editing tcontract or touching the process defaults.
 
 1. **Admit once, `unsafe`.** `KernelCatalog::<T>::from_static_families(&'static
    [&'static KernelFamily<..>])` is the single place the provider promises that
@@ -283,7 +283,7 @@ selection policy without editing tprims or touching the process defaults.
    computed with the driver's own rules. Pointer-dependent facts (whether `C`
    and `D` are one buffer, bounds) stay execution guards.
 3. **Resolve once, execute frozen.** The selection runs in planning
-   (`Plan::<T>::new_with_selector` in `tprims-contract`), on the caller,
+   (`Plan::<T>::new_with_selector` in `tcontract`), on the caller,
    outside registry/workspace locks and worker broadcasts, and before any
    empty-problem shortcut. A homogeneous batch selects once; execution never calls the selector or
    looks anything up. The plan keeps the chosen `'static` descriptor, so the
@@ -304,7 +304,7 @@ downstream kernels report `Origin::External { crate_name, license }`.
 The issue's paired 1T/4T tensor-sized benchmark protocol (with A/A noise runs)
 was **deferred** for this slice, by maintainer decision; correctness, compile-fail,
 selector-call-count, steady-state-allocation and concurrency tests are in
-`tprims_testkit::custom_kernels`. Nothing here claims that a custom selector
+`tcontract_testkit::custom_kernels`. Nothing here claims that a custom selector
 speeds anything up.
 
 ## Contraction
@@ -313,22 +313,22 @@ A contraction is one lowered, role-grouped `Problem`; `Labels` and `DotGeneral` 
 
 | Strategy | Source | Idea |
 | --- | --- | --- |
-| Packed (block-scatter) | the imported upstream project (see [provenance](provenance.md)), by Lukas Devos; [Matthews, TBLIS](https://arxiv.org/abs/1607.00291) | Pack tensor panels with general strides directly into the `tprims-kernel` format, run the microkernels, and scatter bounded output tiles. No full operand transpose. |
+| Packed (block-scatter) | the imported upstream project (see [provenance](provenance.md)), by Lukas Devos; [Matthews, TBLIS](https://arxiv.org/abs/1607.00291) | Pack tensor panels with general strides directly into the `tcontract-kernel` format, run the microkernels, and scatter bounded output tiles. No full operand transpose. |
 | faer | tenferro-rs `dot_general` (`tenferro-cpu/src/dot_runtime.rs`, `gemm/`), MIT OR Apache-2.0 | Fold compatible strides into a batched matrix view without copying; run faer's GEMM per batch item. Declined when it would need a copy, a reduction over an axis one input lacks, or, at `beta != 0`, a separate C whose output pass would dominate (large output, K < 512). A nonzero `beta` and a separate C are written into D by one output-sized strided pass before faer accumulates; no operand is copied. |
 | Elementwise | project code | An all-batch problem is one strided-rs pass (`map_into`, `zip_map2_into`, `zip_map3_into`, with `axpy`, `fma`, `mul_into` and `copy_scale` for unit-scalar forms; in-place accumulation reads D through the destination, so it runs on strided-rs's public `execution` contract (fused plan, blocked walk, threaded map-reduce) with a small raw-pointer inner loop rather than a second view of D) with full `op_C`, `op_D` and separate-C semantics. `op_D` is folded into the other conjugations and one dispatch per execution picks a monomorphized closure, so no flag is tested per element. |
 
 `alpha == 0` or an empty contraction computes `op_D(beta * op_C(C))` in one output pass for every strategy, reading no input; beta zero reads neither C nor D.
 
-The packed driver runs cooperating workers with barriers inside one contraction. It therefore needs guaranteed concurrent width from `tprims-exec`, not arbitrary task submission. The Rayon `ThreadPool::broadcast` provides it at full pool width only: workers with index at or above the active width return immediately but are still dispatched and awaited. tprims therefore uses it only for contractions large enough to amortize full-pool entry, repartitions to the budget instead of using a scoped-thread fallback, and otherwise runs a barrier-free partition (independent output tiles, each worker packing its own panels). See [three widths](#execution-context).
+The packed driver runs cooperating workers with barriers inside one contraction. It therefore needs guaranteed concurrent width from `tcontract-exec`, not arbitrary task submission. The Rayon `ThreadPool::broadcast` provides it at full pool width only: workers with index at or above the active width return immediately but are still dispatched and awaited. tcontract therefore uses it only for contractions large enough to amortize full-pool entry, repartitions to the budget instead of using a scoped-thread fallback, and otherwise runs a barrier-free partition (independent output tiles, each worker packing its own panels). See [three widths](#execution-context).
 
 ## Relationship to `strided-rs`
 
-[strided-rs](https://github.com/tensor4all/strided-rs) provides the views, basic and fused kernels and HPTT-inspired permutation this stack builds on. It is an external dependency, pinned to the same commit as tenferro-rs so both share one `StridedView` type. It was imported in Phase 0 and removed again on 2026-09-30. Binary contraction is `tprims-contract`; N-ary planning stays above the stack.
+[strided-rs](https://github.com/tensor4all/strided-rs) provides the views, basic and fused kernels and HPTT-inspired permutation this stack builds on. It is an external dependency, pinned to the same commit as tenferro-rs so both share one `StridedView` type. It was imported in Phase 0 and removed again on 2026-09-30. Binary contraction is `tcontract`; N-ary planning stays above the stack.
 
 | Component | Role here |
 | --- | --- |
 | `strided-view` | Reused unchanged as the shared view contract. |
-| `strided-basic` (and `strided-perm`, `strided-kernel` through it) | Copies, permutations and every elementwise pass (the all-batch strategy and the `alpha == 0` / empty-`K` output update). `tprims_exec::strided::run_with_exec` bridges an `Exec` to strided's `ExecContext`. |
+| `strided-basic` (and `strided-perm`, `strided-kernel` through it) | Copies, permutations and every elementwise pass (the all-batch strategy and the `alpha == 0` / empty-`K` output update). `tcontract_exec::strided::run_with_exec` bridges an `Exec` to strided's `ExecContext`. |
 
 ## Implementation order
 
@@ -337,12 +337,12 @@ Phase 1 put being usable as the tenferro-rs CPU backend first, with a thin C ABI
 | Phase | Content | Status |
 | --- | --- | --- |
 | 0 | Import strided-rs, the upstream contraction project and strided-rs-benchmark-suite with history; one workspace; rules ported from tenferro-rs; root CI. (strided-rs and its benchmarks were made external again on 2026-09-30.) | Done. |
-| 1a | `tprims-exec`: borrowed Rayon pool, width chosen from work, kernel-level entry, `broadcast(n, f)`. | Done. |
+| 1a | `tcontract-exec`: borrowed Rayon pool, width chosen from work, kernel-level entry, `broadcast(n, f)`. | Done. |
 | 1b | GEMM and batched GEMM entry points. | Done, then removed in #37: GEMM is a contraction. |
-| 1c | `tprims-contract`: permute plus batched GEMM and the packed driver compared under one plan API; one planner over the packed, faer and elementwise strategies after the source integration. | Done. |
+| 1c | `tcontract`: permute plus batched GEMM and the packed driver compared under one plan API; one planner over the packed, faer and elementwise strategies after the source integration. | Done. |
 | 1d | Dense linear algebra (faer per item plus batched loops). | Done, then removed in #37 (no retained consumer). |
 | 1e | tenferro-rs integration behind a feature, with an explicit per-op fallback to the current backend, A/B correctness and a same-run performance gate. | The injection points and optional providers are merged in tenferro-rs and selectable in tenferro-benchmark; acceptance runs are deferred until Phase 2 optimization. |
-| 1f | A thin C ABI slice and C benchmarks; the contraction part is the standard TAPP interface ([#26](https://github.com/tensor4all/tprims-rs/issues/26)), consolidated into `tprims-capi` in #37. | Done. |
+| 1f | A thin C ABI slice and C benchmarks; the contraction part is the standard TAPP interface ([#26](https://github.com/tensor4all/tcontract-rs/issues/26)), consolidated into `tcontract-capi` in #37. | Done. |
 | 2 | Optimize the packed driver (small, Hadamard-like and batched shapes included) until faer can be deleted: one route for contractions with a K role that differs only by kernel family (all-batch problems stay on strided-rs). Then wider C ABI coverage and Windows. | Goal; `hadamard.json` must not regress. |
 
 Crates are published only after an interface and a consumer exist, consistent with [tenferro #1927](https://github.com/tensor4all/tenferro-rs/issues/1927).

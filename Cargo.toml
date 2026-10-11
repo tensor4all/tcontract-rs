@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/tprims-kernel",
-    "crates/tprims-exec",
-    "crates/tprims-contract",
-    "crates/tprims-testkit",
-    "crates/tprims-capi",
+    "crates/tcontract-kernel",
+    "crates/tcontract-exec",
+    "crates/tcontract",
+    "crates/tcontract-testkit",
+    "crates/tcontract-capi",
     "benchmarks",
 ]
 exclude = ["experiments"]
@@ -17,18 +17,18 @@ edition = "2021"
 rust-version = "1.89"
 
 [workspace.dependencies]
-# strided-rs published v0.4.6, including #290's terminal-pointer safety correction. Keep all
+# strided-rs published v0.4.8, including #290's terminal-pointer safety correction. Keep all
 # strided crates on one source; downstream consumers must coordinate this pin
 # to share `StridedView` types.
 strided-basic = { git = "https://github.com/tensor4all/strided-rs.git", rev = "4373ba0bcb4bdc02f4c03a8a2d4896b84a47dd7c", version = "=0.4.8", default-features = false }
 strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "4373ba0bcb4bdc02f4c03a8a2d4896b84a47dd7c", version = "=0.4.8" }
 strided-perm = { git = "https://github.com/tensor4all/strided-rs.git", rev = "4373ba0bcb4bdc02f4c03a8a2d4896b84a47dd7c", version = "=0.4.8" }
 strided-kernel = { git = "https://github.com/tensor4all/strided-rs.git", rev = "4373ba0bcb4bdc02f4c03a8a2d4896b84a47dd7c", version = "=0.4.8" }
-tprims-kernel = { version = "0.1.0", path = "crates/tprims-kernel", default-features = false }
-tprims-exec = { version = "0.1.0", path = "crates/tprims-exec" }
-tprims-capi = { version = "0.1.0", path = "crates/tprims-capi" }
-tprims-testkit = { version = "0.1.0", path = "crates/tprims-testkit" }
-tprims-contract = { version = "0.1.0", path = "crates/tprims-contract" }
+tcontract-kernel = { version = "0.1.0", path = "crates/tcontract-kernel", default-features = false }
+tcontract-exec = { version = "0.1.0", path = "crates/tcontract-exec" }
+tcontract-capi = { version = "0.1.0", path = "crates/tcontract-capi" }
+tcontract-testkit = { version = "0.1.0", path = "crates/tcontract-testkit" }
+tcontract = { version = "0.1.0", path = "crates/tcontract" }
 
 approx = "0.5"
 criterion = "0.5"

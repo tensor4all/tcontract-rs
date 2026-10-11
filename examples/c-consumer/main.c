@@ -24,7 +24,7 @@
 #include <string.h>
 
 #include <tapp.h>
-#include <tprims/tprims.h>
+#include <tcontract/tcontract.h>
 
 /* D is M x N, A is M x K, B is K x N, all row-major. */
 #define M 3
@@ -204,7 +204,7 @@ static void test_refusals(TAPP_handle handle, TAPP_executor exec) {
 
     /* Every attribute key is refused, but the symbols must exist to link. */
     void* slot = (void*)0x1234;
-    check(TAPP_attr_get(0, 0, &slot) == TPRIMS_ERR_UNSUPPORTED && slot == NULL,
+    check(TAPP_attr_get(0, 0, &slot) == TCONTRACT_ERR_UNSUPPORTED && slot == NULL,
           "attribute API links, refuses, and leaves a defined value");
 
     must(TAPP_destroy_tensor_product(plan), "destroy plan");
@@ -216,19 +216,19 @@ static void test_refusals(TAPP_handle handle, TAPP_executor exec) {
 
 /*
  * The library's two version statements agree: `TAPP_implementation_version()`
- * ("major.minor.patch") and `tprims_abi_version()` (major * 10000 + minor * 100 +
+ * ("major.minor.patch") and `tcontract_abi_version()` (major * 10000 + minor * 100 +
  * patch). The pinned upstream `tapp.h` has no version macros, so the runtime
  * symbols are the only source; a distribution that mixes headers and libraries
- * from different versions still fails on `TPRIMS_ABI_VERSION`.
+ * from different versions still fails on `TCONTRACT_ABI_VERSION`.
  */
 static void test_version_agreement(void) {
     const char* linked = TAPP_implementation_version();
     unsigned major = 0, minor = 0, patch = 0;
     check(sscanf(linked, "%u.%u.%u", &major, &minor, &patch) == 3, "version string parses");
-    printf("  library %s, ABI %u\n", linked, (unsigned)tprims_abi_version());
-    check(tprims_abi_version() == major * 10000 + minor * 100 + patch,
+    printf("  library %s, ABI %u\n", linked, (unsigned)tcontract_abi_version());
+    check(tcontract_abi_version() == major * 10000 + minor * 100 + patch,
           "ABI version matches the library version string");
-    check(tprims_abi_version() == TPRIMS_ABI_VERSION, "header TPRIMS_ABI_VERSION matches the linked library");
+    check(tcontract_abi_version() == TCONTRACT_ABI_VERSION, "header TCONTRACT_ABI_VERSION matches the linked library");
 }
 
 /*

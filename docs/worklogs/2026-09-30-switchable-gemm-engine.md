@@ -10,7 +10,7 @@ dropping/trimming an owner must release idle storage even when a borrowed
 host pool's threads remain alive. Active leases remain valid.
 
 `ExecSpmd` lives in blas/contract, but that is not a reason for a global
-arena. `tprims-exec::Pool` can own a provider from the thread-free kernel
+arena. `tcontract-exec::Pool` can own a provider from the thread-free kernel
 contract without depending on the driver. No process-global workspace or
 cross-pool team-buffer reuse is permitted. This changes ownership and
 lifetime, not OS affinity or NUMA policy, and makes no performance claim.
@@ -232,14 +232,14 @@ ABBA non-regression gates, PR). No performance measurement has been taken.
 
 ## Tasks 8–12: workspace tests, providers, selection, docs and gates
 
-Task 8's plumbing is finished and tested: `tprims-exec`'s `Pool` and the
+Task 8's plumbing is finished and tested: `tcontract-exec`'s `Pool` and the
 contract plan own an `ArenaProvider`, `Exec::workspace` hands it to both
 `ExecSpmd` adapters, and the driver builds its block scatters into the leased
 buffer, takes the panel from the lease and runs a declined broadcast on the
 caller with the same lease. `tensorcontract/tests/workspace_alloc.rs` counts
 allocations with a one-thread host: after one warm-up, two steady-state
 executes add none, and a direct-B case adds no buffer-sized allocation beyond
-the packed A block. `crates/tprims-exec/tests/pool_workspace.rs` shows two
+the packed A block. `crates/tcontract-exec/tests/pool_workspace.rs` shows two
 pools owning distinct arenas, an operation growing only its own pool's panel,
 and a second operation of the same shape reusing that panel byte for byte.
 
@@ -310,7 +310,7 @@ within `max(5%, the larger side's noise)`.
 | | 8 | `tblis` | 0.946 | 0 | pass |
 
 Sessions, manifests and `decision.txt` are committed under
-`benchmarks/benchmarks/tprims/{contract,blas}/results/2026-10-01-gemm-engine/`;
+`benchmarks/benchmarks/tcontract/{contract,blas}/results/2026-10-01-gemm-engine/`;
 the intermediate per-thread-count directories live in
 `.artifacts/gemm-engine-spec/task12/perf/`.
 
@@ -322,7 +322,7 @@ block above supplies the noise band for that thread count.
 
 ### Earlier partial run (superseded)
 
-The prescribed gate (`.agents/skills/tprims-benchmark/SKILL.md`: idle L3 domain,
+The prescribed gate (`.agents/skills/tcontract-benchmark/SKILL.md`: idle L3 domain,
 `pinned.sh`, A/A noise floor, 1/4/8T, both corpora, default runs) could **not**
 be completed from this session: `pinned.sh` needs the pinned cores idle before
 *and* after each run, and this agent's own processes keep at least one core of

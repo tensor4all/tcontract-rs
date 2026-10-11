@@ -49,7 +49,7 @@ Raw outputs of the reruns are in [`results/`](results/).
 | OpenMP, default settings | 18 | 53 | 57 to 94 |
 | OpenMP, active wait | 18 | 1.8 | 2.6 to 59 (p90 166 µs to 1.1 ms) |
 
-OpenMP rows are from the rerun of 2026-09-29 12:16 UTC ([raw](results/omp-2026-09-29.txt)) after removing a data race ([#4](https://github.com/tensor4all/tprims-rs/issues/4)): the first version wrote every worker's thread number to one shared `volatile int`, which is a race and adds cache-line contention. Each worker now passes its own thread number through an empty `asm volatile` barrier. ThreadSanitizer (`-O1 -fsanitize=thread`, 4 and 18 threads, warm-up and timed regions) reports no race; the `-O2` disassembly of `main.omp_outlined` still calls `omp_get_thread_num`, so the region is not optimized away. The default-policy numbers did not change materially; the active-wait numbers at 18 threads became worse than first reported.
+OpenMP rows are from the rerun of 2026-09-29 12:16 UTC ([raw](results/omp-2026-09-29.txt)) after removing a data race ([#4](https://github.com/tensor4all/tcontract-rs/issues/4)): the first version wrote every worker's thread number to one shared `volatile int`, which is a race and adds cache-line contention. Each worker now passes its own thread number through an empty `asm volatile` barrier. ThreadSanitizer (`-O1 -fsanitize=thread`, 4 and 18 threads, warm-up and timed regions) reports no race; the `-O2` disassembly of `main.omp_outlined` still calls `omp_get_thread_num`, so the region is not optimized away. The default-policy numbers did not change materially; the active-wait numbers at 18 threads became worse than first reported.
 
 ## Active width on a fixed pool
 

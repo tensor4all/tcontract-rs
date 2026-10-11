@@ -1,4 +1,4 @@
-//! Lukas Devos's per-shape corpus (tensor4all/tprims-rs#61) as programs.
+//! Lukas Devos's per-shape corpus (tensor4all/tcontract-rs#61) as programs.
 //!
 //! The case definitions and step programs are copied from
 //! `experiments/three-engine-contract/src/main.rs` in this repository
@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use tprims_kernel::Element;
+use tcontract_kernel::Element;
 
 /// One pairwise step `D = A * B` over slots (inputs first, then one slot per
 /// step).
@@ -196,7 +196,7 @@ fn program(
     }
 }
 
-/// The corpus of tensor4all/tprims-rs#61, in the order the issue lists it.
+/// The corpus of tensor4all/tcontract-rs#61, in the order the issue lists it.
 pub fn corpus() -> Vec<Program> {
     let mut v = Vec::new();
     for batch in [16usize, 64, 256] {

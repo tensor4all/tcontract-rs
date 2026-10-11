@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fixed native contraction protocol; see .agents/skills/tprims-benchmark.
+# Fixed native contraction protocol; see .agents/skills/tcontract-benchmark.
 # Run sequentially, never beside another benchmark/build.
 # Usage: run.sh OUT CPU1 CPU4 CPU8 CPU12
 set -euo pipefail
@@ -13,7 +13,7 @@ export RUSTFLAGS='-C target-cpu=native'
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-8}
 # A saved baseline binary avoids rebuilding it from candidate sources.
 if [[ -z ${TCBENCH_BIN:-} ]]; then
-    cargo build --release --locked -p tprims-bench --bin tcbench
+    cargo build --release --locked -p tcontract-bench --bin tcbench
 fi
 bin="${TCBENCH_BIN:-${CARGO_TARGET_DIR:-$root/target}/release/tcbench}"
 {

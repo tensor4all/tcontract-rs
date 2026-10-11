@@ -1,8 +1,8 @@
 # C ABI benchmark
 
-Per-call cost of `libtprims` from C against the same calls made directly
-from Rust (`tprims-bench` binary `capi_rust`): an empty call
-(`tprims_abi_version`) and a 2x2x2 contraction through a
+Per-call cost of `libtcontract_capi` from C against the same calls made directly
+from Rust (`tcontract-bench` binary `capi_rust`): an empty call
+(`tcontract_abi_version`) and a 2x2x2 contraction through a
 prebuilt TAPP product (`TAPP_execute_product`), each on an explicit serial
 executor (`nthreads == 1`: no workers) and on a 4-thread pool. Each sample
 is the mean of 1000 calls; the median of 101 samples is reported.
@@ -14,16 +14,16 @@ benchmarks/c/run.sh 57 57-60 /tmp/capi   # 1T cores, 4T cores, output
 ## Observation, 2026-09-30 (single run, not a claim; of the removed API)
 
 The 8x8 GEMM row measured the removed BLAS C entry point, which went with its C ABI crate
-([#37](https://github.com/tensor4all/tprims-rs/issues/37)); the
+([#37](https://github.com/tensor4all/tcontract-rs/issues/37)); the
 benchmark no longer has that case.
 
 This table was measured with the previous C ABI (`tprims_exec*`,
 `tprims_contract_plan_execute`). `bench.c` now drives TAPP and has been
-smoke-run only after the redesign ([#26](https://github.com/tensor4all/tprims-rs/issues/26));
+smoke-run only after the redesign ([#26](https://github.com/tensor4all/tcontract-rs/issues/26));
 the paired old-versus-new 1T/4T measurement with an A/A noise floor is
 deferred, so no overhead change is claimed.
 
-- tprims-rs `509f30f` (clean tree), release profile, rustc 1.97.1, gcc -O2.
+- tcontract-rs `509f30f` (clean tree), release profile, rustc 1.97.1, gcc -O2.
 - AMD EPYC 7713P, cores 57-60 idle before the run. Raw output:
   [results/](results/).
 
@@ -43,7 +43,7 @@ Closing the 4-thread pool (joining its workers) took 99 us.
    profiled:* per-operand metadata allocations (the DLPack layout's `Vec`s and
    the `Arc` dims/strides inside `strided_view::StridedView`, about ten per
    GEMM call). `strided-view`'s borrowed-metadata `RawStridedRef` avoids
-   them; accepting it in `tprims-contract` is the follow-up.
+   them; accepting it in `tcontract` is the follow-up.
 2. Small calls never enter the pool (4T rows equal 1T rows), as designed.
    A malloc-counting interposer (Phase 1f review) measured about 13
    allocations per 8x8 GEMM call from C, supporting the hypothesis in 1.

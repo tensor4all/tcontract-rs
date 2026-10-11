@@ -1,12 +1,12 @@
 # three-engine-contract
 
-tprims vs tensorprimitives-rs (`tensorcontract`) vs tenferro on the per-shape
-corpus of tensor4all/tprims-rs#61, at one thread. The corpus is our own
+tcontract vs tensorprimitives-rs (`tensorcontract`) vs tenferro on the per-shape
+corpus of tensor4all/tcontract-rs#61, at one thread. The corpus is our own
 reconstruction of the cases in Lukas Devos's tensorcontract-rs vs tenferro-rs
 figure (that data is unpublished); definitions are in `corpus()` in
 `src/main.rs`.
 
-A standalone crate: tenferro-rs pins strided-rs v0.4.4 and tprims v0.4.5, so
+A standalone crate: tenferro-rs pins strided-rs v0.4.4 and tcontract v0.4.5, so
 the two must not be unified with the root workspace.
 
 ## Cases
@@ -28,7 +28,7 @@ run the same steps on the same data.
 | --- | --- |
 | `tc_exec` | prebuilt `tensorcontract::Plan::run`, preallocated outputs |
 | `tc_call` | `tensorcontract::contract` (plans) + fresh outputs |
-| `tp_exec` / `tp_packed_exec` | prebuilt `tprims_contract::Plan::execute_into`, `Exec::serial()`; planner default / packed forced |
+| `tp_exec` / `tp_packed_exec` | prebuilt `tcontract::Plan::execute_into`, `Exec::serial()`; planner default / packed forced |
 | `tp_call` | `Problem` + `Plan::new` + fresh outputs per step |
 | `ce_exec` | cpueinsum: prebuilt `EinsumPlan::execute_into`, kept `Scratch`, views built once per program call |
 | `ce_call` | cpueinsum: `EinsumSpec::new` + `einsum_into` + fresh output per program call |
@@ -57,17 +57,17 @@ python3 summarize.py
 ```
 
 Options: `--case <substring>`, `--arms a,b`, `--sample-ms`, `--samples`,
-`--seed`, `--list`, `--report` (the tprims planner strategy per step). macOS has no `taskset`; threads are pinned to one by API
-(`Plan::threads()==1` asserted for tensorcontract, `Exec::serial()` for tprims,
+`--seed`, `--list`, `--report` (the tcontract planner strategy per step). macOS has no `taskset`; threads are pinned to one by API
+(`Plan::threads()==1` asserted for tensorcontract, `Exec::serial()` for tcontract,
 `num_threads()==1` asserted for tenferro), not by CPU affinity.
 
 ## Recorded run
 
 `results/` holds three sessions on Apple M5 Max, macOS 26.5.1,
 rustc 1.96.0, release profile opt 3 + thin LTO + codegen-units 1, default
-target CPU. tenferro rev 8402ad24, tensorprimitives-rs rev 8cda75e, tprims at
-`4a44a7f0` (the cpueinsum arms pin cpueinsum-rs `6364da4` and that same tprims
-rev), strided-rs c12d96fa (tprims) and v0.4.4 (tenferro). Summary:
+target CPU. tenferro rev 8402ad24, tensorprimitives-rs rev 8cda75e, tcontract at
+`4a44a7f0` (the cpueinsum arms pin cpueinsum-rs `6364da4` and that same tcontract
+rev), strided-rs c12d96fa (tcontract) and v0.4.4 (tenferro). Summary:
 `results/summary.md`.
 
 The cpueinsum arms need a checkout of tensor4all/cpueinsum-rs next to this
@@ -78,7 +78,7 @@ repository (`../../../cpueinsum-rs`); their results are in `results/cpueinsum/`.
 Unresolved in #61, recorded here rather than implied to be done:
 
 - **One thread only, and the 4T arm is not run.** The issue asked for 1T and
-  4T. This harness is 1T *by construction*, not by a flag: every tprims arm is
+  4T. This harness is 1T *by construction*, not by a flag: every tcontract arm is
   `Exec::serial()`, tenferro is `CpuBackend::with_threads(1)` with
   `assert_eq!(num_threads(), 1)`, tensorcontract asserts `pl.threads() == 1`, and
   there is no `--threads` option. A 4T arm is therefore new code in all three
@@ -89,7 +89,7 @@ Unresolved in #61, recorded here rather than implied to be done:
   comparison at 4T on the recorded host; that needs that host. The width half of
   the question is measured on the zen5 host instead, at these same corpus shapes,
   by [`../faer-limit-sweep/`](../faer-limit-sweep/README.md), which compares
-  tprims' own two routes at 1T and 4T. That sweep finds the 4T ranking
+  tcontract' own two routes at 1T and 4T. That sweep finds the 4T ranking
   **reproducibly different** from 1T's for 18 of 79 groups (packed ahead at 4T in
   both of its recordings, faer ahead at 1T in every one of them), so the width
   matters — but a rule that used it would need the executor width at plan time,

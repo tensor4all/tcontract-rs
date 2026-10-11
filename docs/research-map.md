@@ -49,7 +49,7 @@ In [`gemm` 0.19.0 source](https://github.com/sarah-quinones/gemm/blob/main/gemm-
 
 Upstream capacity is uncertain. [`gemm` issue #4](https://github.com/sarah-quinones/gemm/issues/4) records Sarah's 2023 advice to prefer outer-batch parallelism where possible, but does not promise a pool API. [An external scheduling PR #42](https://github.com/sarah-quinones/gemm/pull/42), submitted by gemmkit's `SomeB1oody`, remained open at this snapshot. [`gemm` PR list](https://github.com/sarah-quinones/gemm/pulls) has several other open contributions. [`gemmkit` contributors](https://github.com/SomeB1oody/gemmkit/graphs/contributors) currently show a single committer and its [issue tracker](https://github.com/SomeB1oody/gemmkit/issues) has no public response history. The new [faer pool request #319](https://codeberg.org/sarah-quinones/faer/issues/319) has no reply yet; its age is too short to judge willingness.
 
-Prototype the explicit executor at the `tprims-contract` strategy boundary (the faer strategy) only after provider comparisons. First seek a focused upstream interface in the chosen provider, then evaluate a narrowly maintained fork if upstream declines or cannot support it on a useful timescale. Record fork scope, upstream revision, and tests before making that choice.
+Prototype the explicit executor at the `tcontract` strategy boundary (the faer strategy) only after provider comparisons. First seek a focused upstream interface in the chosen provider, then evaluate a narrowly maintained fork if upstream declines or cannot support it on a useful timescale. Record fork scope, upstream revision, and tests before making that choice.
 
 ## Connection to tenferro
 

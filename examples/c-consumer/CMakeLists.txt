@@ -42,7 +42,7 @@ option(TAPP_USE_CORROSION "Build the Rust library via corrosion" ON)
 
 # The crate root, i.e. the repository root two levels up from this file.
 get_filename_component(TAPP_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
-set(TAPP_CRATE_DIR "${TAPP_REPO_ROOT}/crates/tprims-capi")
+set(TAPP_CRATE_DIR "${TAPP_REPO_ROOT}/crates/tcontract-capi")
 
 add_executable(tapp-c-consumer main.c)
 
@@ -60,14 +60,14 @@ if(DEFINED TAPP_PREFIX)
     find_package(PkgConfig)
     if(PkgConfig_FOUND)
         set(ENV{PKG_CONFIG_PATH} "${TAPP_PREFIX}/lib/pkgconfig")
-        pkg_check_modules(TAPP REQUIRED IMPORTED_TARGET tprims)
+        pkg_check_modules(TAPP REQUIRED IMPORTED_TARGET tcontract_capi)
         message(STATUS "Using installed TAPP ${TAPP_VERSION} via pkg-config from ${TAPP_PREFIX}")
         target_link_libraries(tapp-c-consumer PRIVATE PkgConfig::TAPP)
         set(TAPP_RUNTIME_DIR "${TAPP_LIBRARY_DIRS}")
     else()
         message(STATUS "Using installed TAPP from ${TAPP_PREFIX} (no pkg-config)")
         find_library(TAPP_LIBRARY
-            NAMES tprims
+            NAMES tcontract_capi
             HINTS "${TAPP_PREFIX}/lib" "${TAPP_PREFIX}/bin"
             REQUIRED
         )
@@ -101,17 +101,17 @@ if(TAPP_USE_CORROSION)
     # of the build entirely.
     corrosion_import_crate(
         MANIFEST_PATH "${TAPP_REPO_ROOT}/Cargo.toml"
-        CRATES tprims-capi
+        CRATES tcontract-capi
     )
 
-    target_link_libraries(tapp-c-consumer PRIVATE tprims)
+    target_link_libraries(tapp-c-consumer PRIVATE tcontract_capi)
 else()
     if(NOT DEFINED TAPP_LIBRARY_DIR)
         set(TAPP_LIBRARY_DIR "${TAPP_REPO_ROOT}/target/release")
     endif()
 
     find_library(TAPP_LIBRARY
-        NAMES tprims
+        NAMES tcontract_capi
         HINTS "${TAPP_LIBRARY_DIR}"
         REQUIRED
         NO_DEFAULT_PATH

@@ -8,10 +8,10 @@ default-run = "selfcheck"
 description = "Isolated f64 OpenBLAS dgemm_kernel_16x2_skylakex kernel-import experiment"
 
 [dependencies]
-tprims-kernel = { path = "../../crates/tprims-kernel" }
-tprims-contract = { path = "../../crates/tprims-contract" }
-tprims-exec = { path = "../../crates/tprims-exec" }
-tprims-bench = { path = "../../benchmarks" }
+tcontract-kernel = { path = "../../crates/tcontract-kernel" }
+tcontract = { path = "../../crates/tcontract" }
+tcontract-exec = { path = "../../crates/tcontract-exec" }
+tcontract-bench = { path = "../../benchmarks" }
 
 [profile.release]
 opt-level = 3

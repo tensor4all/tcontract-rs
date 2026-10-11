@@ -32,7 +32,7 @@ To link a library you have already built instead — a separate Rust build step,
 an offline site, or simply not wanting CMake to invoke cargo:
 
 ```bash
-cargo build --release -p tprims-capi
+cargo build --release -p tcontract-capi
 cmake -S examples/c-consumer -B build/c-consumer \
       -DCMAKE_BUILD_TYPE=Release -DTAPP_USE_CORROSION=OFF \
       -DTAPP_LIBRARY_DIR=$PWD/target/release
@@ -49,12 +49,12 @@ FetchContent_Declare(Corrosion
 FetchContent_MakeAvailable(Corrosion)
 
 corrosion_import_crate(
-    MANIFEST_PATH  ${TPRIMS_DIR}/Cargo.toml
-    CRATES         tprims-capi)
+    MANIFEST_PATH  ${TCONTRACT_DIR}/Cargo.toml
+    CRATES         tcontract-capi)
 
-target_link_libraries(your_target PRIVATE tprims)
+target_link_libraries(your_target PRIVATE tcontract_capi)
 target_include_directories(your_target PRIVATE
-    ${TPRIMS_DIR}/crates/tprims-capi/include)
+    ${TCONTRACT_DIR}/crates/tcontract-capi/include)
 ```
 
 `CRATES` matters: it keeps the unpublished benchmark harness out of your
@@ -67,14 +67,14 @@ getting that wrong by hand is the usual first failure.
 ## Without CMake
 
 ```bash
-cargo build --release -p tprims-capi
+cargo build --release -p tcontract-capi
 
-cc myprog.c -I crates/tprims-capi/include \
-   -L target/release -ltprims \
+cc myprog.c -I crates/tcontract-capi/include \
+   -L target/release -ltcontract_capi \
    -Wl,-rpath,$PWD/target/release -lm
 ```
 
-Prefer the **cdylib** (`libtprims.so` / `.dylib`) over the
+Prefer the **cdylib** (`libtcontract_capi.so` / `.dylib`) over the
 `staticlib`. The static archive bundles the Rust standard library: it is ~26 MB,
 needs `-lpthread -ldl -lm` explicitly, and exports internal symbols that collide
 if two Rust static libraries end up in one binary. The cdylib is ~5 MB and
@@ -86,17 +86,17 @@ If you want the library somewhere other than `target/release` — a module tree,
 container image, `/usr/local` — build it and then install it:
 
 ```bash
-cargo build --release -p tprims-capi
-crates/tprims-capi/install.sh --prefix=/opt/tapp
+cargo build --release -p tcontract-capi
+crates/tcontract-capi/install.sh --prefix=/opt/tapp
 ```
 
-That lays out `lib/libtprims.so`, `include/`,
-`lib/pkgconfig/tprims.pc` and the two licences, after which the
+That lays out `lib/libtcontract_capi.so`, `include/`,
+`lib/pkgconfig/tcontract_capi.pc` and the two licences, after which the
 library is consumable without knowing anything about cargo:
 
 ```bash
 export PKG_CONFIG_PATH=/opt/tapp/lib/pkgconfig
-cc myprog.c $(pkg-config --cflags --libs tprims) \
+cc myprog.c $(pkg-config --cflags --libs tcontract_capi) \
    -Wl,-rpath,/opt/tapp/lib -lm
 ```
 
@@ -117,18 +117,18 @@ Set them at link time. `install.sh` warns if you did not:
 
 ```bash
 # Linux, FreeBSD
-RUSTFLAGS='-C link-arg=-Wl,-soname,libtprims.so' \
-  cargo build --release -p tprims-capi
+RUSTFLAGS='-C link-arg=-Wl,-soname,libtcontract_capi.so' \
+  cargo build --release -p tcontract-capi
 
 # macOS
-RUSTFLAGS='-C link-arg=-Wl,-install_name,@rpath/libtprims.dylib' \
-  cargo build --release -p tprims-capi
+RUSTFLAGS='-C link-arg=-Wl,-install_name,@rpath/libtcontract_capi.dylib' \
+  cargo build --release -p tcontract-capi
 
 # musl, where the cdylib is otherwise *dropped* -- cargo prints "dropping
 # unsupported crate type `cdylib`" and exits 0, leaving you a header and no
 # library
-RUSTFLAGS='-C target-feature=-crt-static -C link-arg=-Wl,-soname,libtprims.so' \
-  cargo build --release -p tprims-capi
+RUSTFLAGS='-C target-feature=-crt-static -C link-arg=-Wl,-soname,libtcontract_capi.so' \
+  cargo build --release -p tcontract-capi
 ```
 
 Do not reach for `-C rpath` to get the macOS install name: it sets it, and also
@@ -142,24 +142,18 @@ Vendor once, then build with the network unused:
 ```bash
 mkdir -p .cargo
 cargo vendor vendor >> .cargo/config.toml
-cargo build --offline --release -p tprims-capi
+cargo build --offline --release -p tcontract-capi
 ```
 
-Ship `vendor/` alongside the source and the build needs no network at all. Two
-different sizes, depending on what you want:
-
-| what you want | crates vendored |
-|---|---|
-| the library only (from the published crate) | 3 — `num-complex`, `num-traits`, `autocfg` |
-| the library **and** its test suite (this repo) | ~17 — adds `rand` and its tree |
-
-A library build compiles only `num-complex` and `num-traits`; the rest are
-dev-dependencies. The engine has no build script of its own. This is verified by
-CI's `offline` job.
+Ship `vendor/` alongside the source and the build needs no network as long as
+the git-pinned sources are reachable or vendored too: the crates are
+`publish = false`, and the tree depends on crates.io packages (`num-complex`,
+`rayon`, `faer`, `thiserror`, ...) plus a git-pinned `strided-rs`, which
+`cargo vendor` does not cover. There is no dedicated CI offline lane.
 
 ## What the API looks like
 
-See `crates/tprims-capi/include/`, which documents the handle
+See `crates/tcontract-capi/include/`, which documents the handle
 discipline, the supported TAPP cases, and the two places this implementation
 departs from an underspecified upstream (`TAPP_IN_PLACE`, and the non-zero error
 codes). The short version, as `main.c` uses it:
