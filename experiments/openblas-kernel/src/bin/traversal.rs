@@ -15,7 +15,7 @@
 //! difference is in the execution path - this binary calls `execute_slices`, which
 //! builds views per call, the harness calls `execute_raw` on raw pointers.
 //!
-//! Run it under the `tprims-benchmark` skill protocol (pinned idle cores, one L3
+//! Run it under the `tcontract-benchmark` skill protocol (pinned idle cores, one L3
 //! domain, an A/A noise floor); it does no pinning itself.
 //!
 //! Usage: `traversal [--threads N] [--reps N] [--prime-ms N]`
@@ -23,9 +23,9 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use tprims_bench::threads::BenchThreads;
-use tprims_contract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
-use tprims_contract::{Plan, PlanConfig};
+use tcontract_bench::threads::BenchThreads;
+use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
+use tcontract::{Plan, PlanConfig};
 const A_DIMS: [usize; 4] = [48, 40, 48, 48];
 const D_DIMS: [usize; 4] = [48, 40, 40, 48];
 
@@ -72,7 +72,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let threads = BenchThreads::from_args();
     threads.verify();
-    let wanted = tprims_bench::threads::parse_threads(&args).unwrap_or(1);
+    let wanted = tcontract_bench::threads::parse_threads(&args).unwrap_or(1);
     let reps = args
         .iter()
         .position(|a| a == "--reps")

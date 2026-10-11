@@ -81,7 +81,7 @@ impl Operand {
     }
 }
 
-/// A binary contraction entry (`dot_general` semantics of tprims-contract).
+/// A binary contraction entry (`dot_general` semantics of tcontract).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct DotGeneralEntry {
     /// Case name.
@@ -146,7 +146,7 @@ impl Corpus {
     /// # Errors
     ///
     /// Malformed JSON, an unknown dtype, rank/stride disagreement, a
-    /// configuration tprims-contract rejects, an output whose dims differ
+    /// configuration tcontract rejects, an output whose dims differ
     /// from the configuration's, or an aliased (non-injective) output.
     pub fn parse(json: &str) -> Result<Self, String> {
         let c: Corpus = serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -169,11 +169,11 @@ impl Corpus {
 
 /// A malformed entry, with the reason the shared lowering gives.
 ///
-/// The entry is described to `tprims-contract` exactly as a replay will
+/// The entry is described to `tcontract` exactly as a replay will
 /// describe it (one validation, shared with the library), so a corpus that
 /// parses is a corpus that plans.
 fn validate(e: &Entry) -> Result<(), String> {
-    use tprims_contract::api::{DType, DotGeneral, LayoutSpec, Op, OperandSpec, Problem};
+    use tcontract::api::{DType, DotGeneral, LayoutSpec, Op, OperandSpec, Problem};
     let Entry::DotGeneral(d) = e;
     d.a.check("a")?;
     d.b.check("b")?;

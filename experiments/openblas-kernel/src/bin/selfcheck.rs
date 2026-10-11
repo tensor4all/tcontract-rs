@@ -6,15 +6,15 @@
 //!    for `kc` in `{0, 1, 2, 3, 7, 16, 33}` (K0/K1/tails/regular).
 //! 2. Exact known values: small-integer panels where the result is computed
 //!    in exact `f64` arithmetic.
-//! 3. End-to-end through the tprims packed driver: default built-in tprims
+//! 3. End-to-end through the tcontract packed driver: default built-in tcontract
 //!    family vs the OpenBLAS family (selected by id), both compared to a
 //!    naive contraction, for a column-major matrix and a strided-A case.
 
 use openblas_kernel::{catalog, tile_product, MR, NR};
-use tprims_contract::api::{DType, DotGeneral, LayoutSpec, OperandSpec, Problem};
-use tprims_contract::{Chooser, Plan, PlanConfig};
-use tprims_exec::Exec;
-use tprims_kernel::SelectError;
+use tcontract::api::{DType, DotGeneral, LayoutSpec, OperandSpec, Problem};
+use tcontract::{Chooser, Plan, PlanConfig};
+use tcontract_exec::Exec;
+use tcontract_kernel::SelectError;
 
 fn check(what: &str, ok: bool) {
     if ok {
@@ -165,9 +165,9 @@ fn end_to_end(m: usize, n: usize, k: usize, a_s: [isize; 2], b_s: [isize; 2], rn
     .unwrap();
 
     let cat = catalog();
-    let mut selector = |_: &tprims_contract::SelectionContext<'_>,
-                        cands: &[tprims_contract::KernelCandidate<f64>]|
-     -> Result<tprims_kernel::KernelHandle<f64>, SelectError> {
+    let mut selector = |_: &tcontract::SelectionContext<'_>,
+                        cands: &[tcontract::KernelCandidate<f64>]|
+     -> Result<tcontract_kernel::KernelHandle<f64>, SelectError> {
         cands
             .iter()
             .map(|c| c.handle)

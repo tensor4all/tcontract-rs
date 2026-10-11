@@ -40,7 +40,7 @@ corresponding change.
 
 ## Verification conclusions and constraints
 
-`cargo test --profile ci --workspace`, `cargo test -p tprims-contract
+`cargo test --profile ci --workspace`, `cargo test -p tcontract
 --release`, workspace/all-target clippy `-D warnings`, fmt, docs, the Rust 1.89
 workspace/all-target check and the aarch64-apple check pass. This establishes
 planning-level safety for empty operands, not a performance result: the change

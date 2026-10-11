@@ -1,7 +1,7 @@
 # openblas-kernel — isolated f64 kernel-import experiment
 
 Imports OpenBLAS's `dgemm_kernel_16x2_skylakex` (the SkylakeX/Cooperlake f64
-micro-kernel) as an external [`KernelFamily`] for the tprims packed driver, to
+micro-kernel) as an external [`KernelFamily`] for the tcontract packed driver, to
 measure it against the project's own kernels on equal footing (same driver,
 packers, write-back and cache blocking).
 
@@ -27,12 +27,12 @@ kernel".
 ## Adapter
 
 The kernel is a `16 x 2` panel product over column-major packed panels, which
-matches tprims's `PackFormat::Real` / `TileFormat::Real` contract exactly
+matches tcontract's `PackFormat::Real` / `TileFormat::Real` contract exactly
 (A `A[i + 16p]`, B `B[j + 2p]`, tile `C[j*16 + i]`). The only adapter is the
 scratch-tile wrapper: zero the tile, then call the kernel with `alpha = 1.0`,
 `ldc = 16` (the kernel always accumulates `C += alpha*A*B`; there is no beta
 parameter at this level). No packing or contraction logic is reimplemented —
-the tprims driver and packers are reused. **No overhead adapter**: the packing
+the tcontract driver and packers are reused. **No overhead adapter**: the packing
 and tile shapes are a direct match, so the only cost is one `32`-element
 zero-fill per tile.
 
@@ -41,7 +41,7 @@ zero-fill per tile.
 - `src/lib.rs` — the `KernelFamily` descriptor, the tile wrapper, and the
   `KernelCatalog` admission.
 - `src/bin/selfcheck.rs` — correctness: tile product vs naive reference
-  (K0/K1/tails), exact known values, and end-to-end (default tprims vs
+  (K0/K1/tails), exact known values, and end-to-end (default tcontract vs
   OpenBLAS) against a naive contraction, matrix and strided cases.
 - `src/bin/bench.rs` — CSV A/B comparison at `--threads 1,4,8,12`.
 - `build.rs` — one `cc -O3 -march=native -DCNAME=... -c` invocation (no `cc`
@@ -53,7 +53,7 @@ zero-fill per tile.
 domain, the default family versus the imported kernel through the same driver, packers,
 blocking and write-back):
 
-| case | tprims (`avx512.f64.real.24x8`) | OpenBLAS (`dgemm_kernel_16x2_skylakex`) | ratio |
+| case | tcontract (`avx512.f64.real.24x8`) | OpenBLAS (`dgemm_kernel_16x2_skylakex`) | ratio |
 |---|---|---|---|
 | `gemm-1024-col` | 47.6 GFLOP/s | 29.1 GFLOP/s | 1.64x |
 | `gemm-512-col` | 47.1 | 29.4 | 1.60x |
@@ -139,14 +139,14 @@ cargo run --release --bin bench -- --threads 1,4,8,12
   declares `required.avx512f`.
 - **Not a Zen 5 kernel** (see above); it is the SkylakeX/Cooperlake f64 kernel
   OpenBLAS selects for Zen 5.
-- The kernel does **not** apply `alpha`/`beta` or conjugation; the tprims
+- The kernel does **not** apply `alpha`/`beta` or conjugation; the tcontract
   driver's write-back does, and conjugation is unsupported (`caps.conj_* =
   false`), which real f64 never needs.
-- `bench.rs` does no affinity pinning; run it under the `tprims-benchmark`
+- `bench.rs` does no affinity pinning; run it under the `tcontract-benchmark`
   skill protocol for any number worth recording.
 - Every case is a contiguous column-major GEMM; the tensor corpus's strided,
   interleaved panels are not covered here (see Results).
 - `traversal.rs` covers those panels, but its plan is not the campaign's plan
   (see Traversal attribution); it attributes a *decision*, not a cell.
 
-[`KernelFamily`]: https://docs.rs/tprims-kernel/latest/tprims_kernel/struct.KernelFamily.html
+[`KernelFamily`]: https://docs.rs/tcontract-kernel/latest/tcontract_kernel/struct.KernelFamily.html

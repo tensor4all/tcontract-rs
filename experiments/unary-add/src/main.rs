@@ -1,7 +1,7 @@
 //! Per-call cost of the labels-based unary update on small blocks, at one
 //! thread.
 //!
-//! The operation is `tprims_contract::unary::add`:
+//! The operation is `tcontract::unary::add`:
 //! `D = alpha * op_A(A[labels_a]) + beta * D_old`, which is one entry point for
 //! a permutation (`tensoradd!`), a diagonal and a reduction (`tensortrace!`).
 //! TensorKit.jl calls it once per subblock, so what matters is the per-call
@@ -24,13 +24,13 @@ use std::time::{Duration, Instant};
 
 use num_complex::Complex64 as C64;
 use strided_view::{StridedView, StridedViewMut};
-use tprims_contract::api::{
+use tcontract::api::{
     AccumulationSource, CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem, Scalar,
 };
-use tprims_contract::unary::{add, Unary};
-use tprims_contract::{Plan, PlanConfig};
-use tprims_exec::Exec;
-use tprims_kernel::{Element, Real};
+use tcontract::unary::{add, Unary};
+use tcontract::{Plan, PlanConfig};
+use tcontract_exec::Exec;
+use tcontract_kernel::{Element, Real};
 
 /// One small-block case: `A`'s extents and labels, `D`'s extents and labels.
 #[derive(Clone, Debug)]
@@ -239,7 +239,7 @@ fn one_case<S: Scalar>(
     let c = if beta == <S as Element>::zero() {
         CSpec::Absent
     } else {
-        CSpec::Output(tprims_contract::api::Op::Identity)
+        CSpec::Output(tcontract::api::Op::Identity)
     };
     let l = |d: &[usize], st: &[isize]| OperandSpec::new(LayoutSpec::new(d, st, 0).unwrap());
     let p = Problem::from_labels(dtype, l(&s.a, &sa), l(&[], &[]), c, l(&s.d, &sd), &Labels::new(&s.la, &[], &s.ld))
@@ -294,7 +294,7 @@ fn main() {
     }
 
     println!(
-        "# unary-add: tprims-contract {} per call, 1 thread (Exec::serial), {} reps, {} ms priming",
+        "# unary-add: tcontract {} per call, 1 thread (Exec::serial), {} reps, {} ms priming",
         env!("CARGO_PKG_VERSION"),
         reps,
         prime_ms

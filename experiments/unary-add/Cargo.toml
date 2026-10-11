@@ -7,8 +7,8 @@ publish = false
 [workspace]
 
 [dependencies]
-tprims-contract = { path = "../../crates/tprims-contract" }
-tprims-exec = { path = "../../crates/tprims-exec" }
-tprims-kernel = { path = "../../crates/tprims-kernel" }
+tcontract = { path = "../../crates/tcontract" }
+tcontract-exec = { path = "../../crates/tcontract-exec" }
+tcontract-kernel = { path = "../../crates/tcontract-kernel" }
 num-complex = "0.4"
 strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "12ff2de906f4d894a4329f7dbf195b0f874f846e", version = "=0.4.6" }

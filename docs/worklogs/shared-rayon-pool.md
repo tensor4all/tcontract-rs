@@ -2,7 +2,7 @@
 
 ## Decision
 
-For tenferro's CPU integration, add `Pool::shared(Arc<rayon::ThreadPool>)` rather than a raw-pool getter or a second worker team. The host retains its existing raw Arc for tlinalg/strided/FFT and one persistent tprims wrapper for contractions. Clones share that wrapper, preserving its arena, counters and SPMD mutex; plans still own no resources.
+For tenferro's CPU integration, add `Pool::shared(Arc<rayon::ThreadPool>)` rather than a raw-pool getter or a second worker team. The host retains its existing raw Arc for tlinalg/strided/FFT and one persistent tcontract wrapper for contractions. Clones share that wrapper, preserving its arena, counters and SPMD mutex; plans still own no resources.
 
 A per-operation `Pool::borrow` would discard workspace reuse. Keeping that borrowed wrapper alongside its owning Arc would require self-reference. Shared stdlib ownership avoids both without a new executor or registry. Independent pre-review approved the shared constructor and rejected the getter alternative.
 

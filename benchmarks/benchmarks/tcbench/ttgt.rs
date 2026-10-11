@@ -17,7 +17,7 @@
 
 #![allow(dead_code)] // only reachable with the `blas` feature
 
-use tprims_contract::api::{OperandId, Problem, RoleAxis, Scalar};
+use tcontract::api::{OperandId, Problem, RoleAxis, Scalar};
 
 use crate::blas::GemmScalar;
 
@@ -95,7 +95,7 @@ pub struct TtgtScratch<T> {
 
 impl<T: Scalar> TtgtScratch<T> {
     pub fn new(plan: &TtgtPlan) -> Self {
-        let zero = <T as tprims_kernel::Element>::zero();
+        let zero = <T as tcontract_kernel::Element>::zero();
         TtgtScratch {
             am: vec![zero; plan.m * plan.k],
             bm: vec![zero; plan.k * plan.n],
@@ -121,7 +121,7 @@ pub fn ttgt<T>(
 ) where
     T: Scalar + GemmScalar,
 {
-    use tprims_kernel::Element;
+    use tcontract_kernel::Element;
     let (m, n, k) = (plan.m, plan.n, plan.k);
     if m == 0 || n == 0 {
         return;

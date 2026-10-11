@@ -6,7 +6,7 @@
 //! with **preparation and repeated execution measured separately**, at one and
 //! four threads, on a fixed two-case corpus.
 //!
-//! Both arms run the same kernels by construction: `TprimsBackend::prepare` is
+//! Both arms run the same kernels by construction: `TcontractBackend::prepare` is
 //! `Plan::<T>::new` with the trait's `no_materialize` OR-ed in, and the trait's
 //! `execute_into` forwards to the same execution. So any difference here is
 //! dispatch and boxing, not arithmetic. Correctness is checked against a naive
@@ -22,13 +22,13 @@ use std::time::{Duration, Instant};
 
 use num_complex::Complex64 as C64;
 use strided_view::{StridedView, StridedViewMut};
-use tprims_contract::api::{
+use tcontract::api::{
     ContractionBackend, DotGeneral, LayoutSpec, OperandSpec, PlanningBudget, Problem, Requirements,
     Scalar,
 };
-use tprims_contract::{Plan, PlanConfig, TprimsBackend};
-use tprims_exec::{Exec, Pool};
-use tprims_kernel::{Element, Real};
+use tcontract::{Plan, PlanConfig, TcontractBackend};
+use tcontract_exec::{Exec, Pool};
+use tcontract_kernel::{Element, Real};
 
 /// One case: the two operand extents, the output extents, the contracted axes
 /// and a naive reference written directly from the axes.
@@ -196,7 +196,7 @@ fn one_case<S: Scalar>(
             let av = StridedView::new(&a, &c.a, &sa, 0).expect("av");
             let bv = StridedView::new(&b, &c.b, &sb, 0).expect("bv");
             let mut dv = StridedViewMut::new(&mut got2, &c.d, &sd, 0).unwrap();
-            let backend: Box<dyn ContractionBackend<S>> = Box::new(TprimsBackend::default());
+            let backend: Box<dyn ContractionBackend<S>> = Box::new(TcontractBackend::default());
             let plan = backend
                 .prepare(&problem, &Requirements::new(), &PlanningBudget::serial())
                 .unwrap();
@@ -212,7 +212,7 @@ fn one_case<S: Scalar>(
         let p = Plan::<S>::new(&problem, &PlanConfig::default()).unwrap();
         std::hint::black_box(&p);
     });
-    let backend: Box<dyn ContractionBackend<S>> = Box::new(TprimsBackend::default());
+    let backend: Box<dyn ContractionBackend<S>> = Box::new(TcontractBackend::default());
     let p_trait = timed(reps, prime_ms, || {
         let p = backend
             .prepare(&problem, &Requirements::new(), &PlanningBudget::serial())

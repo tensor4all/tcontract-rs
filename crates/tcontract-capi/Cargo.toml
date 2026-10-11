@@ -1,0 +1,32 @@
+[package]
+name = "tcontract-capi"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+authors = ["Lukas Devos <ldevos@flatironinstitute.org>", "tensor4all contributors"]
+publish = false
+description = "libtcontract_capi: the TAPP contraction C ABI and the tcontract extensions (DLPack, status, executors), as a shared, static and Rust library"
+readme = "README.md"
+
+[lib]
+# `tcontract_capi` (not `tcontract`): the core `tcontract` crate already owns
+# the Rust crate name `tcontract`, and a second crate of the same name would be
+# an E0464 duplicate for any consumer (this crate's own tests) that links both.
+# The C artifact name follows the Rust lib name, as in tensor4all-rs.
+name = "tcontract_capi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+num-complex = { workspace = true }
+rayon = { workspace = true }
+strided-view = { workspace = true }
+tcontract = { workspace = true }
+tcontract-exec = { workspace = true }
+
+[dev-dependencies]
+tcontract-kernel = { workspace = true }
+tcontract-testkit = { workspace = true }
+
+[lints]
+workspace = true

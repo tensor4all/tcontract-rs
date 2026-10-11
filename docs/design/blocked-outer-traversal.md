@@ -3,7 +3,7 @@
 Status: consolidated design, four pre-reviews taken into account. Nothing here is
 implemented. Every claim marked *measured* was taken on this host with the pinned
 binary and the opt-in phase instrument (`--features phase-timing`,
-`TPRIMS_PHASE=1`); everything else is a design statement and is labelled as one.
+`TCONTRACT_PHASE=1`); everything else is a design statement and is labelled as one.
 
 ## 1. The problem, measured
 
@@ -164,7 +164,7 @@ role here and is therefore never eligible).
 ## 8. Wiring plan, with signatures
 
 The mechanism is complete and tested: `driver/block.rs` (membership, eligibility, output
-order, gather) and `tprims_kernel::pack::permute` (format-exact row permutation across a
+order, gather) and `tcontract_kernel::pack::permute` (format-exact row permutation across a
 tile grid). What remains is the driver, in four mechanical steps, each gated on its own.
 
 1. **Row views instead of global intervals.** `pack_a_rows` and `compute_block` currently

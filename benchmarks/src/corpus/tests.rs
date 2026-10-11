@@ -48,23 +48,23 @@ fn the_shipped_corpora_parse() {
     for (name, text) in [
         (
             "example",
-            include_str!("../../benchmarks/tprims/corpus/example.json"),
+            include_str!("../../benchmarks/tcontract/corpus/example.json"),
         ),
         (
             "hadamard",
-            include_str!("../../benchmarks/tprims/corpus/hadamard.json"),
+            include_str!("../../benchmarks/tcontract/corpus/hadamard.json"),
         ),
         (
             "large-batched-gemm",
-            include_str!("../../benchmarks/tprims/corpus/large-batched-gemm.json"),
+            include_str!("../../benchmarks/tcontract/corpus/large-batched-gemm.json"),
         ),
         (
             "tenferro-p1-gemm",
-            include_str!("../../benchmarks/tprims/corpus/tenferro-p1-gemm.json"),
+            include_str!("../../benchmarks/tcontract/corpus/tenferro-p1-gemm.json"),
         ),
         (
             "tenferro-p1",
-            include_str!("../../benchmarks/tprims/corpus/tenferro-p1.json"),
+            include_str!("../../benchmarks/tcontract/corpus/tenferro-p1.json"),
         ),
     ] {
         Corpus::parse(text).unwrap_or_else(|e| panic!("{name}: {e}"));

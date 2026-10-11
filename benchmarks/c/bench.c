@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "tprims/tprims.h"
+#include "tcontract/tcontract.h"
 
 #define INNER 1000
 #define SAMPLES 101
@@ -39,16 +39,16 @@ int main(int argc, char **argv) {
   int threads = argc > 1 ? atoi(argv[1]) : 1;
   /* threads == 1 is an explicit serial executor (no workers, no pool). */
   TAPP_executor ex = 0;
-  if (tprims_tapp_executor_create_rayon(&ex, (size_t)threads, NULL) != TPRIMS_OK) { fprintf(stderr, "exec: %s\n", tprims_last_error()); return 1; }
+  if (tcontract_tapp_executor_create_rayon(&ex, (size_t)threads, NULL) != TCONTRACT_OK) { fprintf(stderr, "exec: %s\n", tcontract_last_error()); return 1; }
   size_t pool_size = 0, budget = 0;
-  tprims_tapp_executor_get_threads(ex, &pool_size, &budget);
+  tcontract_tapp_executor_get_threads(ex, &pool_size, &budget);
   printf("# threads: requested=%d pool=%zu budget=%zu\n", threads, pool_size, budget);
   printf("case,variant,threads,median_ns,samples\n");
   double s[SAMPLES];
 
   for (int k = 0; k < SAMPLES; k++) {
     double t0 = now_ns();
-    for (int i = 0; i < INNER; i++) sink += tprims_abi_version();
+    for (int i = 0; i < INNER; i++) sink += tcontract_abi_version();
     s[k] = (now_ns() - t0) / INNER;
   }
   qsort(s, SAMPLES, sizeof(double), cmp);
@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
       !TAPP_check_success(TAPP_create_tensor_info(&iz, TAPP_F64, 4, s4, st4)) ||
       !TAPP_check_success(TAPP_create_tensor_product(&plan, handle, TAPP_IDENTITY, ix, lx, TAPP_IDENTITY, iy, ly,
                                                      TAPP_IDENTITY, iz, lz, TAPP_IDENTITY, iz, lz, TAPP_DEFAULT_PREC))) {
-    fprintf(stderr, "%s\n", tprims_last_error()); return 1;
+    fprintf(stderr, "%s\n", tcontract_last_error()); return 1;
   }
   for (int k = 0; k < SAMPLES; k++) {
     double t0 = now_ns();

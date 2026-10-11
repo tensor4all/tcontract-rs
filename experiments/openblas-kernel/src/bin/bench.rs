@@ -1,7 +1,7 @@
-//! A/B comparison: default packed tprims vs the external OpenBLAS family, on
+//! A/B comparison: default packed tcontract vs the external OpenBLAS family, on
 //! identical representative f64 cases, at `--threads 1,4,8,12`, reported as CSV.
 //!
-//! Provided for measurement but must be run under the `tprims-benchmark` skill
+//! Provided for measurement but must be run under the `tcontract-benchmark` skill
 //! protocol (pinned idle cores in one L3 domain, paired thread counts, an A/A
 //! noise floor). It performs no pinning itself.
 //!
@@ -11,11 +11,11 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use openblas_kernel::{catalog, OPENBLAS_FAMILY, OPENBLAS_WIDE_FAMILY};
-use tprims_bench::threads::BenchThreads;
-use tprims_contract::api::{DType, DotGeneral, LayoutSpec, OperandSpec, Problem};
-use tprims_contract::{Chooser, Plan, PlanConfig};
-use tprims_exec::Exec;
-use tprims_kernel::SelectError;
+use tcontract_bench::threads::BenchThreads;
+use tcontract::api::{DType, DotGeneral, LayoutSpec, OperandSpec, Problem};
+use tcontract::{Chooser, Plan, PlanConfig};
+use tcontract_exec::Exec;
+use tcontract_kernel::SelectError;
 
 fn layout(dims: &[usize], strides: &[isize]) -> OperandSpec {
     OperandSpec::new(LayoutSpec::new(dims, strides, 0).unwrap())
@@ -119,9 +119,9 @@ fn build_plans(case: &Case, family_id: &str) -> Prepared {
     let dflt = Plan::<f64>::new(&problem, &cfg).unwrap();
 
     let cat = catalog();
-    let mut selector = |_: &tprims_contract::SelectionContext<'_>,
-                        cands: &[tprims_contract::KernelCandidate<f64>]|
-     -> Result<tprims_kernel::KernelHandle<f64>, SelectError> {
+    let mut selector = |_: &tcontract::SelectionContext<'_>,
+                        cands: &[tcontract::KernelCandidate<f64>]|
+     -> Result<tcontract_kernel::KernelHandle<f64>, SelectError> {
         cands
             .iter()
             .map(|c| c.handle)
@@ -236,7 +236,7 @@ fn main() {
             );
             if !verify_only {
                 let (old, new) = measure(&dflt, &openblas, &a, &b, &mut d, exec, reps, prime_ms);
-                for (name, seconds) in [("tprims", old), ("openblas", new)] {
+                for (name, seconds) in [("tcontract", old), ("openblas", new)] {
                     println!(
                         "{},{},{},{:.9},{:.3}",
                         case.name,

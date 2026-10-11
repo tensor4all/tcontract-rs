@@ -1,6 +1,6 @@
 # faer-limit-sweep
 
-Per-call cost of the two engines the `tprims-contract` planner can choose for a
+Per-call cost of the two engines the `tcontract` planner can choose for a
 copy-free fusable contraction, on the same `Problem`, at one and four threads:
 
 ```text
@@ -23,9 +23,9 @@ form the earlier recorded run used.
 | `packed` | `PlanConfig::packed()` — the packed TBLIS-style driver, forced |
 | `faer_forced` | `PlanConfig { faer_limit: FaerLimit::NONE, ..PlanConfig::default() }` — faer for every fusable problem, the rule before #63 |
 
-The question is [tprims-rs#63](https://github.com/tensor4all/tprims-rs/issues/63)
+The question is [tcontract-rs#63](https://github.com/tensor4all/tcontract-rs/issues/63)
 (the size/dtype threshold on the copy-free fusion rule) and its follow-up
-[#69](https://github.com/tensor4all/tprims-rs/issues/69): where the crossover
+[#69](https://github.com/tensor4all/tcontract-rs/issues/69): where the crossover
 between the two engines lies, per dtype and per thread count, on the classes
 that fuse to one strided batched GEMM. This probe only records the arms;
 the `FaerLimit` values and the decision-log row are decided elsewhere.
@@ -41,7 +41,7 @@ Building the `Problem`, planning it, building the views and allocating
 | threads | executor |
 | --- | --- |
 | 1 | `Exec::serial()`, process pinned to one CPU |
-| 4 | a host-owned `rayon::ThreadPool` of 4 workers built once, borrowed through `tprims_exec::Pool::borrow`, handed to `Exec::rayon` |
+| 4 | a host-owned `rayon::ThreadPool` of 4 workers built once, borrowed through `tcontract_exec::Pool::borrow`, handed to `Exec::rayon` |
 
 The binary asserts the pool width, the `Exec` budget and that
 `Cpus_allowed_list` holds exactly the requested CPUs, and refuses

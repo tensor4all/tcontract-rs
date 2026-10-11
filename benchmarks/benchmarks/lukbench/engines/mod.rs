@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use num_complex::Complex;
 use rand::Rng;
-use tprims_contract::api::{CSpec, Labels, LayoutSpec, OperandSpec, Problem, Scalar};
-use tprims_kernel::Element;
+use tcontract::api::{CSpec, Labels, LayoutSpec, OperandSpec, Problem, Scalar};
+use tcontract_kernel::Element;
 
 use crate::corpus::{col_major_strides, label_ids, Program, Step};
 
@@ -67,7 +67,7 @@ fn operand(dims: &[usize]) -> OperandSpec {
 
 /// The validated problem of step `k` in storage type `T`: `D` is overwritten
 /// (`beta = 0`), so there is no `C`.
-pub fn problem_of<T: BenchElem>(p: &Program, k: usize) -> Result<Problem, tprims_contract::Error> {
+pub fn problem_of<T: BenchElem>(p: &Program, k: usize) -> Result<Problem, tcontract::Error> {
     let st = &p.steps[k];
     Problem::from_labels(
         T::STORAGE,

@@ -1,4 +1,4 @@
-//! Shared harness code for tprims benchmarks.
+//! Shared harness code for tcontract benchmarks.
 //!
 //! [`threads::BenchThreads`] enforces the thread-count contract of
 //! `PERFORMANCE_TIPS.md`: the requested count builds the `Exec`, conflicting

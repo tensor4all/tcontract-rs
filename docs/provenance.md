@@ -1,5 +1,11 @@
 # Provenance, licenses, and citation
 
+On 2026-10-11 (issue #105) the repository and its crates were renamed from
+`tprims-*` to `tcontract*` (repository `tensor4all/tcontract-rs`); see the
+[migration guide](migration-tprims-to-tcontract.md) for the surface mapping.
+Historical statements below keep the names they recorded at the time, and the
+import records of Phase 0 describe the pre-rename repository.
+
 This repository began with research notes. In Phase 0 (2026-09-29) three
 projects were imported with `git subtree add` without `--squash`, so their
 history and authorship are preserved:
@@ -13,20 +19,20 @@ history and authorship are preserved:
 On 2026-09-30 `strided/` and the strided and einsum benchmarks under
 `benchmarks/` were removed: strided-rs is again an external dependency
 (now pinned to its published v0.4.6 release), and its benchmarks live in
-strided-rs-benchmark-suite. The only tprims addition to strided,
-`run_with_exec`, moved to `tprims_exec::strided`. Their history stays
+strided-rs-benchmark-suite. The only tcontract addition to strided,
+`run_with_exec`, moved to `tcontract_exec::strided`. Their history stays
 reachable through the import merges.
 
-`crates/tprims-capi/include/dlpack/dlpack.h` is DLPack v1.1
+`crates/tcontract-capi/include/dlpack/dlpack.h` is DLPack v1.1
 (<https://github.com/dmlc/dlpack>, tag `v1.1`), copied verbatim under the
-Apache License 2.0 (`crates/tprims-capi/include/dlpack/LICENSE`); the Rust
-`#[repr(C)]` mirror in `tprims-capi/src/dlpack.rs` follows it.
+Apache License 2.0 (`crates/tcontract-capi/include/dlpack/LICENSE`); the Rust
+`#[repr(C)]` mirror in `tcontract-capi/src/dlpack.rs` follows it.
 
-`crates/tprims-capi/include/tapp.h` and `include/tapp/*.h` are the TAPP C API
+`crates/tcontract-capi/include/tapp.h` and `include/tapp/*.h` are the TAPP C API
 headers of <https://github.com/TAPPorg/reference-implementation> at commit
 `77c32d744ee6d339f504620cc80b8679601669bc` (BSD 3-Clause), copied verbatim with
 the upstream `LICENSE.md` and `AUTHORS.md`; `include/tapp/README.md` records the
-commit and the SHA-256 of each file, which `cargo test -p tprims-capi`
+commit and the SHA-256 of each file, which `cargo test -p tcontract-capi`
 checks. The ABI baseline is this commit, not moving `main`.
 
 The history of an imported file is reachable through the import merge
@@ -38,7 +44,7 @@ Pure-rename commit `d5776b8` moved Lukas Devos's tensorcontract files into
 `crates/tprims-gemm-kernel` (`element`, `scatter`, `pack`, `writeback`,
 `kernel/cache`) and `crates/tprims-kernel-tensorcontract`
 (`kernel/{scalar,simd,x86,aarch64}`); both crates were merged into
-`crates/tprims-kernel` by a pure `git mv` commit in #37, so `git log --follow`
+`crates/tcontract-kernel` by a pure `git mv` commit in #37, so `git log --follow`
 reaches these commits. The type/selection split of
 `kernel/mod.rs` retains the original bodies and relocates their tests.
 Both crates retain Lukas Devos in `authors` and copies of the imported
@@ -51,10 +57,10 @@ custom-scalar contraction doctest went with the public `KernelSet` trait.
 ## Contraction-crate move (2026-10-02, source integration PR 3)
 
 Lukas Devos's `tensorcontract` crate (`plan.rs`, `driver.rs`, `driver/dynamic.rs`, `select.rs`, `resolve.rs`, `batch.rs`,
-`buffer.rs`, `reference.rs` and its tests) moved by `git mv` into `crates/tprims-contract` (and the oracle into
-`crates/tprims-testkit`), and `tensorprimitives-bench` into `benchmarks/` (`tcbench`), each in a pure-rename commit
+`buffer.rs`, `reference.rs` and its tests) moved by `git mv` into `crates/tcontract` (and the oracle into
+`crates/tcontract-testkit`), and `tensorprimitives-bench` into `benchmarks/` (`tcbench`), each in a pure-rename commit
 followed by separate edit commits; the splits are listed in
-[the migration guide](migration-2026-10.md#source-moves-pr-3). `crates/tprims-contract` keeps Lukas Devos in
+[the migration guide](migration-2026-10.md#source-moves-pr-3). `crates/tcontract` keeps Lukas Devos in
 `authors` and carries the imported license texts (`LICENSE-MIT`, `LICENSE-APACHE`); commits that touch his code carry a
 `Co-authored-by` trailer. The faer batched loop of `tprims-blas` was reduced to the copy-free path in
 `strategy/faer.rs`; the permute+GEMM approach is tenferro-rs's CPU `dot_general` (`tenferro-cpu/src/dot_runtime.rs`,
@@ -64,10 +70,10 @@ followed by separate edit commits; the splits are listed in
 
 A downstream crate that supplies its own kernels through a caller-scoped
 `KernelCatalog` reports itself as `Origin::External { crate_name, license }`.
-tprims prints those strings in diagnostics (`PlanReport`'s `PackedReport::origin`,
+tcontract prints those strings in diagnostics (`PlanReport`'s `PackedReport::origin`,
 `list_kernels`/`KernelCatalog::list`) and never labels them `Portable` or
 `Tensorcontract`; it does not vouch for their license or correctness, which
-is the provider's `unsafe` promise at admission. `tprims_testkit::custom_kernels` (formerly the
+is the provider's `unsafe` promise at admission. `tcontract_testkit::custom_kernels` (formerly the
 `tprims-custom-kernel-test` crate) is the test stand-in: its kernels are new MIT OR Apache-2.0 code written for
 the test, and its complex family calls the project's own public reference loop
 (`portable::cplx_tile`), so no upstream kernel body is copied.
@@ -75,8 +81,8 @@ the test, and its complex family calls the project's own public reference loop
 ## TAPP C ABI and the dissolution of `tensorprimitives/` (2026-10-02, source integration PR 4)
 
 `tprims-core`, `tprims-bundle` and Lukas Devos's `tensorprimitives-tapp` were merged by `git mv` into
-`crates/tprims-capi` (libtprims), then split by responsibility in a following commit (the ledger is in
-[the migration guide](migration-2026-10.md#c-abi-pr-4)). `tprims-capi` keeps Lukas Devos in `authors`, carries the
+`crates/tcontract-capi` (libtcontract_capi), then split by responsibility in a following commit (the ledger is in
+[the migration guide](migration-2026-10.md#c-abi-pr-4)). `tcontract-capi` keeps Lukas Devos in `authors`, carries the
 imported license texts, and the commits touching his code carry a `Co-authored-by` trailer. His second copy of `tapp.h`
 was deleted: the pinned upstream headers above are the only declaration.
 
@@ -93,8 +99,8 @@ The parent of the deletion commit, the last commit that contains the deleted tre
 `0fc06f4578e20017e510807ccaaa72ab4bab08f4`
 
 and the deleted measurement record and scripts are browsable at
-[`tensorprimitives/bench-results`](https://github.com/tensor4all/tprims-rs/tree/0fc06f4578e20017e510807ccaaa72ab4bab08f4/tensorprimitives/bench-results)
-and [`tensorprimitives/scripts`](https://github.com/tensor4all/tprims-rs/tree/0fc06f4578e20017e510807ccaaa72ab4bab08f4/tensorprimitives/scripts). This
+[`tensorprimitives/bench-results`](https://github.com/tensor4all/tcontract-rs/tree/0fc06f4578e20017e510807ccaaa72ab4bab08f4/tensorprimitives/bench-results)
+and [`tensorprimitives/scripts`](https://github.com/tensor4all/tcontract-rs/tree/0fc06f4578e20017e510807ccaaa72ab4bab08f4/tensorprimitives/scripts). This
 repository's PR 4 must be merged with a merge commit (or the SHA tagged) so that the commit stays reachable.
 The three crates under `tensorprimitives/crates/` (`tensorcontract`, `tensorprimitives-bench`, `tensorprimitives-tapp`) had already moved by then; their last in-place tree is main at `6edb664f0b02fbc6fc27072b83f41479561db593`, which the archived README's crate links use. Source comments that cite `tensorprimitives/bench-results/...` or `tensorprimitives/scripts/...` refer to that tree.
 
@@ -117,7 +123,7 @@ The [shared tensor4all provenance policy](https://github.com/tensor4all/tensor4a
 | Reference LAPACK | [LICENSE](https://github.com/Reference-LAPACK/lapack/blob/master/LICENSE) | Check the selected file and version before reuse. |
 | gemmkit | [MIT or Apache-2.0](https://github.com/SomeB1oody/gemmkit) | Verify the chosen release's package contents if integrating. |
 | tenferro-rs | MIT OR Apache-2.0 | Planned port (Phase 1): permute plus batched GEMM contraction and the CPU GEMM driver from `tenferro-cpu`. Same maintainers; record the source commit. |
-| tensorprimitives-rs | MIT OR Apache-2.0 | Imported (Phase 0) at `8cda75e` with `git subtree add`, history and authorship preserved, then moved into `tprims-kernel`, `tprims-contract`, `tprims-capi`, `tprims-testkit` and `benchmarks/` by pure-rename commits (TBLIS-style direct contraction and driver, scalar and SIMD microkernels, the TAPP C API) by Lukas Devos; the tree is dissolved, see below. |
+| tensorprimitives-rs | MIT OR Apache-2.0 | Imported (Phase 0) at `8cda75e` with `git subtree add`, history and authorship preserved, then moved into `tcontract-kernel`, `tcontract`, `tcontract-capi`, `tcontract-testkit` and `benchmarks/` by pure-rename commits (TBLIS-style direct contraction and driver, scalar and SIMD microkernels, the TAPP C API) by Lukas Devos; the tree is dissolved, see below. |
 | gemm-f64, gemm-f32, gemm-common | [MIT](https://github.com/sarah-ek/gemm/blob/main/LICENSE) | Called, not copied (the adapter `tprims-kernel-gemm` was removed in #37): it reached the public microkernel tables through a shim. The microkernel module is undocumented upstream, so the versions are pinned exactly (`=0.19.0`) and a bump has to be re-checked. |
 | private-gemm-x86 | [MIT](https://github.com/sarah-ek/gemm-x64-v2/blob/main/LICENSE) | Called, not copied (the adapter `tprims-kernel-pgx86` was removed in #37): it wrapped the single `gemm` entry point, pinned exactly (`=0.1.20`) for the same reason. |
 | `tprims-kernel-cplx` (project-owned, MIT OR Apache-2.0) | n/a | Independent intrinsics written from the interleaved complex arithmetic `Cr += Ar*Br - Ai*Bi; Ci += Ai*Br + Ar*Bi` with a signed swap formed once per A vector, as stated in issue #30. Not a port: no source of `gemm-c32/c64` (0.19.0: `mod microkernel` is private, so no callable tile entry exists) or `private-gemm-x86` (0.1.20: `call_microkernel`/`millikernel_*` take a custom register/parameter ABI, unusable as a `TileUkrFn` without a larger adapter) was read into or copied. Reuse check done 2026-10-01 against the pinned registry sources; the independent-intrinsics route was chosen for that reason. Panels, scatter, write-back and scheduling are the existing driver's (Lukas Devos's tensorcontract driver). Its families report `Origin::Cplx` (crate `tprims-kernel-cplx`, `MIT OR Apache-2.0`); `Origin::External` is reserved for downstream third-party kernels. |
@@ -126,11 +132,11 @@ The [shared tensor4all provenance policy](https://github.com/tensor4all/tensor4a
 
 A crate that contains imported code states its origin, authorship and license
 in its manifest and keeps the imported license texts beside it
-(`tprims-kernel`, `tprims-contract`, `tprims-capi`). A crate that only *calls*
+(`tcontract-kernel`, `tcontract`, `tcontract-capi`). A crate that only *calls*
 another project carries the same provenance in this file and in its header, but
 its own license is the project's (as `tprims-kernel-gemm` and
 `tprims-kernel-pgx86` were, before #37 removed them). The kernel contract crate
-(`tprims-kernel`) is project code: it was written here, from the design and
+(`tcontract-kernel`) is project code: it was written here, from the design and
 the research notes, and only the *moved* kernel files carry Lukas Devos's
 authorship.
 

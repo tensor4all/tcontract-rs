@@ -1,6 +1,6 @@
 # Source integration design audit, 2026-10-02
 
-Scope: issue [#37](https://github.com/tensor4all/tprims-rs/issues/37), initial
+Scope: issue [#37](https://github.com/tensor4all/tcontract-rs/issues/37), initial
 spec commit `d6df16a`, implementation baseline `fbc83f5`. This revision edits
 design documents only. It does not implement the consolidation or mark the
 draft accepted. The user requested a detailed design, branch push and issue
@@ -90,10 +90,10 @@ TAPP BSD-3 and DLPack Apache-2.0 notices and imported Git ancestry.
   This is not a passing full workspace gate.
 - UNAVAILABLE AS WRITTEN: the root AGENTS additional clippy feature command
   refers to strided-kernel/parallel, strided-perm/parallel and
-  tprims-bench/parallel that are not selectable in this current workspace.
+  tcontract-bench/parallel that are not selectable in this current workspace.
   The detailed design requires updating stale gate commands during migration,
   rather than adding fictitious features.
-- PASS: cargo test -j 16 -p tensorprimitives-tapp -p tprims-exec
+- PASS: cargo test -j 16 -p tensorprimitives-tapp -p tcontract-exec
   -p tprims-contract-traits -p tprims-bundle, including doctests and the
   bundle's C/C++ ABI consumers.
 - Not run: MSRV 1.89 (not installed), release/hardware matrix, Linux nm lane,

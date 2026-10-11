@@ -1,18 +1,20 @@
 //! The measurement knobs that used to be read from the environment inside the
-//! library, parsed once here into explicit plan configuration (tprims addition).
+//! library, parsed once here into explicit plan configuration (tcontract addition).
 //!
 //! `TCBENCH_{KERNEL,COMPLEX,MC,KC,NC,MC_PCT,NC_PCT,KC_COUPLE,BLOCKMODEL,
 //! L3_DOMAINS,WRITEBACK,ORIENT,ROWBLOCK,PARTITION}` are read by this harness
 //! only; the libraries read no environment. An unset variable is the library
 //! baseline; an unparseable value is an error rather than a silent default.
 //! Variables of the removed library knobs are rejected by prefix in
-//! [`init_from_env`] (see `tprims_bench::threads::forbidden_env`): threads come
-//! from a `tprims_exec::Exec` only.
+//! [`init_from_env`] (see `tcontract_bench::threads::forbidden_env`): threads come
+//! from a `tcontract_exec::Exec` only.
 
 use std::sync::OnceLock;
 
-use tprims_contract::{CacheModel, Orient, Partition, PlanConfig, RowBlock, Writeback};
-use tprims_kernel::{blocking::BlockModel, BlockingOverride, ComplexMethod, KernelForce, Method};
+use tcontract::{CacheModel, Orient, Partition, PlanConfig, RowBlock, Writeback};
+use tcontract_kernel::{
+    blocking::BlockModel, BlockingOverride, ComplexMethod, KernelForce, Method,
+};
 
 /// The parsed knobs.
 #[derive(Clone, Debug, Default)]
@@ -151,9 +153,9 @@ static KNOBS: OnceLock<Knobs> = OnceLock::new();
 /// Read the process environment once, at startup. An error is printed by the
 /// caller; later [`get`] calls then see the baseline.
 pub fn init_from_env() -> Result<(), String> {
-    if let Some((name, _)) = tprims_bench::threads::forbidden_env(std::env::vars()) {
+    if let Some((name, _)) = tcontract_bench::threads::forbidden_env(std::env::vars()) {
         return Err(format!(
-            "{name}: the old library environment knobs were removed in tprims-rs#37; \
+            "{name}: the old library environment knobs were removed in tcontract-rs#37; \
              the harness knobs are TCBENCH_* (see knobs.rs)"
         ));
     }

@@ -4,7 +4,7 @@ set -euo pipefail
 [[ $# == 3 ]] || { echo 'usage: hadamard-pair.sh OUT BASELINE CANDIDATE' >&2; exit 2; }
 out=$(realpath -m "$1"); baseline=$(realpath "$2"); candidate=$(realpath "$3")
 root=$(cd "$(dirname "$0")/../../.." && pwd); cd "$root"
-corpus="$root/benchmarks/benchmarks/tprims/corpus/hadamard.json"
+corpus="$root/benchmarks/benchmarks/tcontract/corpus/hadamard.json"
 mkdir -p "$out"
 { date -Iseconds; sha256sum "$baseline" "$candidate" "$corpus"; printf 'native/release; median20 (10 at work>=2^24); warmup3; CPUs4/4-7\n'; } > "$out/manifest.txt"
 for sample in A A2; do

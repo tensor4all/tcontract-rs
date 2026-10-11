@@ -1,0 +1,32 @@
+[package]
+name = "tcontract"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+authors = ["Lukas Devos <ldevos@flatironinstitute.org>", "tensor4all contributors"]
+publish = false
+description = "Binary tensor contraction for the tcontract stack: one Problem, a packed TBLIS-style driver, faer and elementwise strategies"
+
+[dependencies]
+faer = { workspace = true }
+num-complex = { workspace = true }
+strided-basic = { workspace = true }
+strided-view = { workspace = true }
+thiserror = { workspace = true }
+tcontract-exec = { workspace = true, features = ["strided"] }
+tcontract-kernel = { workspace = true, features = ["std"] }
+
+[features]
+# Optional per-phase timing of the packed driver, for measurement. Off by default
+# and free when off: every call site is `#[cfg]`-gated.
+phase-timing = []
+
+[dev-dependencies]
+rand = { workspace = true }
+rand_chacha = "0.3"
+rayon = { workspace = true }
+tcontract-testkit = { workspace = true }
+
+[lints]
+workspace = true

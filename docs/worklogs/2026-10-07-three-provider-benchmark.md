@@ -2,9 +2,9 @@
 
 ## Protocol (recorded before timing)
 
-User requested tprims-rs, original tensorprimitives-rs and TBLIS; final thread
+User requested tcontract-rs, original tensorprimitives-rs and TBLIS; final thread
 counts are 1,4,8,12 (not 16), native CPU builds, and the measurement procedure
-fixed in the tprims-benchmark skill. Existing TCCG `tcbench` has 49 cases and
+fixed in the tcontract-benchmark skill. Existing TCCG `tcbench` has 49 cases and
 TBLIS FFI, but was serial-only and no longer had the upstream baseline.
 Reuse it; add an optional pinned upstream dependency and the existing
 BenchThreads host/pool helper instead of a new suite.
@@ -62,7 +62,7 @@ Retain unfavorable scaling and results. Raw results and reproduction metadata:
 
 - Native release integration smoke test: known values, all 49 cases in f64/c64
   at 1T/4T/8T/12T, invalid zero-thread rejection: passed with upstream,TBLIS.
-- `cargo clippy -p tprims-bench --all-targets --features upstream,tblis -- -D warnings`: passed.
+- `cargo clippy -p tcontract-bench --all-targets --features upstream,tblis -- -D warnings`: passed.
 - Skill mirror check: passed.
 
 ## Result
@@ -75,14 +75,14 @@ processes passed idle guards on attempt 1, all 6,272 measurement rows were
 present and mismatch-free. The stdlib summarizer validates completeness and
 produces 784 per-case comparisons.
 
-At 16 MiB, 8T geometric-mean tprims speedup against its own 1T is 5.06x f64
+At 16 MiB, 8T geometric-mean tcontract speedup against its own 1T is 5.06x f64
 and 5.84x c64; upstream is very close (time ratios 1.04x/1.02x), while this
 Zen3/AVX2 TBLIS build has time ratios 1.31x/1.14x. Kernel/ISA confounding
 prevents a driver-only claim. All cases and A/A spreads remain in the linked
 result; small differences below individual noise spreads are inconclusive.
 
 12T has severe runtime variance despite idle windows: TBLIS's 1 MiB c64
-`abjc-cbka-kj` changes from 0.277 ms to 29.991 ms; tprims small cases also
+`abjc-cbka-kj` changes from 0.277 ms to 29.991 ms; tcontract small cases also
 vary substantially. Cause unestablished, **12T ranking inconclusive**.
 No rows were dropped and no performance optimization was promoted.
 

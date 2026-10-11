@@ -22,7 +22,7 @@ mkdir -p "$out"
 {
     echo "tool: benchmarks/scripts/paired.sh"
     echo "date: $(date -u +%FT%TZ)"
-    echo "tprims-rs: $(git -C "$root" rev-parse HEAD)$(git -C "$root" diff --quiet || echo ' (dirty)')"
+    echo "tcontract-rs: $(git -C "$root" rev-parse HEAD)$(git -C "$root" diff --quiet || echo ' (dirty)')"
     echo "binary: $bin"
     echo "cpu: $(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | xargs || uname -m)"
     echo "cpus: $cpus"

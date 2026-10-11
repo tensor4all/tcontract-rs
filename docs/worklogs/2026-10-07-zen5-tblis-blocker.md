@@ -23,21 +23,21 @@ remain unchanged; `-march=native` is not evidence of selecting a Zen5 kernel.
   in `tblis/plugin/bli_plugin_tblis.cxx`. Current TBLIS HEAD
   `eb719e718976572e0ab53975f4e0c799faeb35f2` retains this plugin requirement.
 
-Source checkouts are `/tmp/tprims-blis-zen5-upstream`,
-`/tmp/tprims-blis-zen5-amd`, `/tmp/tprims-tblis-zen5-current`.
+Source checkouts are `/tmp/tcontract-blis-zen5-upstream`,
+`/tmp/tcontract-blis-zen5-amd`, `/tmp/tcontract-tblis-zen5-current`.
 
 ## Attempt and outcome
 
 Tried the existing TBLIS source with CMake
-`-DFETCHCONTENT_SOURCE_DIR_BLIS=/tmp/tprims-blis-zen5-amd`
+`-DFETCHCONTENT_SOURCE_DIR_BLIS=/tmp/tcontract-blis-zen5-amd`
 `-DBLIS_CONFIG_FAMILY=zen5 -DBLIS_THREAD_MODEL=pthread`
 `-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS='-O3 -march=native'`
 `-DCMAKE_CXX_FLAGS='-O3 -march=native'`
-and separate build/install paths `/tmp/tprims-tblis-zen5-build` /
-`/tmp/tprims-tblis-zen5-install`.
+and separate build/install paths `/tmp/tcontract-tblis-zen5-build` /
+`/tmp/tcontract-tblis-zen5-install`.
 
 CMake stopped first because the AMD source has its own CMake project requiring
-Fortran, which this host lacks. Log: `/tmp/tprims-tblis-zen5-configure.log`.
+Fortran, which this host lacks. Log: `/tmp/tcontract-tblis-zen5-configure.log`.
 Installing a Fortran compiler or building AMD BLIS separately would bypass
 this first problem, **not** supply the missing TBLIS plugin API above.
 No system installs, kernel ports, compatibility shims or changes to the

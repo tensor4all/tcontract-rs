@@ -17,11 +17,11 @@ Detailed record is the experiment's PROVENANCE.md.
 
 The C function is compiled with system cc `-O3 -march=native`, a project-owned
 int64 BLASLONG shim and CNAME rename. KernelCatalog registers an external
-MR16/NR2 scratch-tile family: existing tprims packers, driver, scheduling,
+MR16/NR2 scratch-tile family: existing tcontract packers, driver, scheduling,
 writeback and caller pool are reused. No production default changes or
 translation of assembly. Zeroing the tile is an explicit adapter cost because
 OpenBLAS accumulates into C. Source's wider m16n12 path uses B packed in pairs
-rather than tprims's NR-wide k-major panels, so the minimal import does not
+rather than tcontract's NR-wide k-major panels, so the minimal import does not
 claim to preserve OpenBLAS's fully optimized full-GEMM blocking/tile usage.
 A negative result applies to this adapter, not all possible kernel ports.
 
@@ -32,7 +32,7 @@ relative Frobenius residual<=1e-10. Clippy and formatting passed.
 
 ## Fixed experiment protocol (before timings)
 
-Same native-release executable contains both default forced-packed tprims
+Same native-release executable contains both default forced-packed tcontract
 and imported OpenBLAS family. All f64 cases: gemm-512-col512^3,
 gemm-1024-col1024^3, strided-1024-rowa1024^3 (A row-major, B/D column-major).
 No post-hoc filtering. Both arms share identical deterministic data,
@@ -58,7 +58,7 @@ Raw observations: `experiments/openblas-kernel/results/2026-10-07/`.
 ## Minimal adapter result and wider-path protocol
 
 The complete16x2 adapter experiment passed all4-budget guards/checks; every
-case was slower, with tprims/OpenBLAS time ratios0.606-0.698. A/A spreads
+case was slower, with tcontract/OpenBLAS time ratios0.606-0.698. A/A spreads
 were generally<2% (12T imported1024 GEMM8.8% maximum). This minimal import
 fails its adoption gate. It cannot stand in for OpenBLAS's wider n12 path.
 
@@ -85,7 +85,7 @@ The first complete wide experiment failed a12T idle gate; retain the entire
 attempt as `results/2026-10-07-wide-invalid/`. One complete repeat of the
 predeclared experiment passed all numerical and idle checks. All3 cases and
 all4 budgets are included. Ratios below are geometric means of paired A/A
-best wall times, tprims time divided by imported-family time (<1 is slower):
+best wall times, tcontract time divided by imported-family time (<1 is slower):
 
 | T | 512 column GEMM | 1024 column GEMM | 1024 row-major A |
 |---|---:|---:|---:|
@@ -96,7 +96,7 @@ best wall times, tprims time divided by imported-family time (<1 is slower):
 
 The wide path improves upon the minimal adapter but still loses on every
 case. At1/4/8T spreads are<=1.8%, much smaller than these losses.12T's
-512 default-tprims A/A spread is30.8% despite idle guards passing; retain it
+512 default-tcontract A/A spread is30.8% despite idle guards passing; retain it
 as instability, not proof of the precise12T ratio. Other12T wide spreads
 include7.5% for1024 GEMM. Adoption fails independently of these noisy rows
 because the stable1/4/8T cases consistently regress. Neither adapter is

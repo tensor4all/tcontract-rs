@@ -1,6 +1,6 @@
 # unary-add
 
-Per-call cost of `tprims_contract::unary::add` on small blocks, at one thread:
+Per-call cost of `tcontract::unary::add` on small blocks, at one thread:
 
 ```text
 D = alpha * op_A(A[labels_a]) + beta * D_old
@@ -10,7 +10,7 @@ One entry point for a permutation (`tensoradd!`), a diagonal and a reduction
 (`tensortrace!`). TensorKit.jl calls it once per subblock, so what matters is the
 per-call cost, not the bandwidth of a large block. This probe answers "what does
 one such call cost, and how much of it is planning?" — the question
-[tprims-rs#82](https://github.com/tensor4all/tprims-rs/issues/82) asks before the
+[tcontract-rs#82](https://github.com/tensor4all/tcontract-rs/issues/82) asks before the
 one-shot C ABI (its P2) is designed.
 
 ## Two timed boundaries

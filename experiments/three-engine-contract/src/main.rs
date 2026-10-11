@@ -1,5 +1,5 @@
-//! tprims vs tensorprimitives-rs (`tensorcontract`) vs tenferro on the
-//! per-shape corpus of tensor4all/tprims-rs#61, single-threaded.
+//! tcontract vs tensorprimitives-rs (`tensorcontract`) vs tenferro on the
+//! per-shape corpus of tensor4all/tcontract-rs#61, single-threaded.
 //!
 //! Every case is a *program*: a list of input tensors and a list of pairwise
 //! steps, each step contracting two slots into a new slot with a local einsum
@@ -13,7 +13,7 @@
 //! | --- | --- | --- |
 //! | `tc_exec` | exec | prebuilt `tensorcontract::Plan::run` into a preallocated output |
 //! | `tc_call` | call | `tensorcontract::contract` (plans) into a freshly allocated output |
-//! | `tp_exec` | exec | prebuilt `tprims_contract::Plan::execute_into` (planner's choice) |
+//! | `tp_exec` | exec | prebuilt `tcontract::Plan::execute_into` (planner's choice) |
 //! | `tp_packed_exec` | exec | as `tp_exec`, packed driver forced |
 //! | `tp_call` | call | `Problem` + `Plan::new` + fresh output, then execute |
 //! | `tf_exec` | exec | prepared `ConcreteEinsumPlan::execute_into`, one session for the whole timing loop |
@@ -39,7 +39,7 @@ use rand_chacha::ChaCha8Rng;
 
 trait Elem:
     tensorcontract::Element
-    + tprims_contract::api::Scalar
+    + tcontract::api::Scalar
     + cpueinsum::Scalar
     + tenferro_tensor::TensorScalar
     + Copy
@@ -443,18 +443,18 @@ where
     })
 }
 
-fn tp_problem<T: Elem>(p: &Program, k: usize) -> tprims_contract::api::Problem
+fn tp_problem<T: Elem>(p: &Program, k: usize) -> tcontract::api::Problem
 where
     <T as tensorcontract::Element>::Real: tensorcontract::KernelSet,
 {
-    use tprims_contract::api::{CSpec, Labels, LayoutSpec, OperandSpec, Problem};
+    use tcontract::api::{CSpec, Labels, LayoutSpec, OperandSpec, Problem};
     let s = &p.steps[k];
     let n_in = p.inputs.len();
     let spec = |d: &[usize]| {
         OperandSpec::new(LayoutSpec::new(d, &col_major_strides(d), 0).expect("layout"))
     };
     Problem::from_labels(
-        <T as tprims_contract::api::Scalar>::STORAGE,
+        <T as tcontract::api::Scalar>::STORAGE,
         spec(&p.shapes[s.lhs]),
         spec(&p.shapes[s.rhs]),
         CSpec::Absent,
@@ -471,12 +471,12 @@ where
     strided_view::StridedView::new(data, d, s, 0).expect("view")
 }
 
-/// tprims with prebuilt plans (planner's choice, or packed forced).
+/// tcontract with prebuilt plans (planner's choice, or packed forced).
 fn tp_exec<'a, T: Elem>(p: &'a Program, inputs: &'a [Vec<T>], packed: bool) -> Runner<'a, T>
 where
     <T as tensorcontract::Element>::Real: tensorcontract::KernelSet,
 {
-    use tprims_contract::{Plan, PlanConfig};
+    use tcontract::{Plan, PlanConfig};
     let n_in = p.inputs.len();
     let cfg = if packed {
         PlanConfig::packed()
@@ -491,7 +491,7 @@ where
         .iter()
         .map(|d| vec![T::default(); numel(d)])
         .collect();
-    let exec = tprims_exec::Exec::serial();
+    let exec = tcontract_exec::Exec::serial();
     Box::new(move |want| {
         for (k, s) in p.steps.iter().enumerate() {
             let (done, rest) = slots.split_at_mut(k);
@@ -520,14 +520,14 @@ where
     })
 }
 
-/// tprims planning per call, fresh outputs.
+/// tcontract planning per call, fresh outputs.
 fn tp_call<'a, T: Elem>(p: &'a Program, inputs: &'a [Vec<T>]) -> Runner<'a, T>
 where
     <T as tensorcontract::Element>::Real: tensorcontract::KernelSet,
 {
-    use tprims_contract::{Plan, PlanConfig};
+    use tcontract::{Plan, PlanConfig};
     let n_in = p.inputs.len();
-    let exec = tprims_exec::Exec::serial();
+    let exec = tcontract_exec::Exec::serial();
     let cfg = PlanConfig::default();
     Box::new(move |want| {
         let mut slots: Vec<Vec<T>> = Vec::with_capacity(p.steps.len());
@@ -592,7 +592,7 @@ where
     };
     let mut scratch = Scratch::with_len(plan.scratch_len());
     let mut out = vec![T::default(); numel(out_shape)];
-    let exec = tprims_exec::Exec::serial();
+    let exec = tcontract_exec::Exec::serial();
     Box::new(move |want| {
         let views: Vec<_> = (0..n_in).map(|i| tp_view(&inputs[i], &p.shapes[i], &strides[i])).collect();
         let mut dv = strided_view::StridedViewMut::new(&mut out, out_shape, strides.last().unwrap(), 0)
@@ -615,7 +615,7 @@ where
     let gout: Vec<i64> = gout.iter().map(|&x| x as i64).collect();
     let path: Vec<[usize; 2]> = p.steps.iter().map(|s| [s.lhs, s.rhs]).collect();
     let strides: Vec<Vec<isize>> = p.shapes.iter().map(|d| col_major_strides(d)).collect();
-    let exec = tprims_exec::Exec::serial();
+    let exec = tcontract_exec::Exec::serial();
     Box::new(move |want| {
         let refs: Vec<&[i64]> = gin.iter().map(|v| v.as_slice()).collect();
         let spec = cpueinsum::EinsumSpec::new(&refs, &gout, &path).expect("ce spec");
@@ -1061,7 +1061,7 @@ fn main() {
     let samples: usize = get("--samples").map(|s| s.parse().unwrap()).unwrap_or(11);
     let seed: u64 = get("--seed").map(|s| s.parse().unwrap()).unwrap_or(61);
     if args.iter().any(|a| a == "--report") {
-        // Which strategy the tprims planner picks for each distinct step.
+        // Which strategy the tcontract planner picks for each distinct step.
         for p in corpus() {
             let mut seen = std::collections::BTreeMap::new();
             for k in 0..p.steps.len() {
@@ -1260,7 +1260,7 @@ fn tp_report<T: Elem>(p: &Program, k: usize) -> String
 where
     <T as tensorcontract::Element>::Real: tensorcontract::KernelSet,
 {
-    let plan = tprims_contract::Plan::<T>::new(&tp_problem::<T>(p, k), &tprims_contract::PlanConfig::default())
+    let plan = tcontract::Plan::<T>::new(&tp_problem::<T>(p, k), &tcontract::PlanConfig::default())
         .expect("tp plan");
     let r = plan.report();
     format!(

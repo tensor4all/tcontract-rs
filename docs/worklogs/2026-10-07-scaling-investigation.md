@@ -16,7 +16,7 @@
 
 ## Need gate and diagnostic protocol, before new measurements
 
-User requests root-cause analysis and optimization of tprims scaling, retaining
+User requests root-cause analysis and optimization of tcontract scaling, retaining
 the existing Zen3 TBLIS baseline. Existing complete 49-case measurements
 show repeatable 4T->8T c64 regressions in `ajbc-ckba-jk` and
 `ajbdc-ckbad-jk` at nominal16MiB, affecting whole-call times (15->40 ms,
@@ -76,7 +76,7 @@ Primary gate: each of the two representative c64 nominal16MiB 8T cases
 improves >=2x on geometric means over A/A, with improvement exceeding both
 arms' per-case A/A spread. Numerical checks: all known-value/full-corpus
 comparisons finite <=1e-10, kernel unit tests and release contraction tests.
-Nonregression: no >10% geometric-mean tprims slowdown in any size/dtype/thread
+Nonregression: no >10% geometric-mean tcontract slowdown in any size/dtype/thread
 group. Retain and inspect every individual >10% regression; do not promote
 if an unexplained regression exceeds both arms' A/A spread. If a validity
 or nonregression gate fails, classify the pair inconclusive/failed; do not
@@ -229,7 +229,7 @@ already has and derives per-block offsets. It does not build a per-element
 offset vector, and its block granularity `BS` is the panel width, not the
 register tile.
 
-tprims instead builds `scat` of length **elements** per role and then
+tcontract instead builds `scat` of length **elements** per role and then
 `bs` of length `elements / mr`. The per-element array is the part TBLIS does
 not have; that, not the existence of block scatter, is the actionable
 difference. BLIS's pack kernels, examined in the same investigation, address
@@ -269,7 +269,7 @@ Block-Scatter-Matrix format.
 
 So a per-element gather index array is **not** the norm across libraries; the
 norm is `(extent, stride)` descriptors plus, where a gather is genuinely
-needed, a scatter at block/panel granularity. tprims is unusual only in
+needed, a scatter at block/panel granularity. tcontract is unusual only in
 materialising the per-element offsets at plan time and in having no plan
 cache.
 
@@ -332,7 +332,7 @@ the driver stages, but no precise percentage should be quoted, and no absolute
 rate without its warm-up and run order.
 
 Note also that the ablations required rebuilding `tcbench`, which a previous
-`cargo clean -p tprims-bench` had removed; the first attempts silently produced
+`cargo clean -p tcontract-bench` had removed; the first attempts silently produced
 no data because the binary was missing.
 
 ## Evidence index (contract 1)
@@ -432,7 +432,7 @@ than the plan-time work it removed. The plan-time win is real but it is paid
 for in execution, which is the opposite of the required trade.
 
 What is kept: the additive, execution-neutral part -- the single-axis fast
-path in `build_scatter` (`crates/tprims-kernel/src/pack/scatter.rs`), with
+path in `build_scatter` (`crates/tcontract-kernel/src/pack/scatter.rs`), with
 its own regression test, worth 1.4-2.7x on plan-time scatter construction and
 **no** change to any executed instruction path. Verified after the revert:
 2e24 = 142.5 ms, mat_2048 = 41.7 ms, and the representative case back at
@@ -488,7 +488,7 @@ that was removed from the tree; it is kept as the record of what was measured,
 not as a description of this checkout. `experiments/scatter-cost/src/main.rs`
 carries its own copy so the numbers below stay reproducible.
 
-The primitive was, in `crates/tprims-kernel/src/pack/scatter.rs`:
+The primitive was, in `crates/tcontract-kernel/src/pack/scatter.rs`:
 * `role_len(extents)` -- the product `build_scatter` would allocate, without
 allocating it.
 * `block_strides_from_axes(extents, strides, blk, out)` -- the block-scatter
@@ -571,7 +571,7 @@ case is (all49 have batch elements of1), and the plan-time cost for the
 largest corpus roles is now ~0.1-0.3 ms against millisecond-scale execution.
 The need gate was not met, so the refactor is recorded rather than landed.
 Effect at library level, `packed_plan` (plan construction, forced-packed route,
-1T CPU4, `BENCH_RUNS=5`/`BENCH_WARMUP=1`, `benchmarks/benchmarks/tprims/corpus/hadamard.json`),
+1T CPU4, `BENCH_RUNS=5`/`BENCH_WARMUP=1`, `benchmarks/benchmarks/tcontract/corpus/hadamard.json`),
 against the recorded pre-change values from the same protocol:
 
 | case | before | after the fast path |
@@ -707,7 +707,7 @@ actual8T cache report **before** rerunning the entire unchanged protocol.
 
 The subsequent Hadamard launch used an incorrect repository-relative path
 and failed before cases ran. The actual repository path is
-`benchmarks/benchmarks/tprims/corpus/hadamard.json`; use its absolute path
+`benchmarks/benchmarks/tcontract/corpus/hadamard.json`; use its absolute path
 and record its hash. This is a harness setup error, not a numerical result.
 
 Rebuilt native candidate now reports8MiB L3/16 logical sharers and1 domain
@@ -802,7 +802,7 @@ methodological cost is that plan construction cannot be compared across
 separately built binaries at this resolution; compare it only within one
 build, or fix the build configuration. The shipped configuration is thin-LTO,
 so a shipping conclusion needs one of: a deliberate deterministic alignment
-flag, or removal of the code that perturbs `tprims-contract` codegen.
+flag, or removal of the code that perturbs `tcontract` codegen.
 
 ## Why plan construction costs microseconds to hundreds of milliseconds
 

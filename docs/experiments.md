@@ -47,9 +47,9 @@ Use [Matthews's TBLIS paper](https://arxiv.org/abs/1607.00291) for the algorithm
 
 ## Prototype 4: C ABI slice
 
-**Question:** Does the design hold across the C boundary: an explicit executor (`tprims_exec*` then, `TAPP_executor` since 2026-10-01) per call, DLPack views, one shared library?
+**Question:** Does the design hold across the C boundary: an explicit executor (`tcontract_exec*` then, `TAPP_executor` since 2026-10-01) per call, DLPack views, one shared library?
 
-Build the Phase 1f slice (a C ABI crate; it is now `tprims-capi`, whose contraction part is TAPP) and a C benchmark program. Measure per-call fixed cost of an empty call and a small contraction through C against the same calls from Rust, both serial and with a pool created from C. Verify zero copy for strided and column-major `DLTensor` inputs by pointer identity, pool create, use and close (including `TPRIMS_BUSY`), and that an executor handle is accepted by every plan of the library. Record per-call validation cost separately from kernel time.
+Build the Phase 1f slice (a C ABI crate; it is now `tcontract-capi`, whose contraction part is TAPP) and a C benchmark program. Measure per-call fixed cost of an empty call and a small contraction through C against the same calls from Rust, both serial and with a pool created from C. Verify zero copy for strided and column-major `DLTensor` inputs by pointer identity, pool create, use and close (including `TCONTRACT_BUSY`), and that an executor handle is accepted by every plan of the library. Record per-call validation cost separately from kernel time.
 
 **Decision gate:** C-side fixed cost within a small, recorded margin of the Rust call, no hidden copies, and no ABI change forced by the benchmark. Otherwise revise the design before Phase 2.
 

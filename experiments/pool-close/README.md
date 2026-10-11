@@ -2,7 +2,7 @@
 
 **Question:** When a pool owned by a C execution handle is closed, what marks the point after which no worker code runs: the Rayon exit handler, or joining the worker threads?
 
-Found by the audit in [#1](https://github.com/tensor4all/tprims-rs/issues/1). This is a correctness probe, not a timing experiment.
+Found by the audit in [#1](https://github.com/tensor4all/tcontract-rs/issues/1). This is a correctness probe, not a timing experiment.
 
 ## Setup
 

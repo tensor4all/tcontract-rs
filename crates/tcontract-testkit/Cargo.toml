@@ -1,0 +1,22 @@
+[package]
+name = "tcontract-testkit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Test support for the tcontract stack: an independent label oracle, seeded fixtures, a naive second contraction backend and downstream-style kernel fixtures"
+
+[dependencies]
+num-complex = { workspace = true }
+rand = { workspace = true }
+rand_chacha = "0.3"
+strided-view = { workspace = true }
+# The second backend implements the contraction interface and reads Problem
+# roles; the oracle and fixtures below share no code with it.
+tcontract = { workspace = true }
+tcontract-exec = { workspace = true }
+tcontract-kernel = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

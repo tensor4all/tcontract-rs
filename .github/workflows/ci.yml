@@ -41,7 +41,7 @@ jobs:
       - run: python3 scripts/check-agent-skills.py
       - run: python3 benchmarks/scripts/test_idle_cpus.py
       - run: python3 benchmarks/scripts/test_tblis_decision.py
-      - run: bash -n benchmarks/scripts/pinned.sh benchmarks/scripts/paired.sh benchmarks/scripts/build_tblis.sh benchmarks/benchmarks/tprims/contract/run.sh benchmarks/c/run.sh
+      - run: bash -n benchmarks/scripts/pinned.sh benchmarks/scripts/paired.sh benchmarks/scripts/build_tblis.sh benchmarks/benchmarks/tcontract/contract/run.sh benchmarks/c/run.sh
 
   clippy:
     strategy:
@@ -71,12 +71,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name == 'push' }}
-      # The C ABI test (in `capi`) links a C program to libtprims.so, which `cargo test`
+      # The C ABI test (in `capi`) links a C program to libtcontract_capi.so, which `cargo test`
       # does not build (it only builds the rlib the harness needs).
-      - run: cargo build --profile ci -p tprims-capi
+      - run: cargo build --profile ci -p tcontract-capi
       - run: cargo test --profile ci --workspace --no-fail-fast
-      # tprims-exec alone, without the `strided` adapter the workspace unifies on.
-      - run: cargo test --profile ci -p tprims-exec --no-fail-fast
+      # tcontract-exec alone, without the `strided` adapter the workspace unifies on.
+      - run: cargo test --profile ci -p tcontract-exec --no-fail-fast
 
   # The packed driver's micro-kernels are written for the release profile (thin LTO,
   # one codegen unit), so they are tested there as well; upstream CI tests both. This
@@ -93,10 +93,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name == 'push' }}
-      - run: cargo test -p tprims-contract --release
-      - run: cargo run --release -p tprims-bench --bin tcbench -- info
+      - run: cargo test -p tcontract --release
+      - run: cargo run --release -p tcontract-bench --bin tcbench -- info
       # The README's Rust example.
-      - run: cargo run --release -p tprims-contract --example readme
+      - run: cargo run --release -p tcontract --example readme
 
   capi:
     strategy:
@@ -111,22 +111,22 @@ jobs:
         with:
           save-if: ${{ github.event_name == 'push' }}
       # The C test (tests/c_abi.rs) compiles and runs C and C++ programs
-      # against the built libtprims.so, one of them against the pinned upstream
+      # against the built libtcontract_capi.so, one of them against the pinned upstream
       # TAPP headers alone.
-      - run: cargo build -p tprims-capi
-      - run: cargo test -p tprims-capi
+      - run: cargo build -p tcontract-capi
+      - run: cargo test -p tcontract-capi
       # Exported symbols: ELF `nm -D` on Linux; Mach-O `nm -gU` on macOS, where
       # C names carry a leading underscore (` _name`).
       - run: |
           if [ "$RUNNER_OS" = macOS ]; then
-            syms=$(nm -gU target/debug/libtprims.dylib | sed 's/ _/ /')
+            syms=$(nm -gU target/debug/libtcontract_capi.dylib | sed 's/ _/ /')
           else
-            syms=$(nm -D --defined-only target/debug/libtprims.so)
+            syms=$(nm -D --defined-only target/debug/libtcontract_capi.so)
           fi
-          echo "$syms" | grep -q ' tprims_abi_version$'
+          echo "$syms" | grep -q ' tcontract_abi_version$'
           echo "$syms" | grep -q ' TAPP_destroy_executor$'
           echo "$syms" | grep -q ' TAPP_create_tensor_product$'
-          ! echo "$syms" | grep -q ' tprims_blas_'
+          ! echo "$syms" | grep -q ' tcontract_blas_'
 
   c-consumer:
     runs-on: ubuntu-latest
@@ -136,7 +136,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name == 'push' }}
-      - run: cargo build --release -p tprims-capi
+      - run: cargo build --release -p tcontract-capi
       # A prebuilt library, then an installed prefix (the layout install.sh
       # produces), each consumed by the CMake example.
       - run: |
@@ -144,7 +144,7 @@ jobs:
           cmake --build build/prebuilt
           ./build/prebuilt/tapp-c-consumer
       - run: |
-          crates/tprims-capi/install.sh --prefix="$PWD/build/prefix"
+          crates/tcontract-capi/install.sh --prefix="$PWD/build/prefix"
           cmake -S examples/c-consumer -B build/installed -DTAPP_PREFIX="$PWD/build/prefix"
           cmake --build build/installed
           LD_LIBRARY_PATH="$PWD/build/prefix/lib" ./build/installed/tapp-c-consumer

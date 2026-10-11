@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 description = "Isolated experiment: freeze the AVX-512 f64 24x8 real micro-kernel's compiler asm and A/B it against the intrinsic kernel"
 
 [dependencies]
-tprims-kernel = { path = "../../crates/tprims-kernel" }
+tcontract-kernel = { path = "../../crates/tcontract-kernel" }
 
 # The frozen `.S` is the per-crate `--emit=asm` codegen (no cross-crate LTO
 # pass), so LTO is disabled here to make the intrinsic arm the *same* codegen

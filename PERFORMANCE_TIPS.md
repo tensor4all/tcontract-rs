@@ -1,6 +1,6 @@
 # Performance Tips
 
-tprims performance, layout, scratch, threading and benchmark contracts, kept
+tcontract performance, layout, scratch, threading and benchmark contracts, kept
 separate from `REPOSITORY_RULES.md` so they can be read on demand. These rules
 apply on top of the shared `rules/rust/performance.md` and
 `rules/rust/numerical.md` from `tensor4all-agent-rules`. They were adapted
@@ -93,7 +93,7 @@ Audit hints:
   the implementation, report it as the selected strategy, and cover it with
   tests. Across the C ABI, DLPack operands are never copied merely to cross
   the boundary; a forced internal copy becomes an error under
-  `TPRIMS_NO_MATERIALIZE`.
+  `TCONTRACT_NO_MATERIALIZE`.
 - Audit compact, offset/strided, negative-stride, and caller-provided-output
   paths together. Allocating and `_into` operations share the output-writing
   kernel; they do not allocate a temporary result and copy it into the
@@ -182,7 +182,7 @@ Audit hints:
   the preferred contiguous layout; generic-stride inputs that trigger faer
   performance warnings must be justified or converted deliberately at an
   explicit boundary.
-- Take faer parallelism from the `tprims-exec` context passed to the
+- Take faer parallelism from the `tcontract-exec` context passed to the
   operation only; never choose `Par::rayon` or thread counts inside operation
   helpers.
 - Scratch and batching follow the batched-matrix rule in Dense Layout And
@@ -238,7 +238,7 @@ Audit hints:
   comparing CPU behavior.
 - Benchmark scaling across representative sizes, shapes, layouts, and thread
   counts. A single fixed-size speedup is not enough evidence.
-- Benchmarks live in `tprims-bench` (`benchmarks/`). Every public operation
+- Benchmarks live in `tcontract-bench` (`benchmarks/`). Every public operation
   and every alternative implementation (for example faer-loop versus
   TBLIS-style batched GEMM, permute-plus-GEMM versus direct contraction) has
   rows, added in the same change as the operation. When an operation
@@ -279,7 +279,7 @@ Audit hints:
   whose rows carry the same driver, blocking and partition policy must agree.
 - Attribute a case's cost to a phase before touching anything. The packed driver has an
   opt-in instrument for it: build with `--features phase-timing` (a no-op otherwise, every
-  call site is `#[cfg]`-gated) and set `TPRIMS_PHASE=1`; each execution then prints one line
+  call site is `#[cfg]`-gated) and set `TCONTRACT_PHASE=1`; each execution then prints one line
   at the entry of the next one, with `pack_a`, `pack_b`, `kernel`, `writeback` and the
   remainder as `setup`. On the campaign's worst losing TCCG case (`abjc-cbka-kj` f64 16 MiB,
   1T, one process per configuration, best of 5):
@@ -313,7 +313,7 @@ Audit hints:
   and the harness settings are part of a baseline's identity. When they
   change, recapture the baseline with the new harness rather than comparing
   across it, and record which commit produced each side.
-- Record the tprims-rs commit, CPU, `taskset` core set, profile, thread count
+- Record the tcontract-rs commit, CPU, `taskset` core set, profile, thread count
   and timed boundary beside every published table; raw output stays out of
   git except under a result page.
 
@@ -323,7 +323,7 @@ Audit hints:
   element; debug-mode timing claims; missing `black_box`; benchmarks at one
   size or thread count only; a thread flag parsed but not used to build the
   `Exec`; missing startup verification of the effective width; a public op or
-  alternative implementation with no `tprims-bench` row.
+  alternative implementation with no `tcontract-bench` row.
 - Fix: materialize once and compare whole results; release-mode benchmarks
   with an enforced `Exec` at 1T and 4T across representative sizes.
 
@@ -392,7 +392,7 @@ Audit hints:
 
 - Detect: `OnceLock`, `lazy_static`, `thread_local!`, or a `static` map used
   as a cache; a cache type without bound, clear, and stats APIs. (The
-  `tprims-kernel` CPU-feature and cache-hierarchy probes are cached in
+  `tcontract-kernel` CPU-feature and cache-hierarchy probes are cached in
   `OnceLock`s; those are process-constant facts, not data caches.)
 - Fix: own the cache from the plan or context object with bound/clear/stats
   controls and documentation.
@@ -400,11 +400,11 @@ Audit hints:
 ## CPU Threading Contract
 
 - There is no ambient pool. Every operation that may run in parallel takes a
-  `tprims_exec::Exec` argument: `Serial`, a Rayon pool borrowed from the host,
+  `tcontract_exec::Exec` argument: `Serial`, a Rayon pool borrowed from the host,
   or a host broadcast executor. The global Rayon pool is never used
-  implicitly, and no tprims code calls `rayon::current_num_threads()` or
+  implicitly, and no tcontract code calls `rayon::current_num_threads()` or
   builds a `ThreadPoolBuilder` to decide policy. (Imported strided code keeps
-  its `AmbientRayon` mode for its existing callers; tprims never selects it.)
+  its `AmbientRayon` mode for its existing callers; tcontract never selects it.)
 - Serial work runs on the calling thread and never enters a pool. A kernel
   picks its width from its own work; only when that width is greater than one
   does it enter the pool, and it does not enter if the calling thread is
@@ -429,7 +429,7 @@ Audit hints:
   kernel family; they are policy values, not scattered constants.
 - BLAS/OpenMP provider threading stays controlled by provider variables
   (`OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS`,
-  `VECLIB_MAXIMUM_THREADS`); tprims makes no placement promise for threads a
+  `VECLIB_MAXIMUM_THREADS`); tcontract makes no placement promise for threads a
   provider creates.
 
 Audit hints:

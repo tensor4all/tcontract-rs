@@ -3,8 +3,8 @@
 ## Critical Rules
 
 - **NEVER run benchmarks in parallel.** Run them sequentially (1 thread first, then 4 threads, etc.); concurrent runs interfere and produce misleading results.
-- **Record the exact tprims-rs commit for every published result table**, next to the table, together with the CPU, core set and profile.
-- **Campaign results go to [tprims-benchmark](https://github.com/tensor4all/tprims-benchmark), not here.**
+- **Record the exact tcontract-rs commit for every published result table**, next to the table, together with the CPU, core set and profile.
+- **Campaign results go to [tcontract-benchmark](https://github.com/tensor4all/tcontract-benchmark), not here.**
   That repository owns the revision pin, the run manifests, the published
   reports and the staleness index; it builds `tcbench` from a pinned checkout of
   this one. `benchmarks/benchmarks/tcbench/results/` holds the raw runs cited as

@@ -2,7 +2,7 @@
 //!
 //! The exhaustive semantic testing (repeated indices, reductions, batch
 //! indices, conjugation, negative strides, every loop-nest edge case) lives in
-//! `crates/tprims-contract` and runs against a brute-force oracle. This
+//! `crates/tcontract` and runs against a brute-force oracle. This
 //! subcommand does the complementary job: run the *whole TCCG corpus* at
 //! benchmark sizes and confirm that the planner's choice, the packed driver,
 //! TTGT and TBLIS all agree. That is what catches blocking and packing bugs that only appear once
@@ -13,9 +13,9 @@ use std::process::ExitCode;
 use num_complex::Complex;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use tprims_contract::{Plan, PlanConfig};
-use tprims_exec::Exec;
-use tprims_kernel::Element;
+use tcontract::{Plan, PlanConfig};
+use tcontract_exec::Exec;
+use tcontract_kernel::Element;
 
 #[cfg(any(feature = "blas", feature = "tblis"))]
 use super::rel_error;

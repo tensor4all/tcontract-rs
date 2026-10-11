@@ -5,7 +5,7 @@
 //! only, and makes no claim about contraction execution.
 
 use std::time::Instant;
-use tprims_kernel::scatter::{append_block_scatter, build_scatter, IRREGULAR};
+use tcontract_kernel::scatter::{append_block_scatter, build_scatter, IRREGULAR};
 
 /// Local copy of the axis-driven primitive this probe measured. The probe is
 /// retained as the record of a *reverted* attempt, so it must not depend on

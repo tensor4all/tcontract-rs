@@ -1,6 +1,6 @@
 # Repository Rules
 
-tprims-specific rules, applied on top of the shared tensor4all rules from
+tcontract-specific rules, applied on top of the shared tensor4all rules from
 `tensor4all-agent-rules` (see the shared `rules/index.md`). Performance,
 layout, scratch, threading and benchmark contracts live in
 `PERFORMANCE_TIPS.md`; read it before performance-sensitive work and reviews.
@@ -19,7 +19,7 @@ file minimal.
   against the manifests (`cargo tree -e normal --depth 1 -p <crate>`); names,
   features, commands and status lines against the code; planned items
   labelled as planned. The Phase 0 README diagram kept showing
-  `tprims-contract` depending on a sibling crate after the code settled
+  `tcontract` depending on a sibling crate after the code settled
   otherwise.
 
 ## Public Surface Discipline
@@ -107,8 +107,8 @@ file minimal.
 Human/process protocol.
 
 - Reproduce CI lanes locally (fmt, clippy with `-D warnings`, workspace
-  tests, `tprims-exec` without the `strided` feature, release-profile
-  `tprims-contract` tests, the aarch64 check, the C ABI and c-consumer lanes,
+  tests, `tcontract-exec` without the `strided` feature, release-profile
+  `tcontract` tests, the aarch64 check, the C ABI and c-consumer lanes,
   MSRV build, docs) before pushing.
 - Batch fix-ups into one push; do not push a stream of small CI-fix commits to
   an open PR.
@@ -120,7 +120,7 @@ Maintainer protocol.
 - No crate is published from this repository without the maintainer's
   explicit approval for that specific package; a general request to finish a
   PR does not authorize it.
-- strided-rs crates are published from their own repository; the tprims crates
+- strided-rs crates are published from their own repository; the tcontract crates
   are not published yet.
 - Before any `cargo publish`, inspect the packaged files (`cargo package
   --list`) and the metadata: name, version, description, license, repository,
@@ -188,11 +188,11 @@ keeps its existing layout until it is otherwise changed.
   diverges from upstream behaviour.
 - Authorship is never dropped. Imported history is never rewritten
   (no squash merges of import branches, no history filtering). Imported
-  crates keep their upstream `authors` (Lukas Devos for `tprims-kernel`,
-  `tprims-contract` and `tprims-capi`; Satoshi Terasaki and Hiroshi Shinaoka for `strided-*`).
-- Code moved or ported out of an imported crate into a `tprims-*` crate (for
+  crates keep their upstream `authors` (Lukas Devos for `tcontract-kernel`,
+  `tcontract` and `tcontract-capi`; Satoshi Terasaki and Hiroshi Shinaoka for `strided-*`).
+- Code moved or ported out of an imported crate into a `tcontract-*` crate (for
   example the packing and micro-kernels of
-  tensorprimitives-rs's driver into `tprims-kernel`) keeps the original authors in that crate's `authors`,
+  tensorprimitives-rs's driver into `tcontract-kernel`) keeps the original authors in that crate's `authors`,
   keeps the upstream copyright and license notice in each moved file's
   header, moves with `git mv` where possible so history follows, and names
   the original author with a `Co-authored-by:` trailer in the commit.

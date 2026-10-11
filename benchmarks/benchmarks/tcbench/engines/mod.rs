@@ -10,8 +10,8 @@ use std::time::Instant;
 
 use num_complex::Complex;
 use rand::Rng;
-use tprims_contract::api::{CSpec, Labels, LayoutSpec, OperandSpec, Problem, Scalar};
-use tprims_kernel::Element;
+use tcontract::api::{CSpec, Labels, LayoutSpec, OperandSpec, Problem, Scalar};
+use tcontract_kernel::Element;
 
 use crate::blas::GemmScalar;
 use crate::corpus::{Layout, Sized};
@@ -109,7 +109,7 @@ fn operand(l: &Layout) -> OperandSpec {
 
 /// The validated problem of a sized corpus case in storage type `T`: `D` is
 /// overwritten (`beta = 0`), so there is no `C`.
-pub fn problem_of<T: BenchElem>(s: &Sized) -> Result<Problem, tprims_contract::Error> {
+pub fn problem_of<T: BenchElem>(s: &Sized) -> Result<Problem, tcontract::Error> {
     Problem::from_labels(
         T::STORAGE,
         operand(&s.la),

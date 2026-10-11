@@ -1,5 +1,5 @@
-//! `lukbench` -- Lukas Devos's per-shape corpus (tensor4all/tprims-rs#61) with a
-//! TBLIS arm, as the second suite the tprims-benchmark campaign drives.
+//! `lukbench` -- Lukas Devos's per-shape corpus (tensor4all/tcontract-rs#61) with a
+//! TBLIS arm, as the second suite the tcontract-benchmark campaign drives.
 //!
 //! Subcommands:
 //!
@@ -35,7 +35,7 @@ fn main() -> ExitCode {
     let cmd = args.get(1).map(String::as_str).unwrap_or("help");
     let opts = Options::parse(&args[2.min(args.len())..]);
 
-    let threads = tprims_bench::threads::BenchThreads::from_args();
+    let threads = tcontract_bench::threads::BenchThreads::from_args();
     threads.verify();
     engines::configure_threads(threads.requested);
     match cmd {
@@ -100,7 +100,7 @@ impl Options {
             match args[i].as_str() {
                 "--threads" => i += 1, // validated by BenchThreads
                 // Accepted and ignored: this corpus is a fixed set of shapes
-                // (tensor4all/tprims-rs#61) with no size knob. The campaign
+                // (tensor4all/tcontract-rs#61) with no size knob. The campaign
                 // runner passes `--size` to every harness.
                 "--size" => i += 1,
                 "--reps" => {
