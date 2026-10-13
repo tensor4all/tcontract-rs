@@ -64,17 +64,28 @@ lto = "thin"
 codegen-units = 1
 debug = 1
 
-# The optimized gate. `release` is the *shipping* configuration: thin LTO and one
-# codegen unit are what the kernels are tuned against, and they are what the linked
-# artifacts and every recorded experiment use. For a test run they buy nothing --
-# `opt-level = 3` is what changes which code paths are exercised, while LTO and one
-# codegen unit only serialize and lengthen the build -- so the gate keeps the
-# optimization level and drops the two shipping knobs. Measured on a 24-thread host
-# with warm dependencies, `cargo test -p tcontract --no-run` (the package and its test
-# targets): 72.6 s under `release`, 17.1 s under `release-test`. The shipping profile
+# The optimized gate. `release` is the *shipping* configuration: thin LTO, one codegen
+# unit and `opt-level = 3` are what the kernels are tuned against, and they are what the
+# linked artifacts and every recorded experiment use. What a test gate needs from it is
+# the other half -- `debug-assertions` and `overflow-checks` off, and a build the
+# compiler optimizes rather than a debug one -- so this profile inherits all of that and
+# pays only what is worth paying for.
+#
+# Measured on a 24-thread host with warm dependencies, `cargo test -p tcontract --no-run`
+# (the package and its test targets): 72.6 s under `release` and 17.1 s under
+# `release-test`, i.e. thin LTO and one codegen unit cost 4.2x for nothing this job can
+# see. Measured again on four CPUs, the shape of a hosted runner, across the level:
+#
+#     opt-level = 1   26.4 s      auto-vectorization off
+#     opt-level = 2   34.3 s      <- this profile
+#     opt-level = 3   36.2 s      what `release` uses
+#
+# Level 2 keeps vectorization -- the codegen feature the packed kernels are built
+# around -- and level 3's last few per cent buy a gate nothing. The shipping profile
 # itself is still built and linked, and its library run, by `c-consumer`.
 [profile.release-test]
 inherits = "release"
+opt-level = 2
 lto = false
 codegen-units = 16
 debug = 0
