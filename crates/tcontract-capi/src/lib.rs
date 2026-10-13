@@ -122,10 +122,10 @@ pub mod tensor_info;
 pub use abi::*;
 pub use execute::{TAPP_execute_batched_product, TAPP_execute_product};
 pub use executor::{
-    tcontract_pool, tcontract_pool_create_rayon, tcontract_pool_destroy, tcontract_rayon_opts,
-    tcontract_tapp_executor_borrow_pool, tcontract_tapp_executor_create_rayon,
-    tcontract_tapp_executor_get_threads, tcontract_tapp_executor_set_budget, TAPP_create_executor,
-    TAPP_destroy_executor,
+    executor_from_handle, tcontract_pool, tcontract_pool_create_rayon, tcontract_pool_destroy,
+    tcontract_rayon_opts, tcontract_tapp_executor_borrow_pool,
+    tcontract_tapp_executor_create_rayon, tcontract_tapp_executor_get_threads,
+    tcontract_tapp_executor_set_budget, Executor, TAPP_create_executor, TAPP_destroy_executor,
 };
 pub use handle::*;
 pub use product::{TAPP_create_tensor_product, TAPP_destroy_tensor_product};

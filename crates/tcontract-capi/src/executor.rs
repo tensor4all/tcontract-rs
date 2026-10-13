@@ -86,6 +86,22 @@ impl Drop for Flight<'_> {
     }
 }
 
+/// Resolve a `TAPP_executor` handle to the executor it names.
+///
+/// This is the Rust-level seam for the sibling C-API crates of this stack
+/// (`cpueinsum-capi`, `tlinalg-capi`): they accept the same handle, so a host's
+/// pool is shared with them instead of being replaced by a second one. Zero
+/// names no executor, which every caller treats as a serial call.
+///
+/// # Safety
+///
+/// `handle` is zero or a live `TAPP_executor` from this library, and the
+/// returned reference is not used after that executor is destroyed.
+pub unsafe fn executor_from_handle<'a>(handle: TAPP_executor) -> Option<&'a Executor> {
+    // SAFETY: forwarded contract.
+    unsafe { resolve(handle) }
+}
+
 impl Executor {
     fn serial() -> Box<Self> {
         Box::new(Self {
