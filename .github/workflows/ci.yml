@@ -78,11 +78,10 @@ jobs:
       - run: cargo test --profile ci -p tcontract-exec --no-fail-fast
 
   # The packed driver's micro-kernels are written for an optimized build, so the suites
-  # run once more under `release-test` (`opt-level = 3`, see `Cargo.toml`). That profile
-  # is not the shipping one on purpose: thin LTO and one codegen unit only lengthen the
-  # build, and they cost 72.6 s against 17.1 s for the same package and test targets with
-  # warm dependencies here. What the gate is for -- the code paths an optimized build
-  # takes -- is `opt-level`, and the shipping profile is still built, linked and run by
+  # run once more under `release-test` (see `Cargo.toml` for the profile and what it
+  # keeps). It is deliberately not the shipping build: thin LTO and one codegen unit cost
+  # 4.2x for nothing a test can see, and `opt-level = 2` keeps the vectorization the
+  # kernels are built around. The shipping profile is still built, linked and run by
   # `c-consumer`.
   #
   # One OS, not two: this gate's subject is the profile, not the platform, and the `test`
