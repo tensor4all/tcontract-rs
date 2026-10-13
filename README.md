@@ -182,9 +182,10 @@ Build the library with `cargo build --release -p tcontract-capi`, install it wit
 and see [`examples/c-consumer`](examples/c-consumer/README.md) for a CMake
 project that consumes it three ways. The extension headers are
 `<tcontract/tcontract.h>` (DLPack operands, status codes, `tcontract_abi_version`) and
-`<tcontract/tapp_ext.h>` (a Rayon-pool executor owned by the C host). Executor
-handles are valid for every plan of the library; handles of another TAPP
-provider cannot be mixed in.
+`<tcontract/tapp_ext.h>` (Rayon executors: one tcontract creates and joins for a
+host without a pool, or a `tcontract_pool` the C host owns and lends to an
+executor). Executor handles are valid for every plan of the library; handles of
+another TAPP provider cannot be mixed in.
 
 ## Kernel selection and ids
 

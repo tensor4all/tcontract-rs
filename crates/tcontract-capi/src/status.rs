@@ -25,7 +25,7 @@ pub const TCONTRACT_ERR_ALIASED: tcontract_status = 6;
 pub const TCONTRACT_ERR_WOULD_MATERIALIZE: tcontract_status = 7;
 /// Numerical failure (singular, not positive definite, no convergence).
 pub const TCONTRACT_ERR_NUMERICAL: tcontract_status = 8;
-/// The executor has calls in flight.
+/// The executor has calls in flight, or a pool it was built from is still borrowed.
 pub const TCONTRACT_BUSY: tcontract_status = 9;
 /// Destroying a pool from one of its own workers.
 pub const TCONTRACT_ERR_WOULD_DEADLOCK: tcontract_status = 10;
@@ -53,7 +53,7 @@ pub fn describe(status: tcontract_status) -> &'static str {
         TCONTRACT_ERR_ALIASED => "output aliases an operand or overlaps itself",
         TCONTRACT_ERR_WOULD_MATERIALIZE => "the operation would copy an operand",
         TCONTRACT_ERR_NUMERICAL => "numerical failure",
-        TCONTRACT_BUSY => "executor has calls in flight",
+        TCONTRACT_BUSY => "executor has calls in flight, or a pool is still borrowed",
         TCONTRACT_ERR_WOULD_DEADLOCK => "executor destroyed from one of its own workers",
         TCONTRACT_ERR_PANIC => "a panic was caught at the ABI boundary",
         TCONTRACT_ERR_INTERNAL => "internal error",

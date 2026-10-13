@@ -17,8 +17,9 @@ int main(void) {
   double b[6] = {1, 3, 5, 2, 4, 6}; /* columns [1,3,5], [2,4,6] */
   double one = 1.0, zero = 0.0;
 
-  /* One executor type for every part: 0 (serial), TAPP_create_executor, and an
-     owned Rayon pool all go to TAPP products. */
+  /* One executor type for every part: 0 (serial), TAPP_create_executor, an
+     owned Rayon pool, and a Rayon pool the host owns and lends, all go to TAPP
+     products. */
   TAPP_executor pool = 0, serial = 0;
   CHECK(tcontract_tapp_executor_create_rayon(&pool, 4, NULL) == TCONTRACT_OK && pool != 0, "pool create");
   size_t psize = 99, pbudget = 99;
@@ -29,7 +30,21 @@ int main(void) {
   CHECK(tcontract_tapp_executor_set_budget(pool, 4) == TCONTRACT_OK, "budget reset");
   CHECK(TAPP_check_success(TAPP_create_executor(&serial)), "serial executor");
   CHECK(tcontract_tapp_executor_get_threads(serial, &psize, &pbudget) == TCONTRACT_OK && psize == 0 && pbudget == 1, "serial threads");
-  TAPP_executor execs[3] = {0, serial, pool};
+
+  /* A pool the host owns: one handle, one borrowed executor on it. Its budget
+     is clamped to the pool width exactly as set_budget clamps it. */
+  tcontract_pool host = 0;
+  TAPP_executor borrowed = 0;
+  CHECK(tcontract_pool_create_rayon(&host, 3, NULL) == TCONTRACT_OK && host != 0, "host pool create");
+  CHECK(tcontract_tapp_executor_borrow_pool(&borrowed, host, 2) == TCONTRACT_OK && borrowed != 0, "borrow pool");
+  CHECK(tcontract_tapp_executor_get_threads(borrowed, &psize, &pbudget) == TCONTRACT_OK && psize == 3 && pbudget == 2, "borrowed width and budget");
+  CHECK(tcontract_tapp_executor_set_budget(borrowed, 9) == TCONTRACT_OK, "borrowed budget");
+  CHECK(tcontract_tapp_executor_get_threads(borrowed, &psize, &pbudget) == TCONTRACT_OK && psize == 3 && pbudget == 3, "borrowed budget clamped to the pool");
+  CHECK(tcontract_pool_destroy(host) == TCONTRACT_BUSY, "pool destroy refused while an executor is live");
+  CHECK(tcontract_pool_create_rayon(&host, 0, NULL) == TCONTRACT_ERR_INVALID_ARGUMENT, "zero pool workers");
+  CHECK(tcontract_pool_destroy(0) == TCONTRACT_ERR_INVALID_ARGUMENT, "no pool handle");
+  CHECK(tcontract_tapp_executor_borrow_pool(&borrowed, 0, 1) == TCONTRACT_ERR_INVALID_ARGUMENT, "nothing to borrow");
+  TAPP_executor execs[4] = {0, serial, pool, borrowed};
   /* D = A * B with labels
      i,k / k,j / i,j; A is row-major (strides {3,1}), B and D column-major. */
   {
@@ -52,7 +67,7 @@ int main(void) {
                                                         TAPP_IDENTITY, id, ld, TAPP_IDENTITY, id, ld, TAPP_DEFAULT_PREC)),
           "plan create again");
     double ra[6] = {1, 3, 5, 2, 4, 6}; /* row-major rows [1,3,5], [2,4,6] */
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
       double d[4] = {NAN, NAN, NAN, NAN};
       TAPP_status status = -1;
       tcontract_status st = TAPP_execute_product(plan, execs[i], &status, &one, ra, b, &zero, TAPP_IN_PLACE, d);
@@ -70,9 +85,13 @@ int main(void) {
     CHECK(TAPP_check_success(TAPP_destroy_handle(handle)), "handle destroy");
   }
 
-  /* Destruction: an owned pool is stopped and joined; the default executor is a no-op. */
+  /* Destruction: an owned pool is stopped and joined, a borrowed executor
+     releases its borrow before the host pool is destroyed; the default executor
+     is a no-op. */
   CHECK(TAPP_check_success(TAPP_destroy_executor(pool)), "destroy pool joins");
   CHECK(TAPP_check_success(TAPP_destroy_executor(serial)), "destroy serial");
+  CHECK(TAPP_check_success(TAPP_destroy_executor(borrowed)), "destroy borrowed executor");
+  CHECK(TAPP_check_success(tcontract_pool_destroy(host)), "destroy host pool");
   CHECK(TAPP_check_success(TAPP_destroy_executor(0)), "destroy default executor");
   CHECK(tcontract_tapp_executor_create_rayon(&pool, 0, NULL) == TCONTRACT_ERR_INVALID_ARGUMENT, "zero threads");
   char msg[64];
