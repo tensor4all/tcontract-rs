@@ -917,7 +917,7 @@ dependencies = [
 [[package]]
 name = "strided-basic"
 version = "0.5.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=e6241732e9c445d5be7b97c15dfb142fd14737ea#e6241732e9c445d5be7b97c15dfb142fd14737ea"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=49dd63aac7af12a9a3e7de90cffb0337f26025c8#49dd63aac7af12a9a3e7de90cffb0337f26025c8"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -930,7 +930,7 @@ dependencies = [
 [[package]]
 name = "strided-perm"
 version = "0.5.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=e6241732e9c445d5be7b97c15dfb142fd14737ea#e6241732e9c445d5be7b97c15dfb142fd14737ea"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=49dd63aac7af12a9a3e7de90cffb0337f26025c8#49dd63aac7af12a9a3e7de90cffb0337f26025c8"
 dependencies = [
  "rayon",
  "strided-view",
@@ -940,7 +940,7 @@ dependencies = [
 [[package]]
 name = "strided-traits"
 version = "0.5.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=e6241732e9c445d5be7b97c15dfb142fd14737ea#e6241732e9c445d5be7b97c15dfb142fd14737ea"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=49dd63aac7af12a9a3e7de90cffb0337f26025c8#49dd63aac7af12a9a3e7de90cffb0337f26025c8"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -949,7 +949,7 @@ dependencies = [
 [[package]]
 name = "strided-view"
 version = "0.5.0"
-source = "git+https://github.com/tensor4all/strided-rs.git?rev=e6241732e9c445d5be7b97c15dfb142fd14737ea#e6241732e9c445d5be7b97c15dfb142fd14737ea"
+source = "git+https://github.com/tensor4all/strided-rs.git?rev=49dd63aac7af12a9a3e7de90cffb0337f26025c8#49dd63aac7af12a9a3e7de90cffb0337f26025c8"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1006,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "faer",
  "num-complex",
@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "faer",
  "rayon",
@@ -1065,7 +1065,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract-kernel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "num-complex",
