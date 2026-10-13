@@ -172,8 +172,9 @@ straight through with no conversion.
 
 ## Status
 
-This is a **0.1.0, unpublished** engine in the middle of its performance phase,
-with one microarchitecture measured end to end. The C surface is verified — the
+This is an early engine in the middle of its performance phase — the top-level
+`README.md` carries the current release — with one microarchitecture measured end
+to end. The C surface is verified — the
 conformance suite drives the C symbols, and this example checks numerical
 results through the shipped header — but do not read that as a claim that the
 performance is competitive everywhere. See the top-level `README.md` for what is
