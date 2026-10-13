@@ -4,8 +4,8 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
-authors = ["Lukas Devos <ldevos@flatironinstitute.org>", "tensor4all contributors"]
-publish = false
+authors = ["Lukas Devos <ldevos@flatironinstitute.org>"]
+publish = true
 description = "Binary tensor contraction for the tcontract stack: one Problem, a packed TBLIS-style driver, faer and elementwise strategies"
 
 [dependencies]
