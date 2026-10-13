@@ -142,16 +142,19 @@ fn the_packed_route_above_the_bound_is_correct() {
     let b: Vec<Complex64> = (0..chi * 2 * chi)
         .map(|i| Complex64::new((i % 3) as f64, 1.0 - (i % 4) as f64))
         .collect();
-    let av = StridedView::new(&a, &[chi, chi], &col_major(&[chi, chi]), 0).unwrap();
+    let ad = [chi, chi];
+    let a_strides = col_major(&ad);
+    let av = StridedView::new(&a, &ad, &a_strides, 0).unwrap();
     let bd = [chi, 2, chi];
-    let bv = StridedView::new(&b, &bd, &col_major(&bd), 0).unwrap();
+    let b_strides = col_major(&bd);
+    let bv = StridedView::new(&b, &bd, &b_strides, 0).unwrap();
     let mut d1 = vec![Complex64::new(0.0, 0.0); chi * 2 * chi];
     let mut d2 = d1.clone();
-    let mut v1 = StridedViewMut::new(&mut d1, &bd, &col_major(&bd), 0).unwrap();
+    let mut v1 = StridedViewMut::new(&mut d1, &bd, &b_strides, 0).unwrap();
     packed
         .execute_into(&Exec::serial(), Complex64::new(1.0, 0.0), &av, &bv, &mut v1)
         .unwrap();
-    let mut v2 = StridedViewMut::new(&mut d2, &bd, &col_major(&bd), 0).unwrap();
+    let mut v2 = StridedViewMut::new(&mut d2, &bd, &b_strides, 0).unwrap();
     faer.execute_into(&Exec::serial(), Complex64::new(1.0, 0.0), &av, &bv, &mut v2)
         .unwrap();
     // Integer-valued inputs: both routes are exact.

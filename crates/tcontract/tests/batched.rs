@@ -12,8 +12,10 @@ fn data(len: usize, seed: usize, scale: f64) -> Vec<f64> {
 }
 
 /// A column-major view of `x`.
+///
+/// The metadata is computed here, so the view owns it.
 fn cm(x: &[f64], d: [usize; 2]) -> StridedView<'_, f64> {
-    StridedView::new(x, &d, &[1, d[0] as isize], 0).unwrap()
+    StridedView::new_owned(x, d.to_vec(), vec![1, d[0] as isize], 0).unwrap()
 }
 
 fn pool(threads: usize) -> rayon::ThreadPool {
@@ -57,6 +59,7 @@ fn batched_matches_one_at_a_time_bitwise() {
                 }
                 let mut got = vec![vec![0.0f64; m * n]; items];
                 {
+                    let (d_dims, d_strides) = ([m, n], [1isize, m as isize]);
                     let mut batch: Vec<BatchItem<'_, f64>> = got
                         .iter_mut()
                         .enumerate()
@@ -67,7 +70,7 @@ fn batched_matches_one_at_a_time_bitwise() {
                             b: cm(&b[i], [k, n]),
                             beta: 0.0,
                             source: None,
-                            d: StridedViewMut::new(d, &[m, n], &[1, m as isize], 0).unwrap(),
+                            d: StridedViewMut::new(d, &d_dims, &d_strides, 0).unwrap(),
                         })
                         .collect();
                     contract_batched(&mut batch, &exec).unwrap();
@@ -89,7 +92,7 @@ fn a_bad_item_leaves_every_output_untouched() {
     let mut d1 = vec![0.0f64; 8];
     {
         fn view(x: &[f64], d: [usize; 2], s: [isize; 2]) -> StridedView<'_, f64> {
-            StridedView::new(x, &d, &s, 0).unwrap()
+            StridedView::new_owned(x, d.to_vec(), s.to_vec(), 0).unwrap()
         }
         let mut batch = vec![
             BatchItem {
@@ -140,6 +143,9 @@ fn fewer_items_than_the_width_run_inner_spmd_and_more_items_partition_the_batch(
     let pool = Pool::borrow(&tp);
     let exec = Exec::rayon(&pool);
 
+    let (a_dims, a_strides) = ([m, k], [1isize, m as isize]);
+    let (b_dims, b_strides) = ([k, n], [1isize, k as isize]);
+    let (d_dims, d_strides) = ([m, n], [1isize, m as isize]);
     let run = |count: usize| -> Vec<Vec<f64>> {
         let mut outs = vec![vec![0.0f64; m * n]; count];
         let mut batch: Vec<BatchItem<'_, f64>> = outs
@@ -147,11 +153,11 @@ fn fewer_items_than_the_width_run_inner_spmd_and_more_items_partition_the_batch(
             .map(|d| BatchItem {
                 plan: &plan,
                 alpha: 1.0,
-                a: StridedView::new(&a, &[m, k], &[1, m as isize], 0).unwrap(),
-                b: StridedView::new(&b, &[k, n], &[1, k as isize], 0).unwrap(),
+                a: StridedView::new(&a, &a_dims, &a_strides, 0).unwrap(),
+                b: StridedView::new(&b, &b_dims, &b_strides, 0).unwrap(),
                 beta: 0.0,
                 source: None,
-                d: StridedViewMut::new(d, &[m, n], &[1, m as isize], 0).unwrap(),
+                d: StridedViewMut::new(d, &d_dims, &d_strides, 0).unwrap(),
             })
             .collect();
         contract_batched(&mut batch, &exec).unwrap();

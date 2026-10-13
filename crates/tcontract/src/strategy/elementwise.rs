@@ -136,8 +136,8 @@ fn offset_span(dims: &[usize], strides: &[isize]) -> (isize, isize) {
 /// writes it during `'a` except through an identical in-place mapping.
 unsafe fn read_view<'a, T, Op>(
     origin: *const T,
-    dims: &[usize],
-    strides: &[isize],
+    dims: &'a [usize],
+    strides: &'a [isize],
 ) -> StridedView<'a, T, Op> {
     let (lo, hi) = offset_span(dims, strides);
     // SAFETY: the caller's contract; `[lo, hi]` is the layout's reach.
@@ -154,8 +154,8 @@ unsafe fn read_view<'a, T, Op>(
 /// As [`read_view`], and the layout is injective and exclusively owned.
 unsafe fn write_view<'a, T>(
     origin: *mut T,
-    dims: &[usize],
-    strides: &[isize],
+    dims: &'a [usize],
+    strides: &'a [isize],
 ) -> StridedViewMut<'a, T> {
     let (lo, hi) = offset_span(dims, strides);
     // SAFETY: the caller's contract.
@@ -175,8 +175,8 @@ unsafe fn write_view<'a, T>(
 /// still be injective and exclusively owned for `'a`.
 unsafe fn write_view_uninit<'a, T>(
     origin: *mut T,
-    dims: &[usize],
-    strides: &[isize],
+    dims: &'a [usize],
+    strides: &'a [isize],
 ) -> StridedViewMut<'a, MaybeUninit<T>> {
     let (lo, hi) = offset_span(dims, strides);
     // SAFETY: `MaybeUninit<T>` has `T`'s size and alignment, so the same live,
