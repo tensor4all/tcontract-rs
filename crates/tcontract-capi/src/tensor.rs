@@ -256,7 +256,7 @@ pub fn layout(t: &tcontract_tensor, dt: DType) -> Result<Layout, FfiError> {
 /// The caller's contract (documented in `tcontract/core.h`): the whole span from
 /// the lowest to the highest addressed element, padding included, is
 /// initialized memory of `T` that no other thread writes during the call.
-pub unsafe fn view<'a, T>(l: &Layout) -> Result<strided_view::StridedView<'a, T>, FfiError> {
+pub unsafe fn view<'a, T>(l: &'a Layout) -> Result<strided_view::StridedView<'a, T>, FfiError> {
     let (data, off): (&'a [T], isize) = if l.empty {
         (&[], 0)
     } else {
@@ -282,7 +282,7 @@ pub unsafe fn view<'a, T>(l: &Layout) -> Result<strided_view::StridedView<'a, T>
 /// whose span overlaps an input's are rejected by the callers).
 pub unsafe fn view_mut<'a, T>(
     t: &tcontract_tensor,
-    l: &Layout,
+    l: &'a Layout,
 ) -> Result<strided_view::StridedViewMut<'a, T>, FfiError> {
     if t.flags & DLPACK_FLAG_BITMASK_READ_ONLY != 0 {
         return Err(FfiError::new(

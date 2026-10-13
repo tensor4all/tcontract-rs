@@ -76,14 +76,17 @@ impl Prepared {
         }
     }
 
-    /// One execute, returning the allocations the library itself made: the
-    /// views (whose shared extent and stride arrays allocate) are built before
-    /// the count starts.
+    /// One execute, returning the allocations the library itself made. The
+    /// views borrow the layouts built here, so they allocate nothing and are
+    /// built before the count starts either way.
     fn run(&mut self) -> usize {
         let [m, n, k] = self.dims;
-        let av = StridedView::new(&self.a, &[m, k], &[1, m as isize], 0).unwrap();
-        let bv = StridedView::new(&self.b, &[k, n], &[1, k as isize], 0).unwrap();
-        let mut dv = StridedViewMut::new(&mut self.d, &[m, n], &[1, m as isize], 0).unwrap();
+        let (a_dims, a_strides) = ([m, k], [1isize, m as isize]);
+        let (b_dims, b_strides) = ([k, n], [1isize, k as isize]);
+        let (d_dims, d_strides) = ([m, n], [1isize, m as isize]);
+        let av = StridedView::new(&self.a, &a_dims, &a_strides, 0).unwrap();
+        let bv = StridedView::new(&self.b, &b_dims, &b_strides, 0).unwrap();
+        let mut dv = StridedViewMut::new(&mut self.d, &d_dims, &d_strides, 0).unwrap();
         let before = COUNT.load(Relaxed);
         // The plan owns no scratch; a serial caller that wants a steady state
         // with no allocation lends its own provider.

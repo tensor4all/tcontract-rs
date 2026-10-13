@@ -133,8 +133,9 @@ fn gemm_case(cfg: &Cfg, exec: &Exec<'_>, pool: Option<&Pool<'_>>) {
         ..PlanConfig::default()
     };
     let plan = Plan::<f64>::new(&problem, &config).expect("plan");
+    /// The layout is computed here, so the view owns it.
     fn view(x: &[f64], n: usize) -> StridedView<'_, f64> {
-        StridedView::new(x, &[n, n], &[1, n as isize], 0).expect("view")
+        StridedView::new_owned(x, vec![n, n], vec![1, n as isize], 0).expect("view")
     }
     let (av, bv) = (view(&a, n), view(&b, n));
     let mut reference = vec![0.0; n * n];
