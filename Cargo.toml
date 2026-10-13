@@ -17,9 +17,9 @@ edition = "2021"
 rust-version = "1.89"
 
 [workspace.dependencies]
-# strided-rs published v0.4.8, including #290's terminal-pointer safety correction. Keep all
-# strided crates on one source; downstream consumers must coordinate this pin
-# to share `StridedView` types.
+# strided-rs, pinned to a published release (the exact requirement is on each line
+# below). Keep all strided crates on one source; downstream consumers must
+# coordinate this pin to share `StridedView` types.
 strided-basic = { git = "https://github.com/tensor4all/strided-rs.git", rev = "49dd63aac7af12a9a3e7de90cffb0337f26025c8", version = "=0.5.0", default-features = false }
 strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "49dd63aac7af12a9a3e7de90cffb0337f26025c8", version = "=0.5.0" }
 strided-perm = { git = "https://github.com/tensor4all/strided-rs.git", rev = "49dd63aac7af12a9a3e7de90cffb0337f26025c8", version = "=0.5.0" }

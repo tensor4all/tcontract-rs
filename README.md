@@ -29,9 +29,9 @@ AI-assisted contributions are welcome; see [AGENTS.md](AGENTS.md) and
 | `tcontract-testkit` | Test support: an independent label oracle, seeded fixtures, a naive second backend, downstream-kernel fixtures. Not a production fallback. |
 | `tcontract-bench` (`benchmarks/`) | Benchmark harness (`tcbench`, C and Rust ABI rows); not part of the library. |
 
-strided-rs is an external dependency pinned to its published v0.4.8 release,
-including #290's terminal-pointer correction. Consumers must use the same source
-revision to share `StridedView` types.
+strided-rs is an external dependency pinned to a published release; `Cargo.toml`
+carries the exact requirement, so this document does not repeat the number.
+Consumers must use the same source revision to share `StridedView` types.
 
 Arrows mean "depends on" and are drawn from `cargo tree` (normal and build
 dependencies; `tcontract-testkit` is a dev-dependency of `tcontract` and
