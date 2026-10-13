@@ -135,6 +135,9 @@ fn only_tcontract_symbols_of_the_selected_parts_are_exported() {
     }
     for want in [
         "tcontract_abi_version",
+        "tcontract_pool_create_rayon",
+        "tcontract_pool_destroy",
+        "tcontract_tapp_executor_borrow_pool",
         "tcontract_tapp_executor_create_rayon",
         "tcontract_tapp_executor_set_budget",
         "tcontract_tapp_executor_get_threads",

@@ -1,5 +1,6 @@
 /* tcontract C ABI: core (DLPack operands, status codes). Executors are the TAPP
-   executors of <tapp.h>; the Rayon extension is in <tcontract/tapp_ext.h>. */
+   executors of <tapp.h>; the Rayon executors and the host-owned pool they
+   borrow are in <tcontract/tapp_ext.h>. */
 #ifndef TCONTRACT_CORE_H
 #define TCONTRACT_CORE_H
 
@@ -39,7 +40,7 @@ typedef int32_t tcontract_status;
 #define TCONTRACT_ERR_ALIASED 6
 #define TCONTRACT_ERR_WOULD_MATERIALIZE 7
 #define TCONTRACT_ERR_NUMERICAL 8
-#define TCONTRACT_BUSY 9               /* executor has calls in flight */
+#define TCONTRACT_BUSY 9               /* executor busy: calls in flight, or a pool still has a live executor */
 #define TCONTRACT_ERR_WOULD_DEADLOCK 10 /* destroyed from its own worker */
 /* 11 retired (was TCONTRACT_ERR_CLOSED) */
 #define TCONTRACT_ERR_PANIC 12

@@ -34,6 +34,12 @@ mod c_abi {
     use std::ffi::c_void;
     use std::os::raw::{c_char, c_int};
 
+    /// `include/tcontract/tapp_ext.h`, `typedef struct { size_t stack_size; }`.
+    #[repr(C)]
+    pub struct tcontract_rayon_opts {
+        pub stack_size: usize,
+    }
+
     extern "C" {
         // tapp/error.h
         pub fn TAPP_check_success(error: c_int) -> bool;
@@ -114,6 +120,27 @@ mod c_abi {
         pub fn TAPP_implementation_name() -> *const c_char;
         pub fn TAPP_implementation_version() -> *const c_char;
 
+        // `include/tcontract/tapp_ext.h`: the host-owned pool and the executor
+        // that borrows it. Transcribed here as well so a renamed symbol or a
+        // changed argument list is a link (or call) failure in this crate's own
+        // suite, not only in the C program `c_abi.rs` compiles.
+        pub fn tcontract_pool_create_rayon(
+            out: *mut isize,
+            nthreads: usize,
+            opts: *const tcontract_rayon_opts,
+        ) -> c_int;
+        pub fn tcontract_pool_destroy(pool: isize) -> c_int;
+        pub fn tcontract_tapp_executor_borrow_pool(
+            out: *mut isize,
+            pool: isize,
+            budget: usize,
+        ) -> c_int;
+        pub fn tcontract_tapp_executor_get_threads(
+            exec: isize,
+            pool_size: *mut usize,
+            budget: *mut usize,
+        ) -> c_int;
+
         // `api/include/tapp/attributes.h`. These were missing entirely when this
         // suite was written — a C program including `<tapp.h>` and calling one
         // failed to *link*, the least diagnosable failure available — and are now
@@ -122,6 +149,39 @@ mod c_abi {
         pub fn TAPP_attr_set(attr: isize, key: c_int, value: *mut c_void) -> c_int;
         pub fn TAPP_attr_get(attr: isize, key: c_int, value: *mut *mut c_void) -> c_int;
         pub fn TAPP_attr_clear(attr: isize, key: c_int) -> c_int;
+    }
+}
+
+/// The pool extension resolves through the transcribed prototypes: the host
+/// creates one pool, builds an executor that borrows it, reads the width back
+/// and tears both down in the documented order.
+#[test]
+fn the_pool_extensions_resolve_and_run() {
+    unsafe {
+        let mut pool = 0isize;
+        let opts = c_abi::tcontract_rayon_opts {
+            stack_size: 1 << 20,
+        };
+        assert_eq!(
+            c_abi::tcontract_pool_create_rayon(&mut pool, 3, &opts),
+            c_int::from(0)
+        );
+        assert_ne!(pool, 0);
+        let mut exec = 0isize;
+        assert_eq!(
+            c_abi::tcontract_tapp_executor_borrow_pool(&mut exec, pool, 2),
+            c_int::from(0)
+        );
+        let (mut width, mut budget) = (0usize, 0usize);
+        assert_eq!(
+            c_abi::tcontract_tapp_executor_get_threads(exec, &mut width, &mut budget),
+            c_int::from(0)
+        );
+        assert_eq!((width, budget), (3, 2));
+        // The C contract: the pool outlives the executor built from it.
+        assert_ne!(c_abi::tcontract_pool_destroy(pool), c_int::from(0));
+        assert_eq!(c_abi::TAPP_destroy_executor(exec), c_int::from(0));
+        assert_eq!(c_abi::tcontract_pool_destroy(pool), c_int::from(0));
     }
 }
 

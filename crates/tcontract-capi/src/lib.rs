@@ -12,7 +12,7 @@
 //! * the **tcontract extensions** (`include/tcontract/*.h`): DLPack 1.x types
 //!   ([`dlpack`]) and borrowed operands ([`tensor`]) converted to strided views
 //!   without copying, status codes and the thread-local last-error message
-//!   ([`status`]), the Rayon executor extension, and the ABI version.
+//!   ([`status`]), the Rayon executor and pool extensions, and the ABI version.
 //!
 //! The ABI is unchanged from the pinned TAPP prototypes, numeric enumerator and
 //! status values, handle ownership and semantics, except for one intentional
@@ -97,7 +97,7 @@
 //! | Case 5 isolated *output* indices (broadcast) | rejected, as TAPP permits |
 //! | `TAPP_CONJUGATE` on any operand | supported (folded into packing or write-back) |
 //! | computational precision | `TAPP_DEFAULT_PREC` or the storage precision; anything else is `TAPP_ERROR_UNSUPPORTED` |
-//! | executors | `0` and `TAPP_create_executor` are serial; `tcontract_tapp_executor_create_rayon` owns a Rayon pool, which `TAPP_destroy_executor` joins |
+//! | executors | `0` and `TAPP_create_executor` are serial; `tcontract_tapp_executor_create_rayon` owns a Rayon pool, which `TAPP_destroy_executor` joins; `tcontract_pool_create_rayon` + `tcontract_tapp_executor_borrow_pool` run on a pool the C host owns and shares |
 //! | `D` overlapping `A`/`B`, or itself | rejected (`TAPP_ERROR_ALIASED`); `C == D` only with equal element mapping |
 //! | mixed storage types across operands | rejected (`TAPP_ERROR_DATATYPE`) |
 //! | batched product | supported (items validated first, then run in sequence) |
@@ -122,9 +122,10 @@ pub mod tensor_info;
 pub use abi::*;
 pub use execute::{TAPP_execute_batched_product, TAPP_execute_product};
 pub use executor::{
-    tcontract_rayon_opts, tcontract_tapp_executor_create_rayon,
-    tcontract_tapp_executor_get_threads, tcontract_tapp_executor_set_budget, TAPP_create_executor,
-    TAPP_destroy_executor,
+    executor_from_handle, tcontract_pool, tcontract_pool_create_rayon, tcontract_pool_destroy,
+    tcontract_rayon_opts, tcontract_tapp_executor_borrow_pool,
+    tcontract_tapp_executor_create_rayon, tcontract_tapp_executor_get_threads,
+    tcontract_tapp_executor_set_budget, Executor, TAPP_create_executor, TAPP_destroy_executor,
 };
 pub use handle::*;
 pub use product::{TAPP_create_tensor_product, TAPP_destroy_tensor_product};

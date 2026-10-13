@@ -272,6 +272,9 @@ static void test_every_declaration_links(void) {
         (void*)TAPP_execute_batched_product,
         (void*)TAPP_implementation_name,
         (void*)TAPP_implementation_version,
+        (void*)tcontract_pool_create_rayon,
+        (void*)tcontract_pool_destroy,
+        (void*)tcontract_tapp_executor_borrow_pool,
     };
     const size_t n = sizeof decls / sizeof *decls;
 
@@ -281,8 +284,8 @@ static void test_every_declaration_links(void) {
             all_resolved = 0;
         }
     }
-    /* 22 TAPP symbols plus the two non-standard extensions. */
-    check(n == 24 && all_resolved, "every declaration in <tapp.h> links");
+    /* 22 TAPP symbols plus the five non-standard extensions. */
+    check(n == 27 && all_resolved, "every declaration in <tapp.h> and <tcontract/*.h> links");
 }
 
 int main(void) {
