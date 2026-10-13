@@ -19,10 +19,9 @@ env:
 # for every other job, i.e. it set the whole wall clock of CI (17.8 and 18.8 minutes
 # for the two main runs before this change).
 #
-# The release profile (thin LTO, one codegen unit, see `Cargo.toml`) recompiles the
-# whole dependency tree again, so it lives in its own job: its cache entry is then
-# independent of the `ci` profile the `test` job uses, and neither job pays for the
-# other's profile.
+# The optimized profile (see `release-test` in `Cargo.toml`) recompiles the dependency
+# tree again, so it lives in its own job: its cache entry is then independent of the
+# `ci` profile the `test` job uses, and neither job pays for the other's profile.
 
 jobs:
   fmt:
@@ -78,25 +77,29 @@ jobs:
       # tcontract-exec alone, without the `strided` adapter the workspace unifies on.
       - run: cargo test --profile ci -p tcontract-exec --no-fail-fast
 
-  # The packed driver's micro-kernels are written for the release profile (thin LTO,
-  # one codegen unit), so they are tested there as well; upstream CI tests both. This
-  # is the expensive half of what used to be the `test` job.
+  # The packed driver's micro-kernels are written for an optimized build, so the suites
+  # run once more under `release-test` (`opt-level = 3`, see `Cargo.toml`). That profile
+  # is not the shipping one on purpose: thin LTO and one codegen unit only lengthen the
+  # build, and they cost 72.6 s against 17.1 s for the same package and test targets with
+  # warm dependencies here. What the gate is for -- the code paths an optimized build
+  # takes -- is `opt-level`, and the shipping profile is still built, linked and run by
+  # `c-consumer`.
+  #
+  # One OS, not two: this gate's subject is the profile, not the platform, and the `test`
+  # job already covers both. The three steps share one build, so `tcbench` and the README
+  # example are smoke runs of binaries, not a second optimized compile.
   test-release:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name == 'push' }}
-      - run: cargo test -p tcontract --release
-      - run: cargo run --release -p tcontract-bench --bin tcbench -- info
+      - run: cargo test -p tcontract --profile release-test
+      - run: cargo run --profile release-test -p tcontract-bench --bin tcbench -- info
       # The README's Rust example.
-      - run: cargo run --release -p tcontract --example readme
+      - run: cargo run --profile release-test -p tcontract --example readme
 
   capi:
     strategy:
