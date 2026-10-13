@@ -5,8 +5,8 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
-authors = ["Lukas Devos <ldevos@flatironinstitute.org>", "tensor4all contributors"]
-publish = false
+authors = ["Lukas Devos <ldevos@flatironinstitute.org>"]
+publish = true
 
 [dependencies]
 num-complex.workspace = true
