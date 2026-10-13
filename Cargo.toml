@@ -64,6 +64,21 @@ lto = "thin"
 codegen-units = 1
 debug = 1
 
+# The optimized gate. `release` is the *shipping* configuration: thin LTO and one
+# codegen unit are what the kernels are tuned against, and they are what the linked
+# artifacts and every recorded experiment use. For a test run they buy nothing --
+# `opt-level = 3` is what changes which code paths are exercised, while LTO and one
+# codegen unit only serialize and lengthen the build -- so the gate keeps the
+# optimization level and drops the two shipping knobs. Measured on a 24-thread host
+# with warm dependencies, `cargo test -p tcontract --no-run` (the package and its test
+# targets): 72.6 s under `release`, 17.1 s under `release-test`. The shipping profile
+# itself is still built and linked, and its library run, by `c-consumer`.
+[profile.release-test]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = 0
+
 [profile.bench]
 inherits = "release"
 
