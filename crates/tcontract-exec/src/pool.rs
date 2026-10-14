@@ -90,6 +90,18 @@ impl<'p> Pool<'p> {
         self.tp().current_num_threads()
     }
 
+    /// The raw Rayon pool this wrapper wraps.
+    ///
+    /// For a provider that takes a `rayon::ThreadPool` directly (faer through
+    /// `tlinalg`, LAPACK) and must run on the host's pool rather than a second
+    /// one. The wrapper's retained workspace and its SPMD gate stay with the
+    /// wrapper: a provider that takes the bare pool does not share them, so a
+    /// host that mixes such a provider with this stack keeps one pool but two
+    /// workspace owners.
+    pub fn rayon_pool(&self) -> &rayon::ThreadPool {
+        self.tp()
+    }
+
     pub(crate) fn tp(&self) -> &rayon::ThreadPool {
         match &self.pool {
             PoolRef::Borrowed(p) => p,

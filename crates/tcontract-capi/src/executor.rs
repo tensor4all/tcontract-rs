@@ -166,6 +166,25 @@ impl Executor {
         }
     }
 
+    /// Run `f` with this executor's pool and budget.
+    ///
+    /// This is the seam for a provider that takes a `rayon::ThreadPool` directly
+    /// rather than an [`Exec`] (`tlinalg-capi`): it runs on the host's pool, and
+    /// the in-flight guard keeps `tcontract_pool_destroy` from releasing that
+    /// pool under the call. `None` means a serial executor, which has no pool.
+    pub fn with_pool<R>(&self, f: impl FnOnce(Option<(&rayon::ThreadPool, usize)>) -> R) -> R {
+        self.inflight.fetch_add(1, Ordering::Acquire);
+        let _flight = Flight(&self.inflight);
+        match &self.kind {
+            Kind::Serial(_) => f(None),
+            Kind::Pool { pool, budget, .. } => {
+                let width = pool.size().max(1);
+                let budget = budget.load(Ordering::Relaxed).clamp(1, width);
+                f(Some((pool.rayon_pool(), budget)))
+            }
+        }
+    }
+
     /// `(pool_size, budget)`: `(0, 1)` for a serial executor. The budget is an
     /// upper bound on a call's width, not the active width.
     pub fn threads(&self) -> (usize, usize) {
