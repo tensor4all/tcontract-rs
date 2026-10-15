@@ -1,7 +1,7 @@
 [package]
 name = "tcontract-kernel"
 description = "GEMM kernels: family contract and registry, packing, write-back, cache blocking and the project-owned microkernel families"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"

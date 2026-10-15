@@ -20,12 +20,12 @@ rust-version = "1.89"
 # strided-rs, pinned to a published release (the exact requirement is on each line
 # below). Keep all strided crates on one source; downstream consumers must
 # coordinate this pin to share `StridedView` types.
-strided-basic = { git = "https://github.com/tensor4all/strided-rs.git", rev = "493acacfe4a156cb7455c8c37abcfa70e6bcda47", version = "=0.5.1", default-features = false }
-strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "493acacfe4a156cb7455c8c37abcfa70e6bcda47", version = "=0.5.0" }
-strided-perm = { git = "https://github.com/tensor4all/strided-rs.git", rev = "493acacfe4a156cb7455c8c37abcfa70e6bcda47", version = "=0.5.0" }
-strided-kernel = { git = "https://github.com/tensor4all/strided-rs.git", rev = "493acacfe4a156cb7455c8c37abcfa70e6bcda47", version = "=0.5.0" }
-tcontract-kernel = { version = "0.2.1", path = "crates/tcontract-kernel", default-features = false }
-tcontract-exec = { version = "0.2.1", path = "crates/tcontract-exec" }
+strided-basic = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d9cbae8519d1f0df0159d6d23af31ae53aefd571", version = "=0.5.2", default-features = false }
+strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d9cbae8519d1f0df0159d6d23af31ae53aefd571", version = "=0.5.0" }
+strided-perm = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d9cbae8519d1f0df0159d6d23af31ae53aefd571", version = "=0.5.0" }
+strided-kernel = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d9cbae8519d1f0df0159d6d23af31ae53aefd571", version = "=0.5.0" }
+tcontract-kernel = { version = "0.2.2", path = "crates/tcontract-kernel", default-features = false }
+tcontract-exec = { version = "0.2.2", path = "crates/tcontract-exec" }
 tcontract-capi = { version = "0.1.0", path = "crates/tcontract-capi" }
 # Path-only on purpose: `tcontract` only dev-depends on it, and a version here
 # makes `cargo package` resolve the never-published testkit from crates.io and fail.
