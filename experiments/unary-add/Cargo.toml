@@ -12,3 +12,9 @@ tcontract-exec = { path = "../../crates/tcontract-exec" }
 tcontract-kernel = { path = "../../crates/tcontract-kernel" }
 num-complex = "0.4"
 strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "12ff2de906f4d894a4329f7dbf195b0f874f846e", version = "=0.4.6" }
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
