@@ -17,15 +17,16 @@ edition = "2021"
 rust-version = "1.89"
 
 [workspace.dependencies]
-# strided-rs, pinned to a published release (the exact requirement is on each line
-# below). Keep all strided crates on one source; downstream consumers must
-# coordinate this pin to share `StridedView` types.
-strided-basic = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d9cbae8519d1f0df0159d6d23af31ae53aefd571", version = "=0.5.2", default-features = false }
-strided-view = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d9cbae8519d1f0df0159d6d23af31ae53aefd571", version = "=0.5.0" }
-strided-perm = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d9cbae8519d1f0df0159d6d23af31ae53aefd571", version = "=0.5.0" }
-strided-kernel = { git = "https://github.com/tensor4all/strided-rs.git", rev = "d9cbae8519d1f0df0159d6d23af31ae53aefd571", version = "=0.5.0" }
-tcontract-kernel = { version = "0.2.2", path = "crates/tcontract-kernel", default-features = false }
-tcontract-exec = { version = "0.2.2", path = "crates/tcontract-exec" }
+# strided-rs, pinned to published crates.io releases (exact requirements). Keep
+# all strided crates on one source; downstream consumers must coordinate this
+# pin to share `StridedView` types. strided-view stays =0.5.0 so tlinalg 0.2.0's
+# `strided-view =0.5.0` resolves to the same type (strided-basic 0.5.3 accepts it).
+strided-basic = { version = "=0.5.3", default-features = false }
+strided-view = { version = "=0.5.0" }
+strided-perm = { version = "=0.5.0" }
+strided-kernel = { version = "=0.5.0" }
+tcontract-kernel = { version = "0.2.3", path = "crates/tcontract-kernel", default-features = false }
+tcontract-exec = { version = "0.2.3", path = "crates/tcontract-exec" }
 tcontract-capi = { version = "0.1.0", path = "crates/tcontract-capi" }
 # Path-only on purpose: `tcontract` only dev-depends on it, and a version here
 # makes `cargo package` resolve the never-published testkit from crates.io and fail.
