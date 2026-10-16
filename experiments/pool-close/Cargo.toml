@@ -8,3 +8,9 @@ publish = false
 rayon = "=1.11.0"
 
 [workspace]
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0

@@ -26,3 +26,9 @@ lto = "thin"
 codegen-units = 1
 
 [workspace]
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0

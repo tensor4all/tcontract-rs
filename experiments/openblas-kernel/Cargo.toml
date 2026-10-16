@@ -21,3 +21,9 @@ codegen-units = 1
 # Standalone: this directory is excluded from the parent workspace (root
 # Cargo.toml `exclude = ["experiments"]`), so it is its own workspace root.
 [workspace]
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
