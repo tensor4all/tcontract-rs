@@ -341,6 +341,8 @@ speeds anything up.
 
 A contraction is one lowered, role-grouped `Problem`; `Labels` and `DotGeneral` are front ends over one lowering. Repeated labels on one operand select a diagonal (strides add), a label on only one input is a reduction (a K axis with the other input's stride zero), and the output must be injective. The `Problem` keeps the original layouts plus normalized M/N/K/H role axes with signed A/B/C/D strides. Planning is `O(M + N + K)` and happens once; execution uses offset tables and no labels.
 
+Since 0.3 the axis metadata (`LayoutSpec`, `Labels`, `Roles`, `DotShape`, `DotGeneral`) is stored in `tinyvec` inline vectors, so lowering and `Problem::clone` allocate nothing at the usual ranks and an arbitrary rank still spills. The public fields of `DotShape` are therefore `TinyVec`, not `Vec`: read them as a slice (`.as_slice()`) and convert with `.to_vec()` where a `Vec` is still wanted. `ProblemRef` / `Plan::compile` build a plan from borrowed metadata in the same style.
+
 | Strategy | Source | Idea |
 | --- | --- | --- |
 | Packed (block-scatter) | the imported upstream project (see [provenance](provenance.md)), by Lukas Devos; [Matthews, TBLIS](https://arxiv.org/abs/1607.00291) | Pack tensor panels with general strides directly into the `tcontract-kernel` format, run the microkernels, and scatter bounded output tiles. No full operand transpose. |

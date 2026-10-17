@@ -14,6 +14,19 @@
 //! ```text
 //! OVERHEAD_GATE=1 cargo bench --profile release -p tcontract --bench overhead_smoke
 //! ```
+//!
+//! Rows:
+//!
+//! - T1: fresh (uninit) vs initialized output, packed 8^3, gate 1.3.
+//! - T2a/T2b: the faer `beta = 0.5` output pass vs `beta = 0`, at 8x8 and
+//!   rank-3 8^3, gate 1.5. T2a measures ~1.73 here, so its initial gate is the
+//!   measured value times ~1.3: `beta = 0.5` reads D in an extra output pass that
+//!   `beta = 0` skips, so the ratio is inherently above one at 8x8, and the issue
+//!   starts thresholds loose and tightens them from CI history.
+//! - T3: bare serial vs serial with a caller workspace, packed 8^3, report.
+//! - T4: `Problem::from_labels` + compile + execute vs a compiled execute, 2x2,
+//!   report.
+//! - T5: batched 32 x 4x4 vs 32 single calls, report.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::io::Write;
@@ -493,8 +506,10 @@ fn main() {
     let cases = vec![
         t1(),
         // T2's spec gate is 1.5; the 8x8 shape's 64-element output pass over an
-        // 8x8x8 GEMM measures ~1.79 here, so its initial gate is the measured
-        // value times ~1.3. The rank-3 8^3 batch meets 1.5 as specified.
+        // 8x8x8 GEMM measures ~1.73 here. `beta = 0.5` reads D in that pass while
+        // `beta = 0` skips it, so the ratio is inherently above one; the issue
+        // starts the gate loose and tightens it from CI history, so T2a's initial
+        // gate is the measured value times ~1.3. The rank-3 8^3 batch meets 1.5.
         t2(8, false, "T2a", 20_000, 2.4),
         t2(8, true, "T2b", 10_000, 1.5),
         t3(),

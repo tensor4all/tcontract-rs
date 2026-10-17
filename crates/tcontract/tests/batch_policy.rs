@@ -127,3 +127,216 @@ fn forced_vendor_is_refused_before_any_write() {
         "{err}"
     );
 }
+
+/// `D[i,j,h] = sum_k A[i,k,h] B[k,j,h]`, column-major, `h` outermost.
+fn batched(m: usize, n: usize, k: usize, h: usize) -> Problem {
+    let spec = |d: &[usize], s: &[isize]| OperandSpec::new(LayoutSpec::new(d, s, 0).unwrap());
+    let (mi, ni, ki) = (m as isize, n as isize, k as isize);
+    Problem::from_labels(
+        DType::F64,
+        spec(&[m, k, h], &[1, mi, mi * ki]),
+        spec(&[k, n, h], &[1, ki, ki * ni]),
+        CSpec::Absent,
+        spec(&[m, n, h], &[1, mi, mi * ni]),
+        &Labels::new(&[0, 2, 3], &[2, 1, 3], &[0, 1, 3]),
+    )
+    .unwrap()
+}
+
+/// A genuine batch axis: the forced lane route must report and run its lane
+/// width, and an unsupported split must be refused before any write.
+#[test]
+fn forced_lanes_on_a_batch_report_and_run_their_width() {
+    use tcontract::{Error, ExecutionRoute, OutputContract, PackedRoute};
+
+    let (m, n, k, h) = (8usize, 8, 8, 8);
+    let plan = Plan::<f64>::new(&batched(m, n, k, h), &PlanConfig::packed()).unwrap();
+    let tp = pool(8);
+    let p = Pool::borrow(&tp);
+    let exec = |strategy| {
+        Exec::rayon(&p)
+            .with_budget(8)
+            .unwrap()
+            .with_batch_policy(BatchPolicy::new(strategy))
+    };
+    let (mi, ni, ki) = (m as isize, n as isize, k as isize);
+    let a: Vec<f64> = (0..m * k * h)
+        .map(|i| (i * 7 + 3) as f64 * 0.11 - 1.0)
+        .collect();
+    let b: Vec<f64> = (0..k * n * h)
+        .map(|i| (i * 5 + 1) as f64 * 0.07 - 0.5)
+        .collect();
+    let mut want = vec![0.0f64; m * n * h];
+    plan.execute_into(
+        &Exec::serial(),
+        1.0,
+        &StridedView::new(&a, &[m, k, h], &[1, mi, mi * ki], 0).unwrap(),
+        &StridedView::new(&b, &[k, n, h], &[1, ki, ki * ni], 0).unwrap(),
+        &mut StridedViewMut::new(&mut want, &[m, n, h], &[1, mi, mi * ni], 0).unwrap(),
+    )
+    .unwrap();
+    let run = |exec: &Exec<'_>, d: &mut [f64]| {
+        plan.execute_into(
+            exec,
+            1.0,
+            &StridedView::new(&a, &[m, k, h], &[1, mi, mi * ki], 0).unwrap(),
+            &StridedView::new(&b, &[k, n, h], &[1, ki, ki * ni], 0).unwrap(),
+            &mut StridedViewMut::new(d, &[m, n, h], &[1, mi, mi * ni], 0).unwrap(),
+        )
+    };
+
+    // Outer at budget eight over eight items: eight lane workers.
+    let outer = exec(BatchStrategy::Outer);
+    assert_eq!(
+        plan.execution_route(&outer, 1.0, OutputContract::Initialized)
+            .unwrap(),
+        ExecutionRoute::Packed {
+            kind: PackedRoute::BatchLanes,
+            width: 8
+        }
+    );
+    let mut got = vec![0.0f64; m * n * h];
+    run(&outer, &mut got).unwrap();
+    assert_eq!(got, want, "Outer lanes changed the result");
+
+    // Sequential forces the serial route even at budget eight.
+    let sequential = exec(BatchStrategy::Sequential);
+    assert_eq!(
+        plan.execution_route(&sequential, 1.0, OutputContract::Initialized)
+            .unwrap(),
+        ExecutionRoute::Packed {
+            kind: PackedRoute::Serial,
+            width: 1
+        }
+    );
+    let mut got = vec![0.0f64; m * n * h];
+    run(&sequential, &mut got).unwrap();
+    assert_eq!(got, want, "Sequential changed the result");
+
+    // Split { lanes: 2 } at budget eight asks for two lanes and four item
+    // threads; the packed route runs items serially per lane, so it is refused
+    // before any write rather than silently discarding the item width.
+    let split = exec(BatchStrategy::Split {
+        lanes: NonZeroUsize::new(2).unwrap(),
+    });
+    let err = plan
+        .execution_route(&split, 1.0, OutputContract::Initialized)
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::Exec(ExecError::StrategyUnavailable { .. })),
+        "{err}"
+    );
+    let mut sentinel = vec![7.0f64; m * n * h];
+    let err = run(&split, &mut sentinel).unwrap_err();
+    assert!(
+        matches!(err, Error::Exec(ExecError::StrategyUnavailable { .. })),
+        "{err}"
+    );
+    assert!(
+        sentinel.iter().all(|&x| x == 7.0),
+        "a refused split wrote to D"
+    );
+}
+
+/// A forced strategy is resolved before a pinned grid: `Sequential` still
+/// serializes it, and an outer route that cannot honor the pin is refused.
+#[test]
+fn forced_policy_overrides_a_pinned_grid() {
+    use tcontract::{Error, ExecutionRoute, OutputContract, PackedRoute, Partition};
+
+    let (m, n, k, h) = (8usize, 8, 8, 8);
+    let config = PlanConfig {
+        partition: Some(Partition::StaticGrid {
+            pin: Some((4, 1)),
+            align_c_lines: false,
+        }),
+        ..PlanConfig::default()
+    };
+    let plan = Plan::<f64>::new(&batched(m, n, k, h), &config).unwrap();
+    let tp = pool(8);
+    let p = Pool::borrow(&tp);
+    let with = |strategy| {
+        Exec::rayon(&p)
+            .with_budget(8)
+            .unwrap()
+            .with_batch_policy(BatchPolicy::new(strategy))
+    };
+
+    // Sequential wins over the pinned grid.
+    let sequential = with(BatchStrategy::Sequential);
+    assert_eq!(
+        plan.execution_route(&sequential, 1.0, OutputContract::Initialized)
+            .unwrap(),
+        ExecutionRoute::Packed {
+            kind: PackedRoute::Serial,
+            width: 1
+        }
+    );
+
+    // Outer would use batch lanes and silently ignore the pin: reject.
+    let outer = with(BatchStrategy::Outer);
+    let err = plan
+        .execution_route(&outer, 1.0, OutputContract::Initialized)
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::Exec(ExecError::StrategyUnavailable { .. })),
+        "{err}"
+    );
+}
+
+/// `D[i,j] = sum_k A[i,k] B[k,j] + beta * D[i,j]`, in-place C.
+fn matmul_output_c(m: usize, n: usize, k: usize) -> Problem {
+    let spec = |d: &[usize], s: &[isize]| OperandSpec::new(LayoutSpec::new(d, s, 0).unwrap());
+    Problem::from_labels(
+        DType::F64,
+        spec(&[m, k], &[1, m as isize]),
+        spec(&[k, n], &[1, k as isize]),
+        CSpec::Output(tcontract::api::Op::Identity),
+        spec(&[m, n], &[1, m as isize]),
+        &Labels::new(&[0, 2], &[2, 1], &[0, 1]),
+    )
+    .unwrap()
+}
+
+/// A forced `Sequential` limits the faer `beta * D` output pass too: an output
+/// above the parallel threshold must not enter the pool.
+#[test]
+fn forced_sequential_serializes_the_faer_output_pass() {
+    use tcontract::api::AccumulationSource;
+    use tcontract::Algorithm;
+
+    // A 256x256 output (65536 elements) is above the strided parallel threshold;
+    // the contraction is shallow so faer still serves it.
+    let (m, n, k) = (256usize, 256usize, 8usize);
+    let plan = Plan::<f64>::new(&matmul_output_c(m, n, k), &PlanConfig::default()).unwrap();
+    assert_eq!(plan.report().algorithm, Algorithm::Faer);
+    let tp = pool(4);
+    let p = Pool::borrow(&tp);
+    let exec = Exec::rayon(&p)
+        .with_budget(4)
+        .unwrap()
+        .with_batch_policy(BatchPolicy::new(BatchStrategy::Sequential));
+
+    let a = vec![1.0f64; m * k];
+    let b = vec![1.0f64; k * n];
+    let mut d = vec![1.0f64; m * n];
+    let av = StridedView::new(&a, &[m, k], &[1, m as isize], 0).unwrap();
+    let bv = StridedView::new(&b, &[k, n], &[1, k as isize], 0).unwrap();
+    let mut dv = StridedViewMut::new(&mut d, &[m, n], &[1, m as isize], 0).unwrap();
+    p.reset_stats();
+    plan.execute_into_accum(
+        &exec,
+        1.0,
+        &av,
+        &bv,
+        0.5,
+        AccumulationSource::Output,
+        &mut dv,
+    )
+    .unwrap();
+    assert_eq!(
+        p.stats().entries,
+        0,
+        "a forced sequential route entered the pool for the output pass"
+    );
+}
