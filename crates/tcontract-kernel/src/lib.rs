@@ -32,6 +32,7 @@ pub use pack::scatter::IRREGULAR;
 pub use select::catalog::{KernelCatalog, KernelHandle};
 pub use select::partition::{PartitionOpts, PartitionPolicy};
 pub use select::registry::{
-    list_kernels, register, Families, KernelInfo, RealSlot, Registry, SelectError,
+    builtin_menu, list_kernels, register, Families, KernelInfo, MenuCache, RealSlot, Registry,
+    SelectError,
 };
 pub use select::resolve::{resolve_legacy_auto, KernelChoice, ResolvedGemm};
