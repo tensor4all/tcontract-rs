@@ -19,12 +19,13 @@ rust-version = "1.89"
 [workspace.dependencies]
 # strided-rs, pinned to published crates.io releases (exact requirements). Keep
 # all strided crates on one source; downstream consumers must coordinate this
-# pin to share `StridedView` types. strided-view stays =0.5.0 so tlinalg 0.2.0's
-# `strided-view =0.5.0` resolves to the same type (strided-basic 0.5.x accepts it).
-strided-basic = { version = "=0.5.4", default-features = false }
-strided-view = { version = "=0.5.0" }
-strided-perm = { version = "=0.5.0" }
-strided-kernel = { version = "=0.5.0" }
+# pin to share `StridedView` types. strided 0.6.0 is one release train across all
+# four crates (basic/view/perm/kernel) and adds the `UpdatePlan` primitives #121
+# compiles at plan time.
+strided-basic = { version = "=0.6.0", default-features = false }
+strided-view = { version = "=0.6.0" }
+strided-perm = { version = "=0.6.0" }
+strided-kernel = { version = "=0.6.0" }
 tcontract-kernel = { version = "0.2.4", path = "crates/tcontract-kernel", default-features = false }
 tcontract-exec = { version = "0.2.4", path = "crates/tcontract-exec" }
 tcontract-capi = { version = "0.1.0", path = "crates/tcontract-capi" }
