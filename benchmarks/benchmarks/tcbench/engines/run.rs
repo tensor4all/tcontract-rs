@@ -53,20 +53,19 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
 
     // The evidence identity every row carries, and the declared grid the census
     // enumerates. `--rotate-rows` moves execution order only, so the census
-    // follows `exec_order` while the human tables keep the selection order.
+    // follows `exec_order` while the human tables keep the selection order. The
+    // timed CSV is driven from the same grid, so a skipped cell appears in both.
     results.regime = opts.regime.clone();
     results.batch = opts.batch.clone();
     results.statistic = opts.statistic;
-    results.rayon_threads = Some(exec.budget());
-    results.vendor_threads = vendor_threads();
-    let families: Vec<String> = cases.iter().map(|c| c.name.to_string()).collect();
-    let mut census = opts.census_csv.as_ref().map(|_| {
+    results.n_spec = opts.n_spec.clone();
+    let mut census = (opts.csv.is_some() || opts.census_csv.is_some()).then(|| {
         crate::report::Census::declared(
             &opts.regime,
             &opts.n_spec,
             &opts.batch,
             exec.budget(),
-            &families,
+            &cases,
             &opts.dtypes,
             &opts.exec_order(),
         )
@@ -99,7 +98,10 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
 
     print_tables(&results, opts);
     if let Some(path) = &opts.csv {
-        match results.write_csv(path) {
+        let census = census
+            .as_ref()
+            .expect("a timed CSV needs the declared grid");
+        match results.write_csv(path, census) {
             Ok(()) => println!("\nwrote {path}"),
             Err(e) => eprintln!("failed to write {path}: {e}"),
         }
@@ -201,7 +203,6 @@ pub fn run_case<T>(
         let secs = opts.statistic.of(&samples);
         results.push(Row {
             case: s.case.name.to_string(),
-            group: s.case.group.to_string(),
             dtype: T::NAME.to_string(),
             engine: engine.to_string(),
             threads: exec.budget(),
@@ -476,23 +477,6 @@ fn print_tables(results: &Results, opts: &Options) {
 
     print_ratio_table(results, opts, "f64", "c64");
     print_ratio_table(results, opts, "f32", "c32");
-}
-
-/// The effective external-provider thread count, empty when this build has no
-/// vendor baseline whose width the harness can read back. TBLIS exposes a
-/// getter; OpenBLAS and Accelerate do not, and Accelerate reads its own budget
-/// from the environment at first use.
-fn vendor_threads() -> Option<usize> {
-    #[cfg(feature = "tblis")]
-    {
-        // SAFETY: no preconditions; the linked TBLIS returns its configured
-        // thread count.
-        Some(unsafe { crate::tblis::tblis_get_num_threads() as usize })
-    }
-    #[cfg(not(feature = "tblis"))]
-    {
-        None
-    }
 }
 
 /// The headline metric: complex GFLOP/s divided by real GFLOP/s for the same

@@ -34,15 +34,15 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
 
     // The census covers `verify` as well as `run`: the same declared grid, in
     // the run's execution order. A cell the check reached is `ok`; a cell it
-    // could not build is `skipped` with the reason.
-    let families: Vec<String> = cases.iter().map(|c| c.name.to_string()).collect();
-    let mut census = opts.census_csv.as_ref().map(|_| {
+    // could not build is `skipped` with the reason. The toolkit's verify step
+    // passes `--csv`, so that is where its census goes; `--census-csv` works too.
+    let mut census = (opts.csv.is_some() || opts.census_csv.is_some()).then(|| {
         crate::report::Census::declared(
             &opts.regime,
             &opts.n_spec,
             &opts.batch,
             exec.budget(),
-            &families,
+            &cases,
             &opts.dtypes,
             &opts.exec_order(),
         )
@@ -85,10 +85,15 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
     }
 
     t.print();
-    if let (Some(c), Some(path)) = (census.as_ref(), opts.census_csv.as_ref()) {
-        match c.write_csv(path) {
-            Ok(()) => println!("wrote {path}"),
-            Err(e) => eprintln!("failed to write {path}: {e}"),
+    for path in [opts.csv.as_ref(), opts.census_csv.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(c) = census.as_ref() {
+            match c.write_csv(path) {
+                Ok(()) => println!("wrote {path}"),
+                Err(e) => eprintln!("failed to write {path}: {e}"),
+            }
         }
     }
     if failures == 0 {
