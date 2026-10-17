@@ -227,6 +227,11 @@ choice that cannot be honoured is an error from the constructor — an unknown
 id, a CPU without the required instructions, a blocking override that is not
 positive or exclusive. `list_kernels` returns the registry for diagnostics.
 
+A plan can be built from owned metadata (`Plan::new`/`Plan::from_problem`) or
+from a borrowed `ProblemRef` (`Problem::from_ref` and `Plan::compile`), which
+keeps the construction inputs in the caller's storage and has the plan own only
+the compiled metadata.
+
 The packed driver is told where its scratch lives: a host that owns threads
 passes a `tcontract_exec::Exec` that lends a workspace (per-thread A block and tile,
 a page-aligned shared B panel, scatter vectors and barriers). A pool owns one for
@@ -235,6 +240,13 @@ every operation on it; a serial caller that wants reuse passes an
 owner get per-call buffers. Nothing is process-global, the owner reports its
 retained and leased bytes and can `trim` the idle half, and a lease returns to
 the owner that issued it.
+
+On the allocation-free path a caller keeps a bounded
+`tcontract_exec::Workspace` (`workspace_req`/`have`/`reserve`), asks the plan for
+its conservative bound with `Plan::workspace_req(exec, output)`, and runs
+`Plan::execute_raw_in`. The bound is checked against the workspace before any
+write and a shortage is `Error::Workspace { needed, have }`; a `Workspace` sized
+to the bound and used within it grows for none of the buffers.
 
 ### Opt-in dynamic output assignment (`DynamicTiles`)
 
