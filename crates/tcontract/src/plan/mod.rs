@@ -615,6 +615,74 @@ impl<T: Scalar> Plan<T> {
         #[cfg(feature = "phase-timing")]
         crate::phase::report_previous();
         self.check_raw(a, b, c, d)?;
+        // SAFETY: preflight passed; no caller workspace, so the context's own
+        // storage (or call-local scratch) serves the call.
+        unsafe { self.raw_dispatch(None, exec, alpha, a, b, beta, c, d) }
+    }
+
+    /// [`Plan::execute_raw`] with a caller-owned, bounded
+    /// [`Workspace`](tcontract_exec::Workspace): the plan checks
+    /// [`Plan::workspace_req`] against the workspace's bound before any write
+    /// and returns [`Error::Workspace`](crate::api::Error::Workspace) when it is
+    /// short, so a steady state within the bound allocates nothing.
+    ///
+    /// `output` is the storage guarantee of `D`, as in
+    /// [`OutputContract`](crate::OutputContract).
+    ///
+    /// # Errors
+    ///
+    /// As [`Plan::execute_raw`], plus
+    /// [`Error::Workspace`](crate::api::Error::Workspace) when `workspace` is
+    /// smaller than the plan's conservative requirement.
+    ///
+    /// # Safety
+    ///
+    /// As [`Plan::execute_raw`].
+    #[allow(clippy::too_many_arguments)] // INVARIANT: the contraction argument set.
+    pub unsafe fn execute_raw_in(
+        &self,
+        workspace: &mut tcontract_exec::Workspace,
+        exec: &Exec<'_>,
+        alpha: T,
+        a: *const T,
+        b: *const T,
+        beta: T,
+        c: *const T,
+        d: *mut T,
+        output: OutputContract,
+    ) -> Result<()> {
+        #[cfg(feature = "phase-timing")]
+        crate::phase::report_previous();
+        self.check_raw(a, b, c, d)?;
+        let needed = self.workspace_req(exec, output).bytes();
+        let have = workspace.have();
+        if needed > have {
+            return Err(crate::api::Error::Workspace { needed, have });
+        }
+        // SAFETY: preflight passed and the bound was checked before any write;
+        // the workspace outlives the borrow taken here.
+        unsafe { self.raw_dispatch(Some(workspace.as_provider()), exec, alpha, a, b, beta, c, d) }
+    }
+
+    /// The raw semantics shared by [`Plan::execute_raw`] and
+    /// [`Plan::execute_raw_in`]: the C read, the storage contract, then the one
+    /// dispatch. `check_raw` and any workspace-bound check already ran.
+    ///
+    /// # Safety
+    ///
+    /// As [`Plan::execute_raw`], with the preflight already done.
+    #[allow(clippy::too_many_arguments)] // INVARIANT: the contraction argument set.
+    unsafe fn raw_dispatch(
+        &self,
+        workspace: Option<&dyn tcontract_exec::WorkspaceProvider>,
+        exec: &Exec<'_>,
+        alpha: T,
+        a: *const T,
+        b: *const T,
+        beta: T,
+        c: *const T,
+        d: *mut T,
+    ) -> Result<()> {
         let zero = <T as Element>::zero();
         let c_read = match self.problem.c_spec() {
             CSpec::Absent => CRead::None,
@@ -630,9 +698,9 @@ impl<T: Scalar> Plan<T> {
             && (!matches!(self.strategy, Strategy::Faer(_)) || self.fresh_packed.is_some());
         #[cfg(feature = "phase-timing")]
         let whole = std::time::Instant::now();
-        // SAFETY: preflight passed; raw's write-only contract selects a
-        // preprepared fresh route unless execution needs the previous D.
-        let out = unsafe { self.run_storage(exec, alpha, a, b, beta, c_read, d, fresh) };
+        // SAFETY: the caller's contract and the preflight.
+        let out =
+            unsafe { self.run_storage_in(workspace, exec, alpha, a, b, beta, c_read, d, fresh) };
         #[cfg(feature = "phase-timing")]
         crate::phase::add_total(whole.elapsed().as_nanos() as u64);
         out
@@ -703,6 +771,28 @@ impl<T: Scalar> Plan<T> {
         d: *mut T,
         fresh: bool,
     ) -> Result<()> {
+        // SAFETY: forwarded.
+        unsafe { self.run_storage_in(None, exec, alpha, a, b, beta, c, d, fresh) }
+    }
+
+    /// [`Plan::run_storage`] with an explicit caller workspace. `None` keeps the
+    /// current behaviour (the context's own provider, or call-local scratch).
+    ///
+    /// # Safety
+    /// As `run_storage`.
+    #[allow(clippy::too_many_arguments)] // INVARIANT: the contraction argument set.
+    unsafe fn run_storage_in(
+        &self,
+        workspace: Option<&dyn tcontract_exec::WorkspaceProvider>,
+        exec: &Exec<'_>,
+        alpha: T,
+        a: *const T,
+        b: *const T,
+        beta: T,
+        c: CRead<T>,
+        d: *mut T,
+        fresh: bool,
+    ) -> Result<()> {
         let p = &self.problem;
         if p.out_empty() {
             return Ok(());
@@ -754,16 +844,7 @@ impl<T: Scalar> Plan<T> {
                 // pointers without first forming initialized output references.
                 return unsafe {
                     driver::execute_packed(
-                        &pk.plan,
-                        &pk.rg,
-                        &exec,
-                        exec.workspace(),
-                        alpha,
-                        a,
-                        b,
-                        beta,
-                        cp,
-                        d,
+                        &pk.plan, &pk.rg, &exec, workspace, alpha, a, b, beta, cp, d,
                     )
                     .map_err(Into::into)
                 };
@@ -812,16 +893,7 @@ impl<T: Scalar> Plan<T> {
                 // plan when it was built.
                 unsafe {
                     driver::execute_packed(
-                        &pk.plan,
-                        &pk.rg,
-                        &exec,
-                        exec.workspace(),
-                        alpha,
-                        a,
-                        b,
-                        beta,
-                        cp,
-                        d,
+                        &pk.plan, &pk.rg, &exec, workspace, alpha, a, b, beta, cp, d,
                     )?
                 };
             }

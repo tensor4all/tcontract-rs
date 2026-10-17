@@ -257,6 +257,15 @@ pub enum Error {
     /// The execution context refused the request.
     #[error("execution context: {0}")]
     Exec(#[from] ExecError),
+    /// A supplied [`Workspace`](tcontract_exec::Workspace) is smaller than the
+    /// execution needs; nothing was written.
+    #[error("workspace too small: need {needed} bytes, have {have}")]
+    Workspace {
+        /// Bytes the execution needs, by the plan's conservative bound.
+        needed: usize,
+        /// Bytes the supplied workspace is sized to.
+        have: usize,
+    },
     /// A failure of a foreign backend, source preserved.
     #[error("backend: {0}")]
     Backend(Box<dyn std::error::Error + Send + Sync + 'static>),

@@ -132,6 +132,7 @@ use tcontract_exec::{Exec, ExecError, WorkspaceProvider, WorkspaceReq};
 use crate::buffer::Panel;
 mod block;
 mod route;
+pub(crate) use route::call_workspace_req;
 pub(crate) use route::execution_geometry;
 mod dynamic;
 mod static_grid;

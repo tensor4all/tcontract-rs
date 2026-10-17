@@ -1,8 +1,9 @@
 //! One geometry decision shared by reporting and execution.
 
-use super::{dynamic, pack_b_needed};
+use super::{block, dynamic, pack_b_needed, BLOCK_MC_BUDGET};
 use crate::plan::{PackedPlan, PackedRoute, NS_PER_FLOP};
-use tcontract_exec::{BatchQuery, Exec, ExecError};
+use tcontract_exec::{BatchQuery, Exec, ExecError, WorkspaceReq};
+use tcontract_kernel::pack::panel_len;
 use tcontract_kernel::{Element, PartitionPolicy, ResolvedGemm};
 
 pub(crate) struct Geometry {
@@ -139,4 +140,92 @@ pub(crate) fn execution_geometry<T: Element>(
         dyn_jobs,
         direct_b,
     })
+}
+
+/// A conservative upper bound on the workspace one packed call needs, over every
+/// route the driver can take on `exec` (#121).
+///
+/// It is computed from the same geometry the driver uses, widened to the worst
+/// case: the *serial* blocking (the largest cache share, which the resolved
+/// `rg` already carries), the whole budget as the widest grid and lane count,
+/// every team scatter a nonzero-`beta` call can ask for, and the blocked
+/// traversal's tile grids whenever that shape could apply. A caller that sizes a
+/// [`Workspace`](tcontract_exec::Workspace) to this bound and executes within it
+/// grows the arena for none of the buffers.
+///
+/// The bound is deliberately not the exact call requirement: that depends on the
+/// runtime geometry the driver resolves at execution. It is an upper bound, which
+/// is all the `workspace_req`/`execute_raw_in` contract needs.
+pub(crate) fn call_workspace_req<T: Element>(
+    plan: &PackedPlan,
+    rg: &ResolvedGemm<T::Real>,
+    exec: &Exec<'_>,
+) -> WorkspaceReq {
+    let fam = rg
+        .family()
+        .driver_family()
+        .expect("validated family ABI for this scheme");
+    let (mr, nr) = (fam.mr, fam.nr);
+    let budget = exec.budget().max(1);
+    let (mc, kc, nc) = (rg.mc, rg.kc, rg.nc);
+    let swap = plan.transposes_gemm(mr);
+    let (am, ak, bk, bn) = if swap {
+        (&plan.b_n, &plan.b_k, &plan.a_k, &plan.a_m)
+    } else {
+        (&plan.a_m, &plan.a_k, &plan.b_k, &plan.b_n)
+    };
+    let (m, n, k) = (am.len(), bn.len(), ak.len());
+    let direct_b = !pack_b_needed(fam.b_access, bk, bn, nr);
+    let element = core::mem::size_of::<T::Real>();
+    // The packed A block at the serial blocking.
+    let a_bytes = panel_len(mc, mr, kc, fam.a_pack) * element;
+    // The shared B panel at the widest grid: the largest slice is one column
+    // group, and lanes round the slice up to a cache line.
+    let group_cap = nc.div_ceil(nr);
+    let b_group =
+        panel_len(group_cap * nr, nr, kc, fam.b_pack).next_multiple_of((64 / element).max(1));
+    let b_bytes = if direct_b {
+        0
+    } else {
+        budget * b_group * element
+    };
+    // The blocked traversal's two tile grids, when the shape could take it.
+    let grid_elems = match block::blocked_eligibility(
+        &plan.stats,
+        swap,
+        k,
+        n,
+        kc,
+        nc,
+        (64 / element).max(1),
+        BLOCK_MC_BUDGET,
+        mr,
+    ) {
+        None => 0,
+        Some(shape) => {
+            let mut axes_buf = [block::Role::EMPTY; block::MAX_AXES];
+            let axes = block::role_into(&plan.stats, swap, &mut axes_buf);
+            let block_rows = axes[shape.span].extent.saturating_mul(shape.line_len);
+            tcontract_kernel::tile_planes(fam.tile_fmt)
+                .saturating_mul(mr)
+                .saturating_mul(nr)
+                .saturating_mul(block_rows.div_ceil(mr))
+                .saturating_mul(n.div_ceil(nr))
+        }
+    };
+    // Every block-scatter vector, including the nonzero-beta C one, and the
+    // widest barrier count.
+    let team_scatter = m.div_ceil(mr)
+        + n.div_ceil(nr)
+        + plan.d_m.len().div_ceil(mr)
+        + plan.d_n.len().div_ceil(nr)
+        + plan.c_m.len().div_ceil(mr);
+    WorkspaceReq {
+        a_bytes,
+        tile_bytes: (fam.tile + fam.induced_scratch(kc)) * element + 2 * grid_elems * element,
+        worker_scatter: 0,
+        b_bytes,
+        team_scatter,
+        barriers: budget,
+    }
 }

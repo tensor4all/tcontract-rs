@@ -61,6 +61,27 @@ pub struct WorkspaceReq {
     pub barriers: usize,
 }
 
+impl WorkspaceReq {
+    /// The payload this request needs, in bytes: the buffers, the `i64` scatter
+    /// elements and the barriers. It is the value a [`Workspace`] is sized to and
+    /// the amount [`Workspace::have`] reports.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract_exec::WorkspaceReq;
+    /// let req = WorkspaceReq { a_bytes: 16, team_scatter: 2, ..Default::default() };
+    /// assert_eq!(req.bytes(), 16 + 2 * core::mem::size_of::<i64>());
+    /// ```
+    pub fn bytes(&self) -> usize {
+        self.a_bytes
+            + self.tile_bytes
+            + self.b_bytes
+            + (self.worker_scatter + self.team_scatter) * core::mem::size_of::<i64>()
+            + self.barriers * core::mem::size_of::<Barrier>()
+    }
+}
+
 /// What an owner currently holds and currently lends out.
 ///
 /// Exactness: both values are settled at every checkout, return, team take,
@@ -610,4 +631,75 @@ fn fresh_worker(req: &WorkspaceReq, f: &mut dyn FnMut(*mut u8, *mut u8, &mut Vec
     tile.ensure(req.tile_bytes);
     scratch.reserve(req.worker_scatter);
     f(a.as_ptr(), tile.as_ptr(), &mut scratch);
+}
+
+/// A caller-owned, bounded workspace: an [`ArenaProvider`] pre-sized to one
+/// [`WorkspaceReq`], so a steady-state execute whose requirement is within the
+/// bound allocates nothing.
+///
+/// A plan computes a conservative requirement (`Plan::workspace_req` in the
+/// owning crate) and `execute_raw_in` checks it against [`Workspace::have`]
+/// before any write. The bound is grow-only: [`Workspace::reserve`] enlarges it
+/// for a larger later requirement.
+///
+/// # Examples
+///
+/// ```
+/// use tcontract_exec::{Workspace, WorkspaceReq};
+/// let mut ws = Workspace::with_req(&WorkspaceReq { a_bytes: 64, ..Default::default() });
+/// assert!(ws.have() >= 64);
+/// ws.reserve(&WorkspaceReq { b_bytes: 128, ..Default::default() });
+/// assert!(ws.have() >= 128);
+/// let _provider = ws.as_provider();
+/// ```
+#[derive(Debug, Default)]
+pub struct Workspace {
+    arena: ArenaProvider,
+    req: WorkspaceReq,
+}
+
+impl Workspace {
+    /// A workspace sized and warmed for `req`: the worker slot of the calling
+    /// thread and one team set are grown to hold it, so a later execute within
+    /// the bound does not grow the arena.
+    pub fn with_req(req: &WorkspaceReq) -> Self {
+        let arena = ArenaProvider::new();
+        Self::warm(&arena, req);
+        Self { arena, req: *req }
+    }
+
+    /// Grow the bound to cover `req` as well, warming the arena for it. The bound
+    /// never shrinks.
+    pub fn reserve(&mut self, req: &WorkspaceReq) {
+        if req.bytes() > self.req.bytes() {
+            Self::warm(&self.arena, req);
+            self.req = *req;
+        }
+    }
+
+    /// The bound this workspace was sized to, in bytes.
+    pub fn have(&self) -> usize {
+        self.req.bytes()
+    }
+
+    /// The requirement this workspace was sized to.
+    pub fn req(&self) -> &WorkspaceReq {
+        &self.req
+    }
+
+    /// The provider a plan lends to the driver for one call.
+    pub fn as_provider(&self) -> &dyn WorkspaceProvider {
+        &self.arena
+    }
+
+    /// First-touch the worker buffers (this thread's slot) and one team set so
+    /// the first execute within the bound allocates only the arena's bookkeeping.
+    fn warm(arena: &ArenaProvider, req: &WorkspaceReq) {
+        arena.with_worker(req, &mut |_, _, _| {});
+        let mut lease = arena.take_team(req, 1, 1);
+        if req.b_bytes > 0 {
+            lease.panel(req.b_bytes);
+        }
+        drop(lease);
+    }
 }
