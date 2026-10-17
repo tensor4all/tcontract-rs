@@ -153,6 +153,38 @@ impl<T: Scalar> Plan<T> {
         Self::build(problem, config, None)
     }
 
+    /// Compile a plan from a borrowed [`ProblemRef`](crate::api::ProblemRef): the
+    /// construction inputs are borrowed, the plan owns the compiled metadata it
+    /// lowers them to (#121).
+    ///
+    /// # Errors
+    ///
+    /// As [`Plan::new`], plus the lowering errors of
+    /// [`Problem::from_ref`](crate::api::Problem::from_ref).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract::api::{CRef, ContractionRef, DType, LayoutRef, Op, ProblemRef};
+    /// use tcontract::{Plan, PlanConfig};
+    /// let a = LayoutRef { dims: &[2, 3], strides: &[1, 2], offset: 0 };
+    /// let b = LayoutRef { dims: &[3, 4], strides: &[1, 3], offset: 0 };
+    /// let d = LayoutRef { dims: &[2, 4], strides: &[1, 2], offset: 0 };
+    /// let pref = ProblemRef {
+    ///     dtype: DType::F64,
+    ///     a: (a, Op::Identity),
+    ///     b: (b, Op::Identity),
+    ///     c: CRef::Absent,
+    ///     d: (d, Op::Identity),
+    ///     contraction: ContractionRef::Labels { a: &[0, 2], b: &[2, 1], c: None, d: &[0, 1] },
+    /// };
+    /// let plan = Plan::<f64>::compile(&pref, &PlanConfig::default()).unwrap();
+    /// assert_eq!(plan.problem().roles().k().len(), 1);
+    /// ```
+    pub fn compile(problem: &crate::api::ProblemRef<'_>, config: &PlanConfig) -> Result<Self> {
+        Self::from_problem(crate::api::Problem::from_ref(problem)?, config)
+    }
+
     /// [`Plan::new`] on the packed driver, choosing the kernel family with a
     /// caller-supplied selector over a caller-supplied [`KernelCatalog`]
     /// (issue #28).

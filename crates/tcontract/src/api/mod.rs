@@ -18,7 +18,10 @@ pub use error::{
     AliasError, ConfigError, Error, LayoutError, OperandId, Result, ShapeError, Unsupported,
 };
 pub use labels::Labels;
-pub use problem::{CSpec, DType, LayoutSpec, Op, OperandSpec, Problem, RoleAxis, Roles, Span};
+pub use problem::{
+    CRef, CSpec, ContractionRef, DType, LayoutRef, LayoutSpec, Op, OperandSpec, Problem,
+    ProblemRef, RoleAxis, Roles, Span,
+};
 #[doc(hidden)]
 pub use scalar::FaerGemm;
 pub use scalar::Scalar;

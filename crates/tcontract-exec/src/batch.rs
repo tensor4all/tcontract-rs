@@ -13,7 +13,7 @@
 //! [`BatchStrategy::Auto`] is the only heuristic. Every other variant forces a
 //! route and never falls back: the route either honors it (clamped to the
 //! items and the budget) or the library reports
-//! [`ExecError::StrategyUnavailable`](crate::ExecError::StrategyUnavailable).
+//! [`ExecError::StrategyUnavailable`].
 //! [`BatchStrategy::WholeBatchVendor`] is the one forced route that may be
 //! unavailable, and it is refused from the query's vendor capability alone,
 //! before any output write.

@@ -358,7 +358,158 @@ pub struct Problem {
     lowered: Lowered,
 }
 
+/// A borrowed view of one operand's layout, for [`ProblemRef`].
+///
+/// # Examples
+///
+/// ```
+/// use tcontract::api::LayoutRef;
+/// let l = LayoutRef { dims: &[2, 3], strides: &[1, 2], offset: 0 };
+/// assert_eq!(l.rank(), 2);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LayoutRef<'a> {
+    /// Extents, one per axis.
+    pub dims: &'a [usize],
+    /// Signed element strides, one per axis.
+    pub strides: &'a [isize],
+    /// The logical offset.
+    pub offset: isize,
+}
+
+impl LayoutRef<'_> {
+    /// Number of axes.
+    pub fn rank(&self) -> usize {
+        self.dims.len()
+    }
+}
+
+/// The borrowed C mode of a [`ProblemRef`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CRef<'a> {
+    /// No C term.
+    Absent,
+    /// Accumulate from D itself, with this `op_C`.
+    Output(Op),
+    /// Accumulate from a separately described C layout and `op_C`.
+    Separate(LayoutRef<'a>, Op),
+}
+
+/// The borrowed contraction description of a [`ProblemRef`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ContractionRef<'a> {
+    /// Label semantics, as [`Labels`].
+    Labels {
+        /// Labels of A.
+        a: &'a [i64],
+        /// Labels of B.
+        b: &'a [i64],
+        /// Labels of a separate C, if any.
+        c: Option<&'a [i64]>,
+        /// Labels of D.
+        d: &'a [i64],
+    },
+    /// Axis-list semantics, as [`DotGeneral`].
+    DotGeneral {
+        /// Contracted axes of A.
+        lhs_contract: &'a [usize],
+        /// Contracted axes of B.
+        rhs_contract: &'a [usize],
+        /// Batch axes of A.
+        lhs_batch: &'a [usize],
+        /// Batch axes of B.
+        rhs_batch: &'a [usize],
+    },
+}
+
+/// A borrowed, inline description of a contraction, for
+/// [`Problem::from_ref`] and `Plan::compile`.
+///
+/// It borrows every layout, label and axis list, so a caller that keeps those in
+/// its own storage can compile a plan without handing ownership over. The
+/// element-wise operations are carried inline. A `DotGeneral` contraction ignores
+/// `c`, exactly as [`Problem::from_dot_general`] does (its C is D with the
+/// identity op).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProblemRef<'a> {
+    /// The storage type.
+    pub dtype: DType,
+    /// Operand A and its element-wise op.
+    pub a: (LayoutRef<'a>, Op),
+    /// Operand B and its element-wise op.
+    pub b: (LayoutRef<'a>, Op),
+    /// The C mode.
+    pub c: CRef<'a>,
+    /// The output D and its element-wise op.
+    pub d: (LayoutRef<'a>, Op),
+    /// The contraction description.
+    pub contraction: ContractionRef<'a>,
+}
+
 impl Problem {
+    /// Lower a borrowed [`ProblemRef`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Problem::from_labels`] or [`Problem::from_dot_general`], whichever
+    /// `p.contraction` selects, plus [`ShapeError::LayoutRank`] for a layout whose
+    /// extents and strides differ in length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract::api::{CRef, ContractionRef, DType, LayoutRef, Op, Problem, ProblemRef};
+    /// let a = LayoutRef { dims: &[2, 3], strides: &[1, 2], offset: 0 };
+    /// let b = LayoutRef { dims: &[3, 4], strides: &[1, 3], offset: 0 };
+    /// let d = LayoutRef { dims: &[2, 4], strides: &[1, 2], offset: 0 };
+    /// let p = ProblemRef {
+    ///     dtype: DType::F64,
+    ///     a: (a, Op::Identity),
+    ///     b: (b, Op::Identity),
+    ///     c: CRef::Absent,
+    ///     d: (d, Op::Identity),
+    ///     contraction: ContractionRef::Labels {
+    ///         a: &[0, 2], b: &[2, 1], c: None, d: &[0, 1],
+    ///     },
+    /// };
+    /// let problem = Problem::from_ref(&p).unwrap();
+    /// assert_eq!(problem.roles().k().len(), 1);
+    /// ```
+    pub fn from_ref(p: &ProblemRef<'_>) -> Result<Self> {
+        let spec = |(l, op): (LayoutRef<'_>, Op)| -> Result<OperandSpec> {
+            Ok(OperandSpec::new(LayoutSpec::new(l.dims, l.strides, l.offset)?).with_op(op))
+        };
+        let (a, b, d) = (spec(p.a)?, spec(p.b)?, spec(p.d)?);
+        match p.contraction {
+            ContractionRef::Labels {
+                a: la,
+                b: lb,
+                c: lc,
+                d: ld,
+            } => {
+                let c = match p.c {
+                    CRef::Absent => CSpec::Absent,
+                    CRef::Output(op) => CSpec::Output(op),
+                    CRef::Separate(l, op) => CSpec::Separate(spec((l, op))?),
+                };
+                let mut labels = Labels::new(la, lb, ld);
+                if let Some(lc) = lc {
+                    labels = labels.with_c(lc);
+                }
+                Self::from_labels(p.dtype, a, b, c, d, &labels)
+            }
+            ContractionRef::DotGeneral {
+                lhs_contract,
+                rhs_contract,
+                lhs_batch,
+                rhs_batch,
+            } => {
+                let dot = DotGeneral::new(lhs_contract, rhs_contract, lhs_batch, rhs_batch);
+                Self::from_dot_general(p.dtype, a, b, d, &dot)
+            }
+        }
+    }
+
     /// Lower a label description.
     ///
     /// # Errors
