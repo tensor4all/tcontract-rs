@@ -3,6 +3,8 @@
 use std::fmt::Write as _;
 use std::fs;
 
+use crate::engines::Statistic;
+
 /// One measurement.
 #[derive(Clone, Debug)]
 pub struct Row {
@@ -30,11 +32,25 @@ pub struct Row {
     pub reg_a: f64,
     pub reg_b: f64,
     pub notes: String,
+    /// Every timed call's wall time in seconds, in chronological order. The
+    /// evidence CSV reports these so a consumer can re-derive `secs` and see the
+    /// spread a single summary would hide.
+    pub samples: Vec<f64>,
 }
 
 #[derive(Default)]
 pub struct Results {
     pub rows: Vec<Row>,
+    /// The run's regime label (`--regime`), echoed into every evidence row.
+    pub regime: String,
+    /// The effective unit batch, echoed into every evidence row.
+    pub batch: String,
+    /// Which summary of `samples` `secs` (and `total_ms`) reports.
+    pub statistic: Statistic,
+    /// The effective Rayon/pool width, empty in the evidence when unknown.
+    pub rayon_threads: Option<usize>,
+    /// The effective external-provider width, empty in the evidence when unknown.
+    pub vendor_threads: Option<usize>,
 }
 
 impl Results {
@@ -48,14 +64,36 @@ impl Results {
             .find(|r| r.case == case && r.dtype == dtype && r.engine == engine)
     }
 
+    /// The existing seconds/GFLOP/s table, with the timing-v2 evidence columns
+    /// appended unchanged at the end so a consumer that reads the old header
+    /// still works.
     pub fn write_csv(&self, path: &str) -> std::io::Result<()> {
         let mut s = String::from(
-            "case,group,dtype,engine,threads,m,n,k,macs,seconds,spread,prepare_s,gflops,regular_a,regular_b,notes\n",
+            "case,group,dtype,engine,threads,m,n,k,macs,seconds,spread,prepare_s,gflops,regular_a,regular_b,notes,regime,family,batch,row,threads,status,note,total_ms,per_item_us,samples_ms,rayon_threads,vendor_threads\n",
         );
         for r in &self.rows {
+            let total_ms = self.statistic.of(&r.samples) * 1000.0;
+            let per_item_us = if r.macs == 0 {
+                String::new()
+            } else {
+                format!("{:.6}", total_ms * 1000.0 / r.macs as f64)
+            };
+            let samples_ms: Vec<String> = r
+                .samples
+                .iter()
+                .map(|s| format!("{:.6}", s * 1000.0))
+                .collect();
+            let rayon = self
+                .rayon_threads
+                .map(|t| t.to_string())
+                .unwrap_or_default();
+            let vendor = self
+                .vendor_threads
+                .map(|t| t.to_string())
+                .unwrap_or_default();
             let _ = writeln!(
                 s,
-                "{},{},{},{},{},{},{},{},{},{:.9},{:.4},{:.9},{:.4},{:.4},{:.4},{}",
+                "{},{},{},{},{},{},{},{},{},{:.9},{:.4},{:.9},{:.4},{:.4},{:.4},{},{},{},{},{},{},ok,,{:.6},{},{},{},{}",
                 r.case,
                 r.group,
                 r.dtype,
@@ -71,7 +109,116 @@ impl Results {
                 r.gflops,
                 r.reg_a,
                 r.reg_b,
-                r.notes
+                r.notes,
+                self.regime,
+                r.case,
+                self.batch,
+                r.engine,
+                r.threads,
+                total_ms,
+                per_item_us,
+                samples_ms.join(";"),
+                rayon,
+                vendor,
+            );
+        }
+        fs::write(path, s)
+    }
+}
+
+/// One declared cell of the run grid, in the census CSV.
+struct CensusRow {
+    /// The evidence cell identity includes the dtype, but the census header the
+    /// toolkit reads does not have a dtype column; it is kept here only to match
+    /// a declared cell against a measured one.
+    dtype: String,
+    regime: String,
+    family: String,
+    n: String,
+    batch: String,
+    row: String,
+    threads: usize,
+    status: &'static str,
+    note: String,
+}
+
+/// The element types the harness can actually drive. A declared dtype outside
+/// this set is a `skipped` census cell with that reason rather than a silent
+/// absence.
+const KNOWN_DTYPES: [&str; 4] = ["f32", "f64", "c32", "c64"];
+
+/// The declared run grid: every case × requested dtype × engine row, with the
+/// status of the cells that were actually measured. Written by `run` and
+/// `verify` alike so a consumer can tell a skipped cell from a missing one.
+pub struct Census {
+    rows: Vec<CensusRow>,
+}
+
+impl Census {
+    /// The full grid, in the run's execution order. Every cell starts `skipped`;
+    /// `mark_ok`/`mark_skipped` move the ones the run reached.
+    pub fn declared(
+        regime: &str,
+        n: &str,
+        batch: &str,
+        threads: usize,
+        families: &[String],
+        dtypes: &[String],
+        rows: &[String],
+    ) -> Census {
+        let mut cells = Vec::new();
+        for family in families {
+            for dtype in dtypes {
+                let unsupported = !KNOWN_DTYPES.contains(&dtype.as_str());
+                for row in rows {
+                    cells.push(CensusRow {
+                        dtype: dtype.clone(),
+                        regime: regime.to_string(),
+                        family: family.clone(),
+                        n: n.to_string(),
+                        batch: batch.to_string(),
+                        row: row.clone(),
+                        threads,
+                        status: "skipped",
+                        note: if unsupported {
+                            format!("unsupported dtype {dtype}")
+                        } else {
+                            "not measured".to_string()
+                        },
+                    });
+                }
+            }
+        }
+        Census { rows: cells }
+    }
+
+    /// Record that `(family, dtype, row)` was measured.
+    pub fn mark_ok(&mut self, family: &str, dtype: &str, row: &str) {
+        for c in &mut self.rows {
+            if c.family == family && c.dtype == dtype && c.row == row {
+                c.status = "ok";
+                c.note.clear();
+            }
+        }
+    }
+
+    /// Record why `(family, dtype, row)` was declared but not measured.
+    pub fn mark_skipped(&mut self, family: &str, dtype: &str, row: &str, note: &str) {
+        for c in &mut self.rows {
+            if c.family == family && c.dtype == dtype && c.row == row {
+                c.status = "skipped";
+                c.note = note.to_string();
+            }
+        }
+    }
+
+    pub fn write_csv(&self, path: &str) -> std::io::Result<()> {
+        let mut s = String::from("regime,family,n,batch,row,threads,status,note\n");
+        for c in &self.rows {
+            let _ = writeln!(
+                s,
+                "{},{},{},{},{},{},{},{}",
+                c.regime, c.family, c.n, c.batch, c.row, c.threads, c.status, c.note
             );
         }
         fs::write(path, s)
@@ -195,6 +342,44 @@ pub fn print_environment() {
         crate::tblis::VERSION,
         unsafe { crate::tblis::tblis_get_num_threads() }
     );
+}
+
+/// The measurement toolkit reads this contract from `info` as `key=value` lines,
+/// one per line, on top of [`print_environment`]'s human text. A key whose value
+/// is unavailable is printed empty rather than omitted, so a consumer can tell
+/// "not built" from "the harness changed".
+///
+/// This stays out of `run`/`verify`: with no new flags their output must be
+/// byte-for-byte what it was, and only the toolkit's own `info` probe needs it.
+pub fn print_evidence_keys(threads_requested: usize, threads_effective: usize) {
+    println!("provider=tprims");
+    println!("provider_version={}", provider_version());
+    println!("threads={threads_requested}");
+    println!("threads_effective={threads_effective}");
+    #[cfg(feature = "tblis")]
+    println!("tblis={}", crate::tblis::VERSION);
+    #[cfg(not(feature = "tblis"))]
+    println!("tblis=");
+}
+
+/// The crate version of the linked tcontract library, read through the capi's
+/// own accessor (`TAPP_implementation_version`, the "crate version of the loaded
+/// library" by its contract).
+///
+/// The measured provider itself (`tcontract` / `tcontract-kernel`) exposes no
+/// runtime version API, and the harness may not add one outside this directory;
+/// this is the only library version it can report without inventing a constant
+/// that would drift from `Cargo.toml`.
+fn provider_version() -> String {
+    let p = tcontract_capi::TAPP_implementation_version();
+    if p.is_null() {
+        return String::new();
+    }
+    // SAFETY: the accessor's contract is a static, NUL-terminated string that
+    // outlives the call and must not be freed.
+    unsafe { std::ffi::CStr::from_ptr(p) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// This machine's name, for the `PROVENANCE.txt` convention every directory
