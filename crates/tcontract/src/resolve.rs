@@ -4,8 +4,8 @@
 //! built; execution never selects again. No workspace or executor lives here.
 
 use tcontract_kernel::{
-    Blocking, CpuFeatures, Families, KernelChoice, KernelHandle, Method, Origin, Registry,
-    ResolvedGemm, SelectError,
+    Blocking, CpuFeatures, Families, KernelChoice, KernelHandle, Method, Origin, ResolvedGemm,
+    SelectError,
 };
 
 use crate::plan::{PackedPlan, PlanConfig};
@@ -13,25 +13,47 @@ use crate::plan::{PackedPlan, PlanConfig};
 /// The complex scheme the default menu uses when the config names none.
 const DEFAULT_METHOD: Method = Method::Native;
 
-/// The default family menu: the Lukas Devos kernel families of the preferred
-/// ISA and the requested complex scheme, default first. Its `(MR, NR)` shapes
-/// are what [`PackedPlan::row_block`] chooses among.
+/// The default family menu: the Lukas Devos built-in kernel families of the
+/// preferred ISA and the requested complex scheme, default first. Its `(MR, NR)`
+/// shapes are what [`PackedPlan::row_block`] chooses among.
+///
+/// The list is cached per element type and `(ISA, complex method)`: it contains
+/// only the immutable built-ins, so registration stays live and a provider is
+/// reached by explicit id. This is why the menu cannot change under a running
+/// process.
 fn default_menu<T: Families>(
     cfg: &PlanConfig,
-) -> Vec<&'static tcontract_kernel::KernelFamily<T::Real>> {
+) -> &'static [&'static tcontract_kernel::KernelFamily<T::Real>] {
     let method = cfg.method.unwrap_or(DEFAULT_METHOD);
     let isa = tcontract_kernel::menu_isa(cfg.isa);
-    Registry::families::<T>(CpuFeatures::detect(), false)
-        .into_iter()
+    // Real types ignore the complex method, so one cache entry serves them.
+    let key = (isa, T::IS_COMPLEX.then_some(method));
+    let cache = T::menu_cache();
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(found) = guard.iter().find(|(k, _)| *k == key) {
+        return found.1;
+    }
+    let detect = CpuFeatures::detect();
+    let menu: Vec<&'static tcontract_kernel::KernelFamily<T::Real>> = T::builtins()
+        .iter()
+        .copied()
         .filter(|f| {
             // An induced variant is a different family that only an explicit
-            // id may choose.
+            // id may choose; the complex scheme must match the element type.
             f.imp != tcontract_kernel::KernelImpl::Induced
                 && f.origin == Origin::Tensorcontract
                 && f.isa == isa
+                && f.complex.is_some() == T::IS_COMPLEX
+                && detect.contains(f.required)
                 && (!T::IS_COMPLEX || f.complex.is_some_and(|s| s.method == method))
         })
-        .collect()
+        .collect();
+    // INVARIANT: the menu is built-ins only and keyed by the finite set of ISA and
+    // complex-method combinations, so the process-lifetime leak is bounded.
+    let menu: &'static [&'static tcontract_kernel::KernelFamily<T::Real>] =
+        Box::leak(menu.into_boxed_slice());
+    guard.push((key, menu));
+    menu
 }
 
 /// Resolve the family, blocking and partition of `p` for storage type `T`, at

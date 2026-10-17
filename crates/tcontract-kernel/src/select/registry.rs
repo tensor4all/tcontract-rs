@@ -2,11 +2,18 @@
 //! Kernel providers depend on this contract, never the other way around.
 
 use crate::{
-    ComplexScheme, CpuFeatures, Element, FamilyError, Isa, KernelFamily, Origin, Real, C32, C64,
+    ComplexScheme, CpuFeatures, Element, FamilyError, Isa, KernelFamily, Method, Origin, Real, C32,
+    C64,
 };
 use std::sync::Mutex;
 
 type List<R> = fn() -> &'static [&'static KernelFamily<R>];
+
+/// The default-menu cache for one real type: `(ISA, complex method)` to the
+/// immutable built-in menu. One entry per combination, process-lifetime.
+#[doc(hidden)]
+pub type MenuCache<R> =
+    std::sync::Mutex<Vec<((Isa, Option<Method>), &'static [&'static KernelFamily<R>])>>;
 mod sealed {
     pub trait Sealed {}
     impl Sealed for f32 {}
@@ -68,6 +75,18 @@ pub trait Families: Element + sealed::Sealed {
     /// Unfiltered family list for this element's arithmetic real type.
     #[doc(hidden)]
     fn all_families() -> Vec<&'static KernelFamily<Self::Real>>;
+    /// The immutable built-in families only, without registered providers.
+    ///
+    /// The default menu is cached from this list, so registration must not be
+    /// able to change it; a registered provider is reached by explicit id.
+    #[doc(hidden)]
+    fn builtins() -> &'static [&'static KernelFamily<Self::Real>];
+    /// The default-menu cache, one per element type, keyed by `(ISA, method)`.
+    ///
+    /// The menu is immutable (built-ins only) and bounded by the number of ISA
+    /// and complex-method combinations, so it lives for the process.
+    #[doc(hidden)]
+    fn menu_cache() -> &'static MenuCache<Self::Real>;
     /// Complex families induced from every registered real family, built once.
     #[doc(hidden)]
     fn induced() -> &'static [&'static KernelFamily<Self::Real>];
@@ -78,6 +97,13 @@ macro_rules! families {
             const DTYPE: &'static str = $name;
             fn all_families() -> Vec<&'static KernelFamily<$r>> {
                 registered::<$r>($builtin())
+            }
+            fn builtins() -> &'static [&'static KernelFamily<$r>] {
+                $builtin()
+            }
+            fn menu_cache() -> &'static MenuCache<$r> {
+                static CACHE: std::sync::OnceLock<MenuCache<$r>> = std::sync::OnceLock::new();
+                CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
             }
             fn induced() -> &'static [&'static KernelFamily<$r>] {
                 static INDUCED: std::sync::OnceLock<Vec<&'static KernelFamily<$r>>> =
