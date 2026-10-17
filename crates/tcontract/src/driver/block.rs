@@ -135,12 +135,27 @@ pub(crate) struct BlockShape {
 /// and no order to preserve).
 #[allow(dead_code)] // the enumerator that consumes it lands with the design's next step
 fn fastest(axes: &[Role], stride: impl Fn(&Role) -> i64) -> Option<usize> {
-    let live: Vec<usize> = (0..axes.len()).filter(|&i| axes[i].extent > 1).collect();
-    if live.len() < 2 {
-        return None;
+    // One pass, no `Vec`: the plan-time helper is called per role and the live
+    // count decides whether an order exists at all. Ties keep the first axis,
+    // matching `min_by_key`.
+    let mut best: Option<usize> = None;
+    let mut live = 0usize;
+    for (i, axis) in axes.iter().enumerate() {
+        if axis.extent <= 1 {
+            continue;
+        }
+        live += 1;
+        let s = stride(axis).unsigned_abs();
+        match best {
+            Some(b) if stride(&axes[b]).unsigned_abs() <= s => {}
+            _ => best = Some(i),
+        }
     }
-    live.into_iter()
-        .min_by_key(|&i| stride(&axes[i]).unsigned_abs())
+    if live < 2 {
+        None
+    } else {
+        best
+    }
 }
 
 /// The block a role needs, or `None` when today's slices are the right answer.

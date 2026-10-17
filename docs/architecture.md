@@ -134,12 +134,26 @@ TAPP_error tcontract_tapp_executor_borrow_pool(TAPP_executor *out, tcontract_poo
 pub enum Exec<'a> {
     Serial,                                        // no storage owner
     SerialWithWorkspace(&'a dyn WorkspaceProvider), // caller-owned serial scratch
-    Rayon { pool: &'a Pool<'a>, budget: NonZeroUsize }, // pool borrowed from the host
+    Rayon { pool: &'a Pool<'a>, budget: NonZeroUsize, policy: BatchPolicy }, // host pool
     // Host(&'a dyn BroadcastExecutor): host scheduler with guaranteed width, Phase 2
 }
 ```
 
 Implemented in Phase 1a as `crates/tcontract-exec` (`install`, `for_each_partition`, `broadcast`, `width_for`); see the [decision log](decision-log.md#execution).
+
+**Batch lane policy.** A pooled `Exec` also carries a `tcontract_exec::batch::BatchPolicy`
+(`Exec::batch_policy`, `Exec::with_batch_policy`; `with_budget` preserves it).
+`Exec::batch_decision(&BatchQuery)` is the one decision function every
+operation that owns batch lanes calls: `Auto` applies the `WorkModel`,
+`Sequential` / `Outer` / `Inner` / `Split` force a route and are clamped to the
+items and the budget, and `WholeBatchVendor` needs a route that has a vendor
+batched call, otherwise it is refused with `StrategyUnavailable` before any
+output write. The packed driver presents a balanced-lanes query
+(`Auto` reproduces its two-stage narrowing), the faer batched GEMM an
+item-serial-outer query (reproducing its inner/item-width rule), and
+`contract_batched` maps its default `Auto` to `Outer`/`Inner` by item count.
+The defaults reproduce the pre-policy tcontract decisions; the shared, swept
+defaults are a later step.
 
 **Three widths, kept distinct.**
 
