@@ -154,7 +154,11 @@ fn strides(dims: &[usize], order: &[usize]) -> Vec<isize> {
 /// `b_order`, output compact column-major.
 fn entry(case: &Case, dtype: Dtype) -> DotGeneralEntry {
     let cfg = DotGeneral::new(case.lc, case.rc, case.lb, case.rb);
-    let cdims = cfg.validate(case.a, case.b).expect("config").out_dims;
+    let cdims = cfg
+        .validate(case.a, case.b)
+        .expect("config")
+        .out_dims
+        .to_vec();
     let order: Vec<usize> = (0..cdims.len()).collect();
     DotGeneralEntry {
         name: format!("{}_{}", case.name, dtype.tag()),

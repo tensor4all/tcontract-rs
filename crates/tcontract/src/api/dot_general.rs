@@ -1,6 +1,8 @@
 //! The `dot_general` front end.
 
 use crate::api::error::{ConfigError, Error, OperandId, Result, ShapeError};
+use crate::api::problem::{IndexVec, OutputVec, INLINE_RANK};
+use tinyvec::TinyVec;
 
 /// Which axes of the two operands are contracted and which are batch axes.
 ///
@@ -14,25 +16,25 @@ use crate::api::error::{ConfigError, Error, OperandId, Result, ShapeError};
 /// ```
 /// use tcontract::api::DotGeneral;
 /// let bmm = DotGeneral::new(&[2], &[1], &[0], &[0]);
-/// assert_eq!(bmm.validate(&[3, 5, 4], &[3, 4, 2]).unwrap().out_dims, vec![5, 2, 3]);
+/// assert_eq!(bmm.validate(&[3, 5, 4], &[3, 4, 2]).unwrap().out_dims.as_slice(), &[5, 2, 3]);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DotGeneral {
-    lhs_contract: Vec<usize>,
-    rhs_contract: Vec<usize>,
-    lhs_batch: Vec<usize>,
-    rhs_batch: Vec<usize>,
+    lhs_contract: IndexVec,
+    rhs_contract: IndexVec,
+    lhs_batch: IndexVec,
+    rhs_batch: IndexVec,
 }
 
 /// The axes of a validated [`DotGeneral`] against concrete extents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DotShape {
     /// Free axes of A, in order.
-    pub lhs_free: Vec<usize>,
+    pub lhs_free: IndexVec,
     /// Free axes of B, in order.
-    pub rhs_free: Vec<usize>,
+    pub rhs_free: IndexVec,
     /// Output extents `[lhs_free, rhs_free, batch]`.
-    pub out_dims: Vec<usize>,
+    pub out_dims: OutputVec,
 }
 
 impl DotGeneral {
@@ -45,31 +47,31 @@ impl DotGeneral {
         rhs_batch: &[usize],
     ) -> Self {
         Self {
-            lhs_contract: lhs_contract.to_vec(),
-            rhs_contract: rhs_contract.to_vec(),
-            lhs_batch: lhs_batch.to_vec(),
-            rhs_batch: rhs_batch.to_vec(),
+            lhs_contract: lhs_contract.iter().copied().collect(),
+            rhs_contract: rhs_contract.iter().copied().collect(),
+            lhs_batch: lhs_batch.iter().copied().collect(),
+            rhs_batch: rhs_batch.iter().copied().collect(),
         }
     }
 
     /// Contracted axes of A.
     pub fn lhs_contract(&self) -> &[usize] {
-        &self.lhs_contract
+        self.lhs_contract.as_slice()
     }
 
     /// Contracted axes of B, paired with [`lhs_contract`](Self::lhs_contract).
     pub fn rhs_contract(&self) -> &[usize] {
-        &self.rhs_contract
+        self.rhs_contract.as_slice()
     }
 
     /// Batch axes of A.
     pub fn lhs_batch(&self) -> &[usize] {
-        &self.lhs_batch
+        self.lhs_batch.as_slice()
     }
 
     /// Batch axes of B, paired with [`lhs_batch`](Self::lhs_batch).
     pub fn rhs_batch(&self) -> &[usize] {
-        &self.rhs_batch
+        self.rhs_batch.as_slice()
     }
 
     /// Validate against operand extents: list lengths, axis bounds, uniqueness
@@ -94,7 +96,10 @@ impl DotGeneral {
             }
         }
         let check = |operand: OperandId, rank: usize, c: &[usize], bt: &[usize]| {
-            let mut seen = vec![false; rank];
+            // A rank-sized mask, inline for the usual ranks. `resize` spills for
+            // a higher rank rather than rejecting it.
+            let mut seen: TinyVec<[bool; INLINE_RANK]> = TinyVec::new();
+            seen.resize(rank, false);
             for &x in c.iter().chain(bt) {
                 if x >= rank {
                     return Err(Error::from(ConfigError::AxisOutOfRange {
@@ -108,15 +113,15 @@ impl DotGeneral {
                 }
                 seen[x] = true;
             }
-            Ok((0..rank).filter(|&x| !seen[x]).collect::<Vec<_>>())
+            Ok((0..rank).filter(|&x| !seen[x]).collect::<IndexVec>())
         };
         let lhs_free = check(OperandId::A, a.len(), &self.lhs_contract, &self.lhs_batch)?;
         let rhs_free = check(OperandId::B, b.len(), &self.rhs_contract, &self.rhs_batch)?;
         for (&l, &r) in self
             .lhs_contract
             .iter()
-            .zip(&self.rhs_contract)
-            .chain(self.lhs_batch.iter().zip(&self.rhs_batch))
+            .zip(self.rhs_contract.iter())
+            .chain(self.lhs_batch.iter().zip(self.rhs_batch.iter()))
         {
             if a[l] != b[r] {
                 return Err(ShapeError::PairedExtent {

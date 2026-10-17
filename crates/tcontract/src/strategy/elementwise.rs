@@ -44,7 +44,9 @@ use strided_view::{StridedView, StridedViewMut};
 use tcontract_exec::strided::run_with_exec;
 use tcontract_exec::Exec;
 use tcontract_kernel::Element;
+use tinyvec::TinyVec;
 
+use crate::api::problem::COMBINED_RANK;
 use crate::api::scalar::sealed::Sealed;
 use crate::api::{Error, OperandId, Problem, Result, RoleAxis, Scalar};
 
@@ -193,11 +195,16 @@ unsafe fn write_view_uninit<'a, T>(
 
 /// The axes of a pass: extents and the `[A, B, C, D]` element strides of each
 /// axis, extent-1 axes dropped.
+///
+/// Both vectors store inline up to the combined role count (`2 * INLINE_RANK`,
+/// the most distinct labels two rank-[`INLINE_RANK`] operands can carry) and
+/// spill above it, so a plan build at rank `<= INLINE_RANK` allocates no axis
+/// metadata.
 #[derive(Clone, Debug)]
 pub struct ElementPlan {
-    dims: Vec<usize>,
+    dims: TinyVec<[usize; COMBINED_RANK]>,
     /// The `A`, `B`, `C` and `D` strides, one `dims.len()` run each.
-    strides: Vec<isize>,
+    strides: TinyVec<[isize; 4 * COMBINED_RANK]>,
     total: usize,
 }
 
@@ -205,8 +212,9 @@ impl ElementPlan {
     fn from_axes(axes: impl Iterator<Item = (usize, [isize; 4])> + Clone) -> Self {
         let axes = axes.filter(|a| a.0 != 1);
         let n = axes.clone().count();
-        let mut dims = Vec::with_capacity(n);
-        let mut strides = vec![0isize; 4 * n];
+        let mut dims: TinyVec<[usize; COMBINED_RANK]> = TinyVec::new();
+        let mut strides: TinyVec<[isize; 4 * COMBINED_RANK]> = TinyVec::new();
+        strides.resize(4 * n, 0);
         for (i, (e, s)) in axes.enumerate() {
             dims.push(e);
             for (j, &x) in s.iter().enumerate() {

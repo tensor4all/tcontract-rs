@@ -5,7 +5,7 @@ mod backend;
 mod dot_general;
 mod error;
 mod labels;
-mod problem;
+pub(crate) mod problem;
 pub(crate) mod scalar;
 mod validate;
 

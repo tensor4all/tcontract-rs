@@ -78,6 +78,10 @@ struct Packed<T: Scalar> {
     rg: ResolvedGemm<<T as Scalar>::Re>,
 }
 
+#[allow(clippy::large_enum_variant)]
+// INVARIANT: `ElementPlan`'s axis metadata is
+// inline (tinyvec) so an all-batch plan allocates nothing; boxing it would add
+// one allocation to the very path #121 removes.
 #[derive(Debug)]
 enum Strategy<T: Scalar> {
     Packed(Box<Packed<T>>),

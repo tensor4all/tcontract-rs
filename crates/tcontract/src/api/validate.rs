@@ -18,7 +18,10 @@
 
 use crate::api::error::{AliasError, ConfigError, OperandId, Result, ShapeError, Unsupported};
 use crate::api::labels::Labels;
-use crate::api::problem::{CSpec, DType, LayoutSpec, OperandSpec, RoleAxis, Roles, Span};
+use crate::api::problem::{
+    CSpec, DType, LayoutSpec, OperandSpec, RoleAxis, Roles, Span, COMBINED_RANK, INLINE_RANK,
+};
+use tinyvec::TinyVec;
 
 /// What lowering concluded; read through `Problem`'s accessors.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,7 +35,7 @@ pub(crate) struct Lowered {
 }
 
 /// One label of one operand after repeated labels collapsed onto a diagonal.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Mode {
     label: i64,
     extent: usize,
@@ -44,7 +47,11 @@ fn overflow(what: &'static str) -> crate::api::error::Error {
 }
 
 /// Collapse repeated labels of one operand onto their diagonal.
-fn reduce(operand: OperandId, layout: &LayoutSpec, labels: &[i64]) -> Result<Vec<Mode>> {
+fn reduce(
+    operand: OperandId,
+    layout: &LayoutSpec,
+    labels: &[i64],
+) -> Result<TinyVec<[Mode; INLINE_RANK]>> {
     if layout.rank() != labels.len() {
         return Err(ShapeError::LabelCount {
             operand,
@@ -53,7 +60,7 @@ fn reduce(operand: OperandId, layout: &LayoutSpec, labels: &[i64]) -> Result<Vec
         }
         .into());
     }
-    let mut out: Vec<Mode> = Vec::with_capacity(labels.len());
+    let mut out: TinyVec<[Mode; INLINE_RANK]> = TinyVec::new();
     let mut product: usize = 1;
     for (k, &label) in labels.iter().enumerate() {
         let (extent, stride) = (layout.dims()[k], layout.strides()[k]);
@@ -160,7 +167,7 @@ fn chained(axes: &mut [(i128, i128)]) -> bool {
 /// conservative sorted-stride test the output check uses. An empty layout is
 /// injective.
 pub fn is_injective_layout(dims: &[usize], strides: &[isize]) -> bool {
-    let modes: Vec<Mode> = dims
+    let modes: TinyVec<[Mode; INLINE_RANK]> = dims
         .iter()
         .zip(strides)
         .map(|(&extent, &stride)| Mode {
@@ -169,10 +176,10 @@ pub fn is_injective_layout(dims: &[usize], strides: &[isize]) -> bool {
             stride,
         })
         .collect();
-    injective(&modes)
+    injective(modes.as_slice())
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Label {
     id: i64,
     extent: usize,
@@ -183,7 +190,11 @@ struct Label {
     in_d: bool,
 }
 
-fn merge(table: &mut Vec<Label>, modes: &[Mode], slot: OperandId) -> Result<()> {
+fn merge(
+    table: &mut TinyVec<[Label; COMBINED_RANK]>,
+    modes: &[Mode],
+    slot: OperandId,
+) -> Result<()> {
     for m in modes {
         let l = match table.iter_mut().find(|l| l.id == m.label) {
             Some(l) => {
@@ -247,7 +258,7 @@ pub(crate) fn lower(
         _ => (&rd[..], Some(d.layout())),
     };
 
-    let mut table: Vec<Label> = Vec::with_capacity(ra.len() + rb.len() + rd.len());
+    let mut table: TinyVec<[Label; COMBINED_RANK]> = TinyVec::new();
     merge(&mut table, &ra, OperandId::A)?;
     merge(&mut table, &rb, OperandId::B)?;
     merge(&mut table, rc, OperandId::C)?;
@@ -295,7 +306,7 @@ pub(crate) fn lower(
         span_of(dtype, d.layout())?,
     ];
 
-    if !injective(&rd) {
+    if !injective(rd.as_slice()) {
         return Err(AliasError::OutputNotInjective.into());
     }
 
@@ -316,8 +327,8 @@ pub(crate) fn lower(
     let out_empty = roles
         .m
         .iter()
-        .chain(&roles.n)
-        .chain(&roles.h)
+        .chain(roles.n.as_slice())
+        .chain(roles.h.as_slice())
         .any(|x| x.extent == 0);
     Ok(Lowered {
         roles,

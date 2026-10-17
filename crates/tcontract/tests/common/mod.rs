@@ -232,6 +232,6 @@ pub fn rel_err<S: Scalar>(x: &T<S>, y: &T<S>) -> f64 {
 
 /// The output extents of a validated contraction.
 pub fn out_dims(cfg: &DotGeneral, a: &[usize], b: &[usize]) -> Vec<usize> {
-    cfg.validate(a, b).unwrap().out_dims
+    cfg.validate(a, b).unwrap().out_dims.to_vec()
 }
 pub mod plans;

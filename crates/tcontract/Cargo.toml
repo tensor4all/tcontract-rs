@@ -14,6 +14,7 @@ num-complex = { workspace = true }
 strided-basic = { workspace = true }
 strided-view = { workspace = true }
 thiserror = { workspace = true }
+tinyvec = { workspace = true }
 tcontract-exec = { workspace = true, features = ["strided"] }
 tcontract-kernel = { workspace = true, features = ["std"] }
 

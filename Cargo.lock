@@ -1025,6 +1025,7 @@ dependencies = [
  "tcontract-kernel",
  "tcontract-testkit",
  "thiserror",
+ "tinyvec",
 ]
 
 [[package]]
