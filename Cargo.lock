@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "faer",
  "num-complex",
@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "faer",
  "rayon",
@@ -1073,7 +1073,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract-kernel"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "libc",
  "num-complex",
