@@ -18,7 +18,7 @@ use super::{
     BenchElem,
 };
 use crate::corpus::{self, col_major_strides, Program};
-use crate::report::{Results, Row, Table};
+use crate::report::{Census, Results, Row, Table};
 use crate::Options;
 
 /// Column order for the report tables: this library's engines first, then the
@@ -42,28 +42,66 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
     println!();
 
     let cases = crate::select_cases(opts);
+    // Only a case whose own dtype was requested is timed; the rest are still
+    // declared, with every cell skipped, because the toolkit's grid multiplies
+    // each family by the suite's whole dtype list.
+    let timed_cases = cases.iter().filter(|p| opts.wants(p.dtype)).count();
     println!(
         "running {} cases at fixed extents (--size is accepted and ignored: this corpus has \
          no size knob), {} reps, {} ms priming, engines={}\n",
-        cases.len(),
+        timed_cases,
         opts.reps,
         opts.prime_ms,
         opts.engines.join(",")
     );
 
-    let mut results = Results::default();
+    let mut results = Results {
+        regime: opts.regime.clone(),
+        batch: opts.batch.clone(),
+        statistic: opts.statistic,
+        n_spec: opts.n_spec.clone(),
+        ..Default::default()
+    };
+    // The declared grid the census enumerates. `--rotate-rows` moves execution
+    // order only, so the census follows `exec_order` while the human tables keep
+    // the selection order. The timed CSV is driven from the same grid, so a
+    // skipped cell appears in both.
+    let mut census = (opts.csv.is_some() || opts.census_csv.is_some()).then(|| {
+        Census::declared(
+            &opts.regime,
+            &opts.n_spec,
+            &opts.batch,
+            exec.budget(),
+            &cases,
+            &opts.dtypes,
+            &opts.exec_order(),
+        )
+    });
+
     for p in &cases {
+        if !opts.wants(p.dtype) {
+            continue;
+        }
         match p.dtype {
-            "f64" => run_case::<f64>(p, opts, exec, &mut results),
-            "c64" => run_case::<Complex<f64>>(p, opts, exec, &mut results),
+            "f64" => run_case::<f64>(p, opts, exec, &mut results, census.as_mut()),
+            "c64" => run_case::<Complex<f64>>(p, opts, exec, &mut results, census.as_mut()),
             other => eprintln!("{}: unknown dtype {other}", p.name),
         }
     }
 
     print_tables(&results, opts);
     if let Some(path) = &opts.csv {
-        match results.write_csv(path) {
+        let census = census
+            .as_ref()
+            .expect("a timed CSV needs the declared grid");
+        match results.write_csv(path, census) {
             Ok(()) => println!("\nwrote {path}"),
+            Err(e) => eprintln!("failed to write {path}: {e}"),
+        }
+    }
+    if let (Some(c), Some(path)) = (census.as_ref(), opts.census_csv.as_ref()) {
+        match c.write_csv(path) {
+            Ok(()) => println!("wrote {path}"),
             Err(e) => eprintln!("failed to write {path}: {e}"),
         }
     }
@@ -74,8 +112,15 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
     }
 }
 
-/// Measure one case across all requested engines.
-fn run_case<T: BenchElem>(p: &Program, opts: &Options, exec: &Exec<'_>, results: &mut Results) {
+/// Measure one case across the requested engines, in the order
+/// [`Options::exec_order`] gives (the declared rows rotated per process start).
+fn run_case<T: BenchElem>(
+    p: &Program,
+    opts: &Options,
+    exec: &Exec<'_>,
+    results: &mut Results,
+    mut census: Option<&mut Census>,
+) {
     let inputs = sample_inputs::<T>(p, 0x5EED);
     // The naive label loop is the only oracle for a program: the corpus has no
     // analytically known output, and `verify` runs the same comparison before
@@ -98,14 +143,17 @@ fn run_case<T: BenchElem>(p: &Program, opts: &Options, exec: &Exec<'_>, results:
     };
 
     let push = |engine: &str,
-                secs: f64,
+                samples: Vec<f64>,
                 spread: f64,
                 prepare: f64,
                 notes: String,
-                results: &mut Results| {
+                results: &mut Results,
+                census: Option<&mut Census>| {
+        // The arm's reported time is the requested statistic of its samples, so
+        // the evidence's `total_ms` and the human table always agree.
+        let secs = opts.statistic.of(&samples);
         results.push(Row {
             case: p.name.clone(),
-            group: p.group.to_string(),
             dtype: T::NAME.to_string(),
             engine: engine.to_string(),
             threads: exec.budget(),
@@ -120,48 +168,83 @@ fn run_case<T: BenchElem>(p: &Program, opts: &Options, exec: &Exec<'_>, results:
             reg_a: 0.0,
             reg_b: 0.0,
             notes: format!("{notes} {shape}").trim().to_string(),
+            samples,
         });
+        if let Some(c) = census {
+            c.mark_ok(&p.name, T::NAME, engine);
+        }
     };
 
-    // ---- this library: the planner's choice, and the packed driver ---------
-    for (name, config) in [
-        ("plan", PlanConfig::default()),
-        ("packed", PlanConfig::packed()),
-    ] {
+    // ---- every engine, in the requested execution order ---------------------
+    for name in &opts.exec_order() {
         if !opts.engine(name) {
             continue;
         }
-        let mut slots = p.new_slots::<T>();
-        match run_plans(
-            p,
-            &config,
-            &inputs,
-            &mut slots,
-            exec,
-            opts.reps,
-            opts.prime_ms,
-        ) {
-            Ok((secs, scatter, prepare, strategy)) => {
-                let notes = format!("{strategy} {}", check(name, slots.last().unwrap()));
-                push(name, secs, scatter, prepare, notes, results);
+        match name.as_str() {
+            // ---- this library: the planner's choice, and the packed driver ---
+            "plan" | "packed" => {
+                let config = if name == "packed" {
+                    PlanConfig::packed()
+                } else {
+                    PlanConfig::default()
+                };
+                let mut slots = p.new_slots::<T>();
+                match run_plans(
+                    p,
+                    &config,
+                    &inputs,
+                    &mut slots,
+                    exec,
+                    opts.reps,
+                    opts.prime_ms,
+                ) {
+                    Ok((samples, scatter, prepare, strategy)) => {
+                        let notes = format!("{strategy} {}", check(name, slots.last().unwrap()));
+                        push(
+                            name,
+                            samples,
+                            scatter,
+                            prepare,
+                            notes,
+                            results,
+                            census.as_deref_mut(),
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("{} [{}]: planning failed: {e}", p.name, T::NAME);
+                        if let Some(c) = census.as_deref_mut() {
+                            c.mark_skipped(&p.name, T::NAME, name, "planning failed");
+                        }
+                    }
+                }
             }
-            Err(e) => eprintln!("{} [{}]: planning failed: {e}", p.name, T::NAME),
-        }
-    }
 
-    // ---- TBLIS -------------------------------------------------------------
-    #[cfg(feature = "tblis")]
-    if opts.engine("tblis") {
-        let mut slots = p.new_slots::<T>();
-        let (secs, scatter, prepare) = run_tblis(p, &inputs, &mut slots, opts.reps, opts.prime_ms);
-        let notes = check("tblis", slots.last().unwrap());
-        push("tblis", secs, scatter, prepare, notes, results);
+            // ---- TBLIS ------------------------------------------------------
+            #[cfg(feature = "tblis")]
+            "tblis" => {
+                let mut slots = p.new_slots::<T>();
+                let (samples, scatter, prepare) =
+                    run_tblis(p, &inputs, &mut slots, opts.reps, opts.prime_ms);
+                let notes = check("tblis", slots.last().unwrap());
+                push(
+                    "tblis",
+                    samples,
+                    scatter,
+                    prepare,
+                    notes,
+                    results,
+                    census.as_deref_mut(),
+                );
+            }
+            _ => {}
+        }
     }
 }
 
-/// Build a plan per step, run the whole program into `slots` best-of-`reps`
-/// after `prime_ms` of priming, and return the time, the scatter across the
-/// repetitions, and the per-step strategy description.
+/// Build a plan per step, run the whole program into `slots` `reps` times
+/// after `prime_ms` of priming, and return the chronological samples, the
+/// scatter across the repetitions, the prepare time, and the per-step strategy
+/// description.
 ///
 /// `reps == 0` with `prime_ms == 0` is one untimed pass, which is what `verify`
 /// wants: it then exercises exactly the code path `run` times.
@@ -173,7 +256,7 @@ pub fn run_plans<T: BenchElem>(
     exec: &Exec<'_>,
     reps: usize,
     prime_ms: u64,
-) -> Result<(f64, f64, f64, String), tcontract::Error> {
+) -> Result<(Vec<f64>, f64, f64, String), tcontract::Error> {
     let (plans, prepare) = timed_prepare(3, || -> Result<Vec<Plan<T>>, tcontract::Error> {
         (0..p.steps.len())
             .map(|k| Plan::<T>::new(&problem_of::<T>(p, k)?, config))
@@ -183,7 +266,7 @@ pub fn run_plans<T: BenchElem>(
     let strategy = strategies(&plans);
     let strides: Vec<Vec<isize>> = p.shapes.iter().map(|d| col_major_strides(d)).collect();
     let n_in = p.n_in();
-    let (secs, scatter) = timed(reps, prime_ms, || {
+    let (_, scatter, samples) = timed(reps, prime_ms, || {
         steps_with(p, inputs, slots, |k, st, a, b, d| {
             let av = StridedView::new(a, &p.shapes[st.lhs], &strides[st.lhs], 0).expect("view");
             let bv = StridedView::new(b, &p.shapes[st.rhs], &strides[st.rhs], 0).expect("view");
@@ -195,7 +278,7 @@ pub fn run_plans<T: BenchElem>(
                 .expect("a validated plan runs");
         });
     });
-    Ok((secs, scatter, prepare, strategy))
+    Ok((samples, scatter, prepare, strategy))
 }
 
 /// The distinct per-step strategy descriptions of a program's plans.
@@ -239,7 +322,7 @@ pub fn run_tblis<T: BenchElem>(
     slots: &mut [Vec<T>],
     reps: usize,
     prime_ms: u64,
-) -> (f64, f64, f64) {
+) -> (Vec<f64>, f64, f64) {
     use crate::tblis as tb;
     let n_in = p.n_in();
     let (mut ops, prepare) = timed_prepare(3, || {
@@ -257,7 +340,7 @@ pub fn run_tblis<T: BenchElem>(
             .collect();
         ops
     });
-    let (secs, scatter) = timed(reps, prime_ms, || {
+    let (_, scatter, samples) = timed(reps, prime_ms, || {
         steps_with(p, inputs, slots, |k, _st, a, b, d| {
             let (oa, ob, oc) = &mut ops[k];
             let ta = oa.tensor(
@@ -292,7 +375,7 @@ pub fn run_tblis<T: BenchElem>(
             }
         });
     });
-    (secs, scatter, prepare)
+    (samples, scatter, prepare)
 }
 
 fn print_tables(results: &Results, opts: &Options) {
@@ -339,8 +422,10 @@ fn print_tables(results: &Results, opts: &Options) {
         t.row(cells);
     }
     println!(
-        "\n=== GFLOP/s, best of {} calls after {} ms priming, whole program per call ===",
-        opts.reps, opts.prime_ms
+        "\n=== GFLOP/s, {} of {} calls after {} ms priming, whole program per call ===",
+        opts.statistic.name(),
+        opts.reps,
+        opts.prime_ms
     );
     t.print();
 

@@ -93,6 +93,20 @@ benchmarks/scripts/pinned.sh "$cpus"       -- target/release/lukbench run --thre
   extents are the issue's, not a function of a nominal tensor size. The flag
   exists so the campaign's runner can pass the same command line to `lukbench`
   as to `tcbench`. It is echoed as ignored in `run`'s banner and in `--help`.
+- **Evidence flags (the timing-v2 contract).** `--n <spec>` is the declared size
+  spec, echoed verbatim into the census identity (`m = n = --n`, `k` empty);
+  this corpus has no size knob, so it selects and resizes nothing. `--family`
+  (exact case ids), `--case` (name substring), `--regime`, `--batch` (unit
+  batch, so every value must be `1`), `--rows` (select and order engine rows),
+  and `--rotate-rows` (rotate the execution order; the reported row name is
+  unchanged) select and label the grid; `--statistic best|median` picks which
+  summary of the chronological samples is reported (default `best`).
+  `--census-csv <path>` writes the declared-cell census, and `verify --csv`
+  writes it too, so the toolkit reads it from the verification file. An unknown
+  option, or a requested engine this binary was not built with, is a failure
+  (exit 2) rather than a warning. `info` adds the toolkit's `key=value` lines
+  (`provider`, `provider_version`, `threads`, `threads_effective`, `tblis`)
+  after its human-readable text.
 - **`verify` gates `run`.** Every arm is compared with the naive label-loop
   reference (the experiment's) before any timing, and `verify` prints
   `all comparisons within tolerance` only when every comparison is inside
@@ -101,17 +115,19 @@ benchmarks/scripts/pinned.sh "$cpus"       -- target/release/lukbench run --thre
 
 ## CSV
 
-`run --csv <path>` writes exactly `tcbench`'s columns:
+`run --csv <path>` writes `tcbench`'s leading columns followed by the timing-v2
+evidence columns:
 
 ```
-case,group,dtype,engine,threads,m,n,k,macs,seconds,gflops,regular_a,regular_b,notes
+case,group,dtype,engine,threads,m,n,k,macs,seconds,spread,prepare_s,gflops,regular_a,regular_b,notes,regime,family,order,batch,row,status,note,total_ms,per_item_us,samples_ms,rayon_threads,vendor_threads,case_m,case_n,case_k
 ```
 
 - `macs` is the whole program's multiply-accumulate count and `seconds` the
   whole program's time, so `gflops` is the chain's throughput, not one step's.
-- `m`, `n`, `k` are the equivalent GEMM shape by the same split `tcbench` uses.
-  A program with more than one step has no single equivalent shape: those rows
-  carry the **final step's** `m`/`n`/`k`, and `notes` says
+- `m`, `n`, `k` are the identity shape of the declared grid: with `--n <spec>`
+  they echo the spec (`m = n = --n`, `k` empty). The case's real extents — the
+  equivalent GEMM shape by the same split `tcbench` uses, the **final step's**
+  for a chain — travel in `case_m`/`case_n`/`case_k`, and `notes` still says
   `steps=<n> m/n/k=final-step per-step MxNxK=<shape>[x<count>];...`.
 - `regular_a` and `regular_b` are 0 on every row. `tcbench` reports the packed
   driver's block regularity, which is one number for one contraction; a
@@ -121,3 +137,18 @@ case,group,dtype,engine,threads,m,n,k,macs,seconds,gflops,regular_a,regular_b,no
   (`rel_err=...`), the per-step strategy for `plan`/`packed`, and the chain
   suffix above. `MISMATCH` in a note means that arm disagreed with the
   reference: `run` then exits non-zero and the row is not publishable.
+- The evidence columns carry the cell identity (`regime`, `family`, `order`,
+  `batch`, `row`), the `status` (`ok` or `skipped`), the chronological per-call
+  samples as `samples_ms` (a JSON array in milliseconds), and `total_ms` —
+  the requested statistic of those samples — with
+  `per_item_us = total_ms * 1000 / batch`. `rayon_threads` and
+  `vendor_threads` both carry the row's requested budget.
+- Because a case fixes its own dtype, a requested dtype it does not support is
+  a `skipped` cell, in the census and in the timed CSV, for every engine row:
+  the toolkit compares the census against the whole declared rectangular grid
+  and then requires the timed cells and statuses to match. The timed CSV's row
+  plan is the census (in the rotated execution order), so a skipped cell is
+  never silently absent.
+- The census (`--census-csv <path>`, and `verify --csv <path>`) has the columns
+  `regime,family,dtype,order,m,n,k,batch,row,threads,status,note` and one row
+  per declared cell.

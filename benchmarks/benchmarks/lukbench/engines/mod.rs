@@ -16,6 +16,58 @@ use crate::corpus::{col_major_strides, label_ids, Program, Step};
 #[cfg(feature = "tblis")]
 use std::os::raw::c_int;
 
+/// Which summary of an arm's chronological per-call samples is reported as that
+/// arm's time. `best` is the historic default; `median` is what a process-level
+/// evidence record wants, because best-of hides a systematically slow process.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Statistic {
+    /// The fastest call.
+    #[default]
+    Best,
+    /// The median call. An even count averages the two central samples.
+    Median,
+}
+
+impl Statistic {
+    pub fn parse(s: &str) -> Option<Statistic> {
+        match s.trim() {
+            "best" => Some(Statistic::Best),
+            "median" => Some(Statistic::Median),
+            _ => None,
+        }
+    }
+
+    /// The flag spelling, for the human banner.
+    pub fn name(self) -> &'static str {
+        match self {
+            Statistic::Best => "best",
+            Statistic::Median => "median",
+        }
+    }
+
+    /// Apply the statistic to the chronological samples (seconds). An empty
+    /// slice reports 0: there is nothing to summarise, and `timed` never
+    /// produces one.
+    pub fn of(self, samples: &[f64]) -> f64 {
+        match self {
+            Statistic::Best => samples.iter().copied().fold(f64::INFINITY, f64::min),
+            Statistic::Median => {
+                if samples.is_empty() {
+                    return 0.0;
+                }
+                let mut v = samples.to_vec();
+                v.sort_by(f64::total_cmp);
+                let n = v.len();
+                if n % 2 == 1 {
+                    v[n / 2]
+                } else {
+                    (v[n / 2 - 1] + v[n / 2]) / 2.0
+                }
+            }
+        }
+    }
+}
+
 /// An element type the harness can drive through every engine.
 pub trait BenchElem: Scalar {
     const NAME: &'static str;
@@ -134,27 +186,31 @@ pub fn sample_inputs<T: BenchElem>(p: &Program, seed: u64) -> Vec<Vec<T>> {
 /// apply by hand — the harness compares outputs, not timings — is that two arms
 /// whose rows carry the same family, blocking and partition policy must agree.
 ///
-/// Returns `(best, scatter)` in seconds, scatter being `(max - min) / best` over
-/// the repetitions, which is 0 for a single repetition.
-pub fn timed(reps: usize, prime_ms: u64, mut f: impl FnMut()) -> (f64, f64) {
+/// Returns `(best, scatter, samples)` in seconds, scatter being
+/// `(max - min) / best` over the repetitions, which is 0 for a single repetition.
+/// The samples are the chronological per-call list; `--statistic` picks which
+/// element the evidence reports instead of always `best`.
+pub fn timed(reps: usize, prime_ms: u64, mut f: impl FnMut()) -> (f64, f64, Vec<f64>) {
     let until = Instant::now() + std::time::Duration::from_millis(prime_ms);
     while Instant::now() < until {
         f();
     }
     let (mut best, mut worst) = (f64::INFINITY, 0.0f64);
+    let mut samples = Vec::with_capacity(reps.max(1));
     for _ in 0..reps.max(1) {
         let t = Instant::now();
         f();
         let secs = t.elapsed().as_secs_f64();
         best = best.min(secs);
         worst = worst.max(secs);
+        samples.push(secs);
     }
     let scatter = if best.is_finite() && best > 0.0 {
         (worst - best) / best
     } else {
         0.0
     };
-    (best, scatter)
+    (best, scatter, samples)
 }
 
 /// Time what an arm prepares *before* the timed call — a plan, or the reference's
