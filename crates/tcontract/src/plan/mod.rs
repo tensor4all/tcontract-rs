@@ -694,7 +694,11 @@ impl<T: Scalar> Plan<T> {
         // resolves `output` exactly as `raw_dispatch` will, so a plan that sizes
         // zero cannot dispatch its packed alternative.
         let required = self.workspace_req(exec, output);
-        if !required.covered_by(workspace.req()) {
+        // A workspace not warmed for every worker of this executor would have a
+        // worker allocate its own slot mid-execute: refuse instead. The executor
+        // the driver uses is the narrowed one (`Auto`/`Sequential`).
+        let needed_slots = self.batch_context(exec)?.budget();
+        if !required.covered_by(workspace.req()) || workspace.slots() < needed_slots {
             return Err(crate::api::Error::Workspace {
                 needed: required.bytes(),
                 have: workspace.have(),

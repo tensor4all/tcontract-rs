@@ -282,3 +282,62 @@ fn the_bound_covers_the_reviewed_shapes() {
     );
     let _ = dims;
 }
+
+/// A workspace not warmed for every worker of the executor is refused before any
+/// write, rather than letting a worker allocate its own slot mid-execute.
+#[test]
+fn a_workspace_not_prepared_for_the_executor_is_refused() {
+    use tcontract_exec::Pool;
+
+    // A 128^3 item narrows to a two-worker team at budget two, so two slots are
+    // needed and `with_req` warms only one.
+    let m = 128;
+    let plan = Plan::<f64>::new(&matmul(m, m, m), &PlanConfig::packed()).unwrap();
+    let tp = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    let pool = Pool::borrow(&tp);
+    let exec = Exec::rayon(&pool).with_budget(2).unwrap();
+    let mut ws = Workspace::with_req(&plan.workspace_req(&exec, OutputContract::Initialized));
+    assert_eq!(ws.slots(), 1);
+
+    let a = vec![1.0f64; m * m];
+    let b = vec![1.0f64; m * m];
+    let mut d = vec![0.0f64; m * m];
+    // SAFETY: the pointers cover the plan's ranges; the call must refuse first.
+    let err = unsafe {
+        plan.execute_raw_in(
+            &mut ws,
+            &exec,
+            1.0,
+            a.as_ptr(),
+            b.as_ptr(),
+            0.0,
+            core::ptr::null(),
+            d.as_mut_ptr(),
+            OutputContract::Initialized,
+        )
+    }
+    .unwrap_err();
+    assert!(matches!(err, Error::Workspace { .. }), "{err}");
+
+    // After warming both slots it runs.
+    ws.prepare_for(&exec);
+    assert_eq!(ws.slots(), 2);
+    // SAFETY: as above.
+    unsafe {
+        plan.execute_raw_in(
+            &mut ws,
+            &exec,
+            1.0,
+            a.as_ptr(),
+            b.as_ptr(),
+            0.0,
+            core::ptr::null(),
+            d.as_mut_ptr(),
+            OutputContract::Initialized,
+        )
+        .unwrap();
+    }
+}
