@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 
-use crate::{ExecError, Pool};
+use crate::{BatchDecision, BatchPolicy, BatchQuery, ExecError, Pool};
 
 /// Parallelism granted to an operation by [`Exec::install`].
 ///
@@ -53,6 +53,8 @@ pub enum Exec<'a> {
         pool: &'a Pool<'a>,
         /// Most threads an operation may occupy.
         budget: NonZeroUsize,
+        /// The batch lane policy this context applies.
+        policy: BatchPolicy,
     },
 }
 
@@ -64,10 +66,15 @@ impl std::fmt::Debug for Exec<'_> {
         match self {
             Exec::Serial => f.write_str("Serial"),
             Exec::SerialWithWorkspace(_) => f.write_str("SerialWithWorkspace(..)"),
-            Exec::Rayon { pool, budget } => f
+            Exec::Rayon {
+                pool,
+                budget,
+                policy,
+            } => f
                 .debug_struct("Rayon")
                 .field("pool", pool)
                 .field("budget", budget)
+                .field("policy", policy)
                 .finish(),
         }
     }
@@ -84,10 +91,14 @@ impl<'a> Exec<'a> {
         Exec::SerialWithWorkspace(workspace)
     }
 
-    /// Use `pool` with its full size as budget.
+    /// Use `pool` with its full size as budget and the default batch policy.
     pub fn rayon(pool: &'a Pool<'a>) -> Self {
         let budget = NonZeroUsize::new(pool.size()).unwrap_or(NonZeroUsize::MIN);
-        Exec::Rayon { pool, budget }
+        Exec::Rayon {
+            pool,
+            budget,
+            policy: BatchPolicy::default(),
+        }
     }
 
     /// Limit the budget; values above the pool size are clamped.
@@ -111,9 +122,82 @@ impl<'a> Exec<'a> {
                 Exec::Rayon {
                     pool,
                     budget: max.min(cap),
+                    policy: *self.batch_policy(),
                 }
             }
         })
+    }
+
+    /// The batch lane policy this context applies.
+    ///
+    /// A pooled context carries the policy set by [`Exec::with_batch_policy`]; a
+    /// serial context has one thread and reports the default, since its batch
+    /// decisions are all one lane.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract_exec::{BatchPolicy, BatchStrategy, Exec};
+    /// assert_eq!(Exec::serial().batch_policy().strategy, BatchStrategy::Auto);
+    /// let tp = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    /// let pool = tcontract_exec::Pool::borrow(&tp);
+    /// let exec = Exec::rayon(&pool).with_batch_policy(BatchPolicy::new(BatchStrategy::Outer));
+    /// assert_eq!(exec.batch_policy().strategy, BatchStrategy::Outer);
+    /// ```
+    pub fn batch_policy(&self) -> &BatchPolicy {
+        match self {
+            Exec::Serial | Exec::SerialWithWorkspace(_) => &crate::batch::DEFAULT_BATCH_POLICY,
+            Exec::Rayon { policy, .. } => policy,
+        }
+    }
+
+    /// Return this context with a different batch lane policy.
+    ///
+    /// A serial context has one thread, so this is a no-op for it; the policy is
+    /// only read from a pooled context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract_exec::{BatchPolicy, BatchStrategy, Exec};
+    /// let exec = Exec::serial().with_batch_policy(BatchPolicy::new(BatchStrategy::Outer));
+    /// assert_eq!(exec.batch_policy().strategy, BatchStrategy::Auto);
+    /// ```
+    #[must_use]
+    pub fn with_batch_policy(self, policy: BatchPolicy) -> Self {
+        match self {
+            Exec::Serial | Exec::SerialWithWorkspace(_) => self,
+            Exec::Rayon { pool, budget, .. } => Exec::Rayon {
+                pool,
+                budget,
+                policy,
+            },
+        }
+    }
+
+    /// Decide the batch route for `query` on this context's budget and policy.
+    ///
+    /// This is the one decision function every operation that owns batch lanes
+    /// calls; see [`crate::batch`]. It resolves availability before the caller
+    /// writes anything.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::StrategyUnavailable`] for a forced
+    /// [`BatchStrategy::WholeBatchVendor`](crate::batch::BatchStrategy::WholeBatchVendor)
+    /// on a query without a vendor batch route.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract_exec::{BatchQuery, Exec};
+    /// let d = Exec::serial().batch_decision(&BatchQuery::new(4, 1000.0)).unwrap();
+    /// assert_eq!((d.lanes, d.item_threads), (1, 1));
+    /// ```
+    pub fn batch_decision(&self, query: &BatchQuery) -> Result<BatchDecision, ExecError> {
+        // INVARIANT: `Exec` budgets are `NonZeroUsize` by construction.
+        let budget = NonZeroUsize::new(self.budget()).unwrap_or(NonZeroUsize::MIN);
+        crate::batch::batch_decision(self.batch_policy(), budget, query)
     }
 
     /// Most threads an operation may occupy (1 for a serial context).
@@ -251,7 +335,7 @@ impl<'a> Exec<'a> {
                     Err(ExecError::Unavailable)
                 }
             }
-            Exec::Rayon { pool, budget } => {
+            Exec::Rayon { pool, budget, .. } => {
                 let size = pool.size();
                 if width > size {
                     return Err(ExecError::WidthExceedsPool { width, pool: size });
@@ -298,20 +382,6 @@ impl<'a> Exec<'a> {
     /// assert_eq!(Exec::serial().width_for(1e9, &WidthPolicy::default()), 1);
     /// ```
     pub fn width_for(&self, serial_ns: f64, policy: &crate::WidthPolicy) -> usize {
-        let budget = self.budget();
-        // NaN or small work stays serial.
-        if budget == 1 || serial_ns.is_nan() || serial_ns < policy.serial_below_ns {
-            return 1;
-        }
-        let cost = |k: usize| {
-            if k == 1 {
-                serial_ns
-            } else {
-                policy.entry_base_ns + policy.entry_per_thread_ns * k as f64 + serial_ns / k as f64
-            }
-        };
-        (1..=budget)
-            .min_by(|&a, &b| cost(a).total_cmp(&cost(b)))
-            .unwrap_or(1)
+        crate::width::width_for(serial_ns, policy, self.budget())
     }
 }

@@ -30,3 +30,26 @@ impl Default for WidthPolicy {
         }
     }
 }
+
+/// Partition width for work estimated at `serial_ns` on one thread,
+/// minimizing the [`WidthPolicy`] cost model within `budget` threads.
+///
+/// This is the one body of the width rule: [`Exec::width_for`](crate::Exec::width_for)
+/// and the pure batch policy module both call it, so a plan-selected policy and a
+/// route decision cannot drift.
+pub(crate) fn width_for(serial_ns: f64, policy: &WidthPolicy, budget: usize) -> usize {
+    // NaN or small work stays serial.
+    if budget == 1 || serial_ns.is_nan() || serial_ns < policy.serial_below_ns {
+        return 1;
+    }
+    let cost = |k: usize| {
+        if k == 1 {
+            serial_ns
+        } else {
+            policy.entry_base_ns + policy.entry_per_thread_ns * k as f64 + serial_ns / k as f64
+        }
+    };
+    (1..=budget)
+        .min_by(|&a, &b| cost(a).total_cmp(&cost(b)))
+        .unwrap_or(1)
+}

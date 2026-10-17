@@ -48,7 +48,7 @@ pub(crate) mod test_support;
 use core::marker::PhantomData;
 
 use strided_view::{StridedView, StridedViewMut};
-use tcontract_exec::{Exec, WidthPolicy};
+use tcontract_exec::Exec;
 use tcontract_kernel::{Element, KernelCatalog, ResolvedGemm, SelectError};
 
 pub(crate) use analysis::PackedPlan;
@@ -638,10 +638,26 @@ impl<T: Scalar> Plan<T> {
         out
     }
 
-    /// The width the work estimate asks for at the executor's budget.
+    /// The width the work estimate asks for at the executor's budget, under the
+    /// context's own width model.
     fn width(&self, exec: &Exec<'_>) -> usize {
         let flops = 2.0 * self.problem.macs() as f64 * if T::IS_COMPLEX { 4.0 } else { 1.0 };
-        exec.width_for(flops * NS_PER_FLOP, &WidthPolicy::default())
+        exec.width_for(flops * NS_PER_FLOP, &exec.batch_policy().model.width)
+    }
+
+    /// The context the driver sees: `Auto` narrows the budget over the whole
+    /// batch first (the packed two-stage rule's stage one), a forced batch
+    /// strategy is left on the original host budget, as
+    /// [`tcontract_exec::Exec::batch_decision`] documents.
+    fn batch_context<'a>(&self, exec: &Exec<'a>) -> Result<Exec<'a>> {
+        if matches!(
+            exec.batch_policy().strategy,
+            tcontract_exec::BatchStrategy::Auto
+        ) {
+            Ok(exec.with_budget(self.width(exec))?)
+        } else {
+            Ok(*exec)
+        }
     }
 
     /// After preflight: output-empty returns; `alpha == 0` / empty `K` uses the
@@ -691,6 +707,18 @@ impl<T: Scalar> Plan<T> {
         if p.out_empty() {
             return Ok(());
         }
+        // Availability is resolved here, before the output-only pass below can
+        // write: tcontract has no vendor batched call, so a forced whole-batch
+        // vendor route is refused whatever this plan's strategy is.
+        if matches!(
+            exec.batch_policy().strategy,
+            tcontract_exec::BatchStrategy::WholeBatchVendor
+        ) {
+            return Err(tcontract_exec::ExecError::StrategyUnavailable {
+                strategy: tcontract_exec::BatchStrategy::WholeBatchVendor,
+            }
+            .into());
+        }
         let zero = <T as Element>::zero();
         let (conj_a, conj_b) = (p.a().op().is_conj(), p.b().op().is_conj());
         let (conj_c, conj_d) = (p.op_c().is_conj(), p.d().op().is_conj());
@@ -716,7 +744,7 @@ impl<T: Scalar> Plan<T> {
         }
         if fresh {
             if let Some(pk) = &self.fresh_packed {
-                let exec = exec.with_budget(self.width(exec))?;
+                let exec = self.batch_context(exec)?;
                 let cp = match c {
                     CRead::Separate(c) => c,
                     _ => d.cast_const(),
@@ -767,12 +795,12 @@ impl<T: Scalar> Plan<T> {
             };
             // SAFETY: the caller's contract; the fusion was proven copy-free
             // over exactly this problem's layouts.
-            unsafe { f.run(exec, alpha, a, b, accumulate, d) };
+            unsafe { f.run(exec, alpha, a, b, accumulate, d)? };
             return Ok(());
         }
         match &self.strategy {
             Strategy::Packed(pk) => {
-                let exec = exec.with_budget(self.width(exec))?;
+                let exec = self.batch_context(exec)?;
                 // The caller owns the workspace: a pool lends its arena, a
                 // caller that wants serial reuse lends its own provider, and a
                 // bare serial context runs with call-local scratch.

@@ -108,8 +108,9 @@
 //! that is the wrong cut: on the default partition the driver instead gives each
 //! of a few lanes a contiguous share of the entries, each run serially with the
 //! serial blocking and the lane's own buffers, with no barrier and no shared `B`
-//! panel. The result is bitwise the serial one. The width rule is the one
-//! function `batch::lanes`.
+//! panel. The result is bitwise the serial one. The width rule is
+//! [`Exec::batch_decision`](tcontract_exec::Exec::batch_decision) with a
+//! balanced-lanes query; see `driver/route.rs`.
 //!
 //! Known limits, in the order they will bite (see the Phase 4 report):
 //! parallelism is capped at `ceil(M / MR) * ceil(N / NR)`, and a column group can
@@ -129,7 +130,6 @@ use std::sync::Barrier;
 use tcontract_exec::{Exec, ExecError, WorkspaceProvider, WorkspaceReq};
 
 use crate::buffer::Panel;
-mod batch;
 mod block;
 mod route;
 pub(crate) use route::execution_geometry;

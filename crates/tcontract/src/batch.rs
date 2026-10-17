@@ -8,12 +8,16 @@
 //!
 //! | Situation | Route |
 //! |---|---|
-//! | width 1 | the caller's thread, item after item |
-//! | `items >= width` | the items are partitioned over the width, each item serial |
-//! | fewer items than the width | items one after another, each on the whole `Exec` (its own inner parallelism) |
+//! | one lane | the items one after another, each on the lane's width |
+//! | two or more lanes | the items are partitioned over the lanes, each item serial |
 //!
-//! so the batch axis and the inner axis never nest, and no threads idle while a
-//! large item could use them.
+//! The route comes from [`Exec::batch_decision`](tcontract_exec::Exec::batch_decision).
+//! The default `Auto` policy maps to the route-specific forced strategies that
+//! reproduce the pre-#123 contract: `Outer` (the items fill the budget) or
+//! `Inner` (fewer items than the budget, each item on the whole context). A
+//! forced strategy is honoured as-is, and a forced `WholeBatchVendor` is refused
+//! before any write. The batch axis and the inner axis never nest, and no
+//! threads idle while a large item could use them.
 //!
 //! # What this does not do
 //!
@@ -26,9 +30,11 @@
 //!   dynamic atomic-claim scheduler for while keeping static partitioning for
 //!   dense (part 15). Same division, reached independently.
 
+use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
 use strided_view::{StridedView, StridedViewMut};
+use tcontract_exec::batch::{batch_decision, BatchQuery, BatchStrategy};
 use tcontract_exec::Exec;
 
 use crate::api::{AccumulationSource, Result, Scalar};
@@ -139,13 +145,42 @@ pub fn contract_batched<T: Scalar>(items: &mut [BatchItem<'_, T>], exec: &Exec<'
     if items.is_empty() {
         return Ok(());
     }
-    let width = exec.budget();
+    let count = items.len();
+    let budget = NonZeroUsize::new(exec.budget()).unwrap_or(NonZeroUsize::MIN);
+    // The batch route, before any item writes. The item count is the whole rule
+    // here -- there is no work threshold -- so the default `Auto` maps to the
+    // route-specific forced strategies that reproduce the pre-#123 contract:
+    // `Outer` when the items fill the budget, else one lane with each item on
+    // the whole context (`Inner`). A forced caller strategy is honoured as-is
+    // and a forced `WholeBatchVendor` is refused before any write.
+    let query = BatchQuery::new(count, 0.0);
+    let decision = match exec.batch_policy().strategy {
+        BatchStrategy::Auto => {
+            let strategy = if count >= exec.budget() {
+                BatchStrategy::Outer
+            } else {
+                BatchStrategy::Inner
+            };
+            batch_decision(&exec.batch_policy().with_strategy(strategy), budget, &query)?
+        }
+        _ => exec.batch_decision(&query)?,
+    };
+    if decision.vendor_batch {
+        // tcontract has no vendor batch route; `batch_decision` already refused
+        // the forced strategy, so a vendor decision is unreachable.
+        return Err(tcontract_exec::ExecError::StrategyUnavailable {
+            strategy: BatchStrategy::WholeBatchVendor,
+        }
+        .into());
+    }
 
-    // Width one is the plain loop; fewer items than the width keep the whole
-    // `Exec` for each item's own inner parallelism.
-    if width == 1 || items.len() < width {
+    // One lane: the items one after another, each on its own slice of the
+    // budget. The default `Inner` uses the whole context, matching the legacy
+    // `count < width` path.
+    if decision.lanes <= 1 {
+        let item_exec = exec.with_budget(decision.item_threads)?;
         for (it, c) in items.iter_mut().zip(reads) {
-            run_item(it, c, exec)?;
+            run_item(it, c, &item_exec)?;
         }
         return Ok(());
     }
@@ -160,7 +195,8 @@ pub fn contract_batched<T: Scalar>(items: &mut [BatchItem<'_, T>], exec: &Exec<'
     let item_exec = exec
         .workspace()
         .map_or(Exec::Serial, Exec::serial_with_workspace);
-    exec.for_each_partition(cells.len(), &|i| {
+    let lanes = exec.with_budget(decision.lanes)?;
+    lanes.for_each_partition(cells.len(), &|i| {
         let mut cell = cells[i].lock().unwrap_or_else(|e| e.into_inner());
         let (it, c) = &mut *cell;
         if let Err(e) = run_item(it, *c, &item_exec) {

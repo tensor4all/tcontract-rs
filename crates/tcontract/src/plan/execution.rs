@@ -125,6 +125,17 @@ impl<T: Scalar> Plan<T> {
         {
             return Err(Unsupported::Reason("fresh output was not prepared; set PlanConfig::fresh_output when constructing the plan").into());
         }
+        // Availability first, before any route can write: tcontract has no vendor
+        // batched call, so a forced whole-batch vendor route is refused here.
+        if matches!(
+            exec.batch_policy().strategy,
+            tcontract_exec::BatchStrategy::WholeBatchVendor
+        ) {
+            return Err(tcontract_exec::ExecError::StrategyUnavailable {
+                strategy: tcontract_exec::BatchStrategy::WholeBatchVendor,
+            }
+            .into());
+        }
         if self.problem.out_empty() {
             return Ok(ExecutionRoute::Empty);
         }
@@ -138,7 +149,7 @@ impl<T: Scalar> Plan<T> {
             (Strategy::Elementwise(_), _) => return Ok(ExecutionRoute::Elementwise),
         };
         let pk = packed.ok_or(Unsupported::Reason("fresh output was not prepared; set PlanConfig::fresh_output when constructing the plan"))?;
-        let exec = exec.with_budget(self.width(exec))?;
+        let exec = self.batch_context(exec)?;
         let geometry = crate::driver::execution_geometry::<T>(&pk.plan, &pk.rg, &exec)?;
         Ok(ExecutionRoute::Packed {
             kind: geometry.kind(),

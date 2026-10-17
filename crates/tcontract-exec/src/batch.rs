@@ -86,6 +86,30 @@ use core::num::NonZeroUsize;
 
 use crate::{ExecError, WidthPolicy};
 
+/// The default policy [`BatchStrategy::Auto`] applies when no explicit policy is
+/// set on an [`Exec`](crate::Exec).
+///
+/// It is the literal form of [`BatchPolicy::default`], so a `Serial` context can
+/// hand out a `'static` policy without carrying one. A unit test pins the two
+/// together.
+pub(crate) static DEFAULT_BATCH_POLICY: BatchPolicy = BatchPolicy {
+    strategy: BatchStrategy::Auto,
+    model: WorkModel {
+        // Reproduce `driver/batch.rs`: `item_ns = 2 * m * n * k * NS_PER_FLOP`.
+        item_overhead_ns: 0.0,
+        muladds_per_ns: 10.0,
+        min_work_per_lane_ns: 0.0,
+        min_items: 2,
+        min_items_per_lane: 1,
+        width: WidthPolicy {
+            serial_below_ns: 50_000.0,
+            entry_base_ns: 5_000.0,
+            entry_per_thread_ns: 5_000.0,
+        },
+        vendor_batch_max_item_dim: 16,
+    },
+};
+
 /// How the items of a batch are split over a thread budget.
 ///
 /// # Examples
@@ -326,6 +350,11 @@ pub struct BatchQuery {
     /// near-even and the batch alone fills the narrowed budget: the packed
     /// driver's balanced-lanes rule.
     pub balanced_lanes: bool,
+    /// `Auto` prefers the inner route (one lane, the item kernel gets a team) and
+    /// fans out over items only when one item alone cannot use a team: the faer
+    /// batched-GEMM rule. The item width is then the width of one item, not the
+    /// whole budget.
+    pub outer_only_when_item_serial: bool,
 }
 
 impl BatchQuery {
@@ -339,6 +368,7 @@ impl BatchQuery {
             item_parallel: true,
             vendor_batch: false,
             balanced_lanes: false,
+            outer_only_when_item_serial: false,
         }
     }
 
@@ -360,6 +390,14 @@ impl BatchQuery {
     #[must_use]
     pub fn with_balanced_lanes(mut self, balanced_lanes: bool) -> Self {
         self.balanced_lanes = balanced_lanes;
+        self
+    }
+
+    /// Return this query with the "outer only when one item cannot use a team"
+    /// capability set (the faer batched-GEMM rule).
+    #[must_use]
+    pub fn with_outer_only_when_item_serial(mut self, value: bool) -> Self {
+        self.outer_only_when_item_serial = value;
         self
     }
 }
@@ -478,11 +516,43 @@ fn auto_decision(model: &WorkModel, budget: usize, query: &BatchQuery) -> BatchD
     }
     let item_ns = item_ns(model, query.item_muladds);
     let total_ns = item_ns * items as f64;
-    if query.balanced_lanes {
+    if query.outer_only_when_item_serial {
+        faer_auto(model, budget, query, item_ns, total_ns)
+    } else if query.balanced_lanes {
         packed_auto(model, budget, query, item_ns, total_ns)
     } else {
         generic_auto(model, budget, query, item_ns, total_ns)
     }
+}
+
+/// The faer batched-GEMM rule: prefer the inner route, and fan out over items
+/// only when one item alone is too small for a team (`width_for(item_ns) == 1`)
+/// and there are at least two items with work enough to leave the caller.
+///
+/// This is the item-width-1 rule of `strategy/faer.rs`: a large item gets the
+/// whole team, a tiny one gets lanes so the team would not pay barriers for
+/// nothing.
+fn faer_auto(
+    model: &WorkModel,
+    budget: usize,
+    query: &BatchQuery,
+    item_ns: f64,
+    total_ns: f64,
+) -> BatchDecision {
+    let inner = width_for(item_ns, &model.width, budget);
+    if inner > 1 {
+        return one_lane(inner);
+    }
+    let total = width_for(total_ns, &model.width, budget);
+    if total > 1 && query.items > 1 {
+        let lanes = budget.min(query.items).min(total);
+        return BatchDecision {
+            lanes,
+            item_threads: 1,
+            vendor_batch: false,
+        };
+    }
+    one_lane(1)
 }
 
 /// The issue's generic `auto_lanes`: lanes from the work model alone.
@@ -592,24 +662,10 @@ fn item_ns(model: &WorkModel, item_muladds: f64) -> f64 {
 
 /// Team width for `serial_ns` at `budget`, minimizing `WidthPolicy`.
 ///
-/// A copy of [`Exec::width_for`](crate::Exec::width_for)'s body, which the
-/// pure module cannot call because it owns no `Exec`.
-// ponytail: duplicated from `exec.rs` `width_for` so the policy module stays
-// pure; fold both into one helper when the integration edits `exec.rs`.
+/// The one body lives in [`crate::width`], which [`Exec::width_for`](crate::Exec::width_for)
+/// also calls; the pure module keeps no copy.
 fn width_for(serial_ns: f64, policy: &WidthPolicy, budget: usize) -> usize {
-    if budget <= 1 || serial_ns.is_nan() || serial_ns < policy.serial_below_ns {
-        return 1;
-    }
-    let cost = |k: usize| {
-        if k == 1 {
-            serial_ns
-        } else {
-            policy.entry_base_ns + policy.entry_per_thread_ns * k as f64 + serial_ns / k as f64
-        }
-    };
-    (1..=budget)
-        .min_by(|&a, &b| cost(a).total_cmp(&cost(b)))
-        .unwrap_or(1)
+    crate::width::width_for(serial_ns, policy, budget)
 }
 
 #[cfg(test)]
@@ -742,6 +798,115 @@ mod tests {
                 .unwrap()
                 .lanes,
             1
+        );
+    }
+
+    #[test]
+    fn default_matches_the_static_policy() {
+        // `Exec::batch_policy` hands a `Serial` context the static policy, so the
+        // two must not drift.
+        assert_eq!(BatchPolicy::default(), DEFAULT_BATCH_POLICY);
+        assert_eq!(WorkModel::default(), DEFAULT_BATCH_POLICY.model);
+    }
+
+    /// Independent copy of the pre-#123 faer schedule.
+    ///
+    /// `strategy/faer.rs` computed `inner = width_for(item_ns)` and
+    /// `total = width_for(item_ns * count)` and picked outer lanes only when
+    /// `inner == 1 && total > 1 && count > 1`. Returns `(lanes, item_threads)`.
+    fn legacy_faer(count: usize, item_muladds: f64, budget: usize) -> (usize, usize) {
+        let policy = WidthPolicy::default();
+        let item_ns = item_muladds / 10.0;
+        let total_ns = item_ns * count as f64;
+        let inner = legacy_width_for(item_ns, &policy, budget);
+        let total = legacy_width_for(total_ns, &policy, budget);
+        if inner == 1 && total > 1 && count > 1 {
+            (total.min(count), 1)
+        } else {
+            (1, inner)
+        }
+    }
+
+    #[test]
+    fn auto_matches_legacy_faer_table() {
+        let policy = BatchPolicy::default();
+        let items = [1usize, 2, 3, 8, 16, 64, 512];
+        let muladds = [
+            1.0,
+            64.0,
+            4_096.0,
+            32_768.0,
+            262_144.0,
+            1_000_000.0,
+            8_000_000.0,
+        ];
+        let budgets = [1usize, 2, 3, 4, 8, 16];
+        for &count in &items {
+            for &m in &muladds {
+                for &b in &budgets {
+                    let query = BatchQuery::new(count, m).with_outer_only_when_item_serial(true);
+                    let got = batch_decision(&policy, budget(b), &query).unwrap();
+                    let want = legacy_faer(count, m, b);
+                    assert_eq!(
+                        (got.lanes, got.item_threads, got.vendor_batch),
+                        (want.0, want.1, false),
+                        "count={count} item_muladds={m} budget={b}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn faer_auto_keeps_one_item_on_the_team() {
+        // A large item: the inner route, with the width of one item.
+        let query = BatchQuery::new(4, 1_000_000.0).with_outer_only_when_item_serial(true);
+        let d = batch_decision(&BatchPolicy::default(), budget(8), &query).unwrap();
+        assert!(d.item_threads > 1, "{d:?}");
+        assert_eq!(d.lanes, 1);
+    }
+
+    #[test]
+    fn exec_carries_the_policy_and_budget_keeps_it() {
+        let tp = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let pool = crate::Pool::borrow(&tp);
+        let exec =
+            crate::Exec::rayon(&pool).with_batch_policy(BatchPolicy::new(BatchStrategy::Outer));
+        assert_eq!(exec.batch_policy().strategy, BatchStrategy::Outer);
+        let narrowed = exec.with_budget(2).unwrap();
+        assert_eq!(narrowed.budget(), 2);
+        assert_eq!(narrowed.batch_policy().strategy, BatchStrategy::Outer);
+        assert_eq!(
+            crate::Exec::serial().batch_policy().strategy,
+            BatchStrategy::Auto
+        );
+    }
+
+    #[test]
+    fn exec_batch_decision_refuses_the_vendor_route() {
+        let policy = BatchPolicy::new(BatchStrategy::WholeBatchVendor);
+        // A serial context ignores the policy; only a pooled one applies it.
+        assert_eq!(
+            crate::Exec::serial()
+                .with_batch_policy(policy)
+                .batch_policy()
+                .strategy,
+            BatchStrategy::Auto
+        );
+        let tp = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let pool = crate::Pool::borrow(&tp);
+        let exec = crate::Exec::rayon(&pool).with_batch_policy(policy);
+        assert_eq!(
+            exec.batch_decision(&BatchQuery::new(4, 1000.0)),
+            Err(ExecError::StrategyUnavailable {
+                strategy: BatchStrategy::WholeBatchVendor
+            })
         );
     }
 
