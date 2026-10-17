@@ -3,11 +3,13 @@
 use std::fmt::Write as _;
 use std::fs;
 
+use crate::corpus::Case;
+use crate::engines::Statistic;
+
 /// One measurement.
 #[derive(Clone, Debug)]
 pub struct Row {
     pub case: String,
-    pub group: String,
     pub dtype: String,
     pub engine: String,
     pub threads: usize,
@@ -30,11 +32,54 @@ pub struct Row {
     pub reg_a: f64,
     pub reg_b: f64,
     pub notes: String,
+    /// Every timed call's wall time in seconds, in chronological order. The
+    /// evidence CSV reports these so a consumer can re-derive `secs` and see the
+    /// spread a single summary would hide.
+    pub samples: Vec<f64>,
 }
 
 #[derive(Default)]
 pub struct Results {
     pub rows: Vec<Row>,
+    /// The run's regime label (`--regime`), echoed into every evidence row.
+    pub regime: String,
+    /// The effective unit batch, echoed into every evidence row.
+    pub batch: String,
+    /// Which summary of `samples` `secs` (and `total_ms`) reports.
+    pub statistic: Statistic,
+    /// The declared size spec (`--n`), which the evidence identity shape is
+    /// derived from. Empty when the flag was not given.
+    pub n_spec: String,
+}
+
+/// The identity shape the toolkit derives from a declared size spec: a 1-dim
+/// spec is a square, a 2-dim spec is `m x n`, and a 3-dim spec is `m x k x n`
+/// (the toolkit's own order). Only a family literally named `gemm` carries a
+/// contracting `k` in the 1-dim form.
+///
+/// This harness resolves its extents from the spec (a tensor-size target), so
+/// the spec is what the declared grid names; the resolved extents are the
+/// harness's own report and are not the toolkit's identity.
+fn declared_shape(spec: &str, family: &str) -> (String, String, String) {
+    let dims: Vec<&str> = spec.split('x').collect();
+    match dims[..] {
+        [m, k, n] => (m.to_string(), n.to_string(), k.to_string()),
+        [m, n] => (m.to_string(), n.to_string(), String::new()),
+        [m] if family == "gemm" => (m.to_string(), m.to_string(), m.to_string()),
+        [m] => (m.to_string(), m.to_string(), String::new()),
+        _ => (String::new(), String::new(), String::new()),
+    }
+}
+
+/// One CSV field, quoted when it carries a comma or a quote so a note or a JSON
+/// sample list cannot shift the columns.
+fn csv_field(v: impl AsRef<str>) -> String {
+    let v = v.as_ref();
+    if v.contains(',') || v.contains('"') {
+        format!("\"{}\"", v.replace('"', "\"\""))
+    } else {
+        v.to_string()
+    }
 }
 
 impl Results {
@@ -48,30 +93,244 @@ impl Results {
             .find(|r| r.case == case && r.dtype == dtype && r.engine == engine)
     }
 
-    pub fn write_csv(&self, path: &str) -> std::io::Result<()> {
+    /// The seconds/GFLOP/s columns, with the timing-v2 evidence columns appended
+    /// at the end so a consumer that reads the old header still works.
+    ///
+    /// The row plan is the census, not `rows`: a declared cell that was skipped
+    /// still has to appear, with its status and the same note the census carries,
+    /// or the toolkit's timed/verified cell sets cannot be compared. The rows are
+    /// emitted in the census order, which is the declared rotation.
+    pub fn write_csv(&self, path: &str, census: &Census) -> std::io::Result<()> {
         let mut s = String::from(
-            "case,group,dtype,engine,threads,m,n,k,macs,seconds,spread,prepare_s,gflops,regular_a,regular_b,notes\n",
+            "case,group,dtype,engine,threads,m,n,k,macs,seconds,spread,prepare_s,gflops,regular_a,regular_b,notes,regime,family,order,batch,row,status,note,total_ms,per_item_us,samples_ms,rayon_threads,vendor_threads,case_m,case_n,case_k\n",
         );
-        for r in &self.rows {
+        let batch: f64 = self.batch.parse().unwrap_or(1.0);
+        for c in &census.rows {
+            let measured = self.get(&c.family, &c.dtype, &c.row);
+            // The declared spec names the grid, so it is what the identity
+            // columns carry once `--n` is given. Without it the harness has no
+            // declared grid to name and those columns keep the resolved extents
+            // they carried before the census existed; the resolved extents are
+            // in `case_m`/`case_n`/`case_k` either way.
+            let (m, n, k) = if self.n_spec.is_empty() {
+                match measured {
+                    Some(r) => (r.m.to_string(), r.n.to_string(), r.k.to_string()),
+                    None => Default::default(),
+                }
+            } else {
+                declared_shape(&self.n_spec, &c.family)
+            };
+            let (case_m, case_n, case_k) = match measured {
+                Some(r) => (r.m.to_string(), r.n.to_string(), r.k.to_string()),
+                None => Default::default(),
+            };
+            // The identity columns both a measured and a skipped row share.
+            let mut fields = vec![
+                c.family.clone(),
+                c.group.clone(),
+                c.dtype.clone(),
+                c.row.clone(),
+                c.threads.to_string(),
+                m,
+                n,
+                k,
+            ];
+            if c.status == "ok" {
+                let r = measured.expect("a census cell marked ok was measured");
+                // `total_ms` is the requested statistic of the chronological
+                // samples and `per_item_us` divides it by the unit batch; the
+                // harness's own per-macs figure stays derivable from `macs`
+                // and `seconds`. The samples keep full precision and the two
+                // aggregates nine decimals: an even repetition count averages
+                // two samples, and a millisecond rounded to six decimals is a
+                // whole microsecond away from the median it is checked against.
+                let total_ms = self.statistic.of(&r.samples) * 1000.0;
+                let per_item_us = total_ms * 1000.0 / batch;
+                let samples_ms = format!(
+                    "[{}]",
+                    r.samples
+                        .iter()
+                        .map(|s| format!("{:.12}", s * 1000.0))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                fields.extend([
+                    r.macs.to_string(),
+                    format!("{:.9}", r.secs),
+                    format!("{:.4}", r.spread),
+                    format!("{:.9}", r.prepare_s),
+                    format!("{:.4}", r.gflops),
+                    format!("{:.4}", r.reg_a),
+                    format!("{:.4}", r.reg_b),
+                    r.notes.clone(),
+                    self.regime.clone(),
+                    c.family.clone(),
+                    String::new(),
+                    c.batch.clone(),
+                    c.row.clone(),
+                    "ok".to_string(),
+                    String::new(),
+                    format!("{:.9}", total_ms),
+                    format!("{:.9}", per_item_us),
+                    samples_ms,
+                    r.threads.to_string(),
+                    r.threads.to_string(),
+                    case_m,
+                    case_n,
+                    case_k,
+                ]);
+            } else {
+                // A skipped cell carries no timing: `samples_ms` stays empty
+                // rather than `[]`, because the evidence check reads a nonempty
+                // value there as an unmeasured row that was timed anyway.
+                fields.extend([
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    self.regime.clone(),
+                    c.family.clone(),
+                    String::new(),
+                    c.batch.clone(),
+                    c.row.clone(),
+                    "skipped".to_string(),
+                    c.note.clone(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    c.threads.to_string(),
+                    c.threads.to_string(),
+                    case_m,
+                    case_n,
+                    case_k,
+                ]);
+            }
             let _ = writeln!(
                 s,
-                "{},{},{},{},{},{},{},{},{},{:.9},{:.4},{:.9},{:.4},{:.4},{:.4},{}",
-                r.case,
-                r.group,
-                r.dtype,
-                r.engine,
-                r.threads,
-                r.m,
-                r.n,
-                r.k,
-                r.macs,
-                r.secs,
-                r.spread,
-                r.prepare_s,
-                r.gflops,
-                r.reg_a,
-                r.reg_b,
-                r.notes
+                "{}",
+                fields.iter().map(csv_field).collect::<Vec<_>>().join(",")
+            );
+        }
+        fs::write(path, s)
+    }
+}
+
+/// One declared cell of the run grid, in the census CSV.
+struct CensusRow {
+    regime: String,
+    family: String,
+    group: String,
+    dtype: String,
+    batch: String,
+    row: String,
+    threads: usize,
+    status: &'static str,
+    note: String,
+}
+
+/// The element types the harness can actually drive. A declared dtype outside
+/// this set is a `skipped` census cell with that reason rather than a silent
+/// absence.
+const KNOWN_DTYPES: [&str; 4] = ["f32", "f64", "c32", "c64"];
+
+/// The declared run grid: every case × requested dtype × engine row, with the
+/// status of the cells that were actually measured. Written by `run` and
+/// `verify` alike so a consumer can tell a skipped cell from a missing one, and
+/// used by `run` as the row plan for the timed CSV so both carry the same cells
+/// in the same rotated order.
+pub struct Census {
+    /// The declared size spec (`--n`), which the identity shape is derived from.
+    n_spec: String,
+    rows: Vec<CensusRow>,
+}
+
+impl Census {
+    /// The full grid, in the run's execution order. Every cell starts `skipped`;
+    /// `mark_ok`/`mark_skipped` move the ones the run reached.
+    pub fn declared(
+        regime: &str,
+        n_spec: &str,
+        batch: &str,
+        threads: usize,
+        cases: &[Case],
+        dtypes: &[String],
+        rows: &[String],
+    ) -> Census {
+        let mut cells = Vec::new();
+        for case in cases {
+            for dtype in dtypes {
+                let unsupported = !KNOWN_DTYPES.contains(&dtype.as_str());
+                for row in rows {
+                    cells.push(CensusRow {
+                        regime: regime.to_string(),
+                        family: case.name.to_string(),
+                        group: case.group.to_string(),
+                        dtype: dtype.clone(),
+                        batch: batch.to_string(),
+                        row: row.clone(),
+                        threads,
+                        status: "skipped",
+                        note: if unsupported {
+                            format!("unsupported dtype {dtype}")
+                        } else {
+                            "not measured".to_string()
+                        },
+                    });
+                }
+            }
+        }
+        Census {
+            n_spec: n_spec.to_string(),
+            rows: cells,
+        }
+    }
+
+    /// Record that `(family, dtype, row)` was measured.
+    pub fn mark_ok(&mut self, family: &str, dtype: &str, row: &str) {
+        for c in &mut self.rows {
+            if c.family == family && c.dtype == dtype && c.row == row {
+                c.status = "ok";
+                c.note.clear();
+            }
+        }
+    }
+
+    /// Record why `(family, dtype, row)` was declared but not measured.
+    pub fn mark_skipped(&mut self, family: &str, dtype: &str, row: &str, note: &str) {
+        for c in &mut self.rows {
+            if c.family == family && c.dtype == dtype && c.row == row {
+                c.status = "skipped";
+                c.note = note.to_string();
+            }
+        }
+    }
+
+    pub fn write_csv(&self, path: &str) -> std::io::Result<()> {
+        let mut s = String::from("regime,family,dtype,order,m,n,k,batch,row,threads,status,note\n");
+        for c in &self.rows {
+            let (m, n, k) = declared_shape(&self.n_spec, &c.family);
+            let fields = [
+                c.regime.clone(),
+                c.family.clone(),
+                c.dtype.clone(),
+                String::new(),
+                m,
+                n,
+                k,
+                c.batch.clone(),
+                c.row.clone(),
+                c.threads.to_string(),
+                c.status.to_string(),
+                c.note.clone(),
+            ];
+            let _ = writeln!(
+                s,
+                "{}",
+                fields.iter().map(csv_field).collect::<Vec<_>>().join(",")
             );
         }
         fs::write(path, s)
@@ -195,6 +454,44 @@ pub fn print_environment() {
         crate::tblis::VERSION,
         unsafe { crate::tblis::tblis_get_num_threads() }
     );
+}
+
+/// The measurement toolkit reads this contract from `info` as `key=value` lines,
+/// one per line, on top of [`print_environment`]'s human text. A key whose value
+/// is unavailable is printed empty rather than omitted, so a consumer can tell
+/// "not built" from "the harness changed".
+///
+/// This stays out of `run`/`verify`: with no new flags their output must be
+/// byte-for-byte what it was, and only the toolkit's own `info` probe needs it.
+pub fn print_evidence_keys(threads_requested: usize, threads_effective: usize) {
+    println!("provider=tprims");
+    println!("provider_version={}", provider_version());
+    println!("threads={threads_requested}");
+    println!("threads_effective={threads_effective}");
+    #[cfg(feature = "tblis")]
+    println!("tblis={}", crate::tblis::VERSION);
+    #[cfg(not(feature = "tblis"))]
+    println!("tblis=");
+}
+
+/// The crate version of the linked tcontract library, read through the capi's
+/// own accessor (`TAPP_implementation_version`, the "crate version of the loaded
+/// library" by its contract).
+///
+/// The measured provider itself (`tcontract` / `tcontract-kernel`) exposes no
+/// runtime version API, and the harness may not add one outside this directory;
+/// this is the only library version it can report without inventing a constant
+/// that would drift from `Cargo.toml`.
+fn provider_version() -> String {
+    let p = tcontract_capi::TAPP_implementation_version();
+    if p.is_null() {
+        return String::new();
+    }
+    // SAFETY: the accessor's contract is a static, NUL-terminated string that
+    // outlives the call and must not be freed.
+    unsafe { std::ffi::CStr::from_ptr(p) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// This machine's name, for the `PROVENANCE.txt` convention every directory

@@ -48,13 +48,28 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
     let mut results = Results::default();
     let cases: Vec<_> = corpus::corpus()
         .into_iter()
-        .filter(|c| {
-            opts.case_filter
-                .as_ref()
-                .map(|f| c.name.contains(f.as_str()))
-                .unwrap_or(true)
-        })
+        .filter(|c| opts.case_selected(c.name))
         .collect();
+
+    // The evidence identity every row carries, and the declared grid the census
+    // enumerates. `--rotate-rows` moves execution order only, so the census
+    // follows `exec_order` while the human tables keep the selection order. The
+    // timed CSV is driven from the same grid, so a skipped cell appears in both.
+    results.regime = opts.regime.clone();
+    results.batch = opts.batch.clone();
+    results.statistic = opts.statistic;
+    results.n_spec = opts.n_spec.clone();
+    let mut census = (opts.csv.is_some() || opts.census_csv.is_some()).then(|| {
+        crate::report::Census::declared(
+            &opts.regime,
+            &opts.n_spec,
+            &opts.batch,
+            exec.budget(),
+            &cases,
+            &opts.dtypes,
+            &opts.exec_order(),
+        )
+    });
 
     println!(
         "running {} cases at {} MiB nominal tensor size, {} reps, {} ms priming, stress={}\n",
@@ -68,23 +83,32 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
     for case in &cases {
         let s = corpus::size_case_stressed(case, opts.tensor_bytes(), opts.stress);
         if opts.wants("f32") {
-            run_case::<f32>(&s, opts, exec, &mut results);
+            run_case::<f32>(&s, opts, exec, &mut results, census.as_mut());
         }
         if opts.wants("f64") {
-            run_case::<f64>(&s, opts, exec, &mut results);
+            run_case::<f64>(&s, opts, exec, &mut results, census.as_mut());
         }
         if opts.wants("c32") {
-            run_case::<Complex<f32>>(&s, opts, exec, &mut results);
+            run_case::<Complex<f32>>(&s, opts, exec, &mut results, census.as_mut());
         }
         if opts.wants("c64") {
-            run_case::<Complex<f64>>(&s, opts, exec, &mut results);
+            run_case::<Complex<f64>>(&s, opts, exec, &mut results, census.as_mut());
         }
     }
 
     print_tables(&results, opts);
     if let Some(path) = &opts.csv {
-        match results.write_csv(path) {
+        let census = census
+            .as_ref()
+            .expect("a timed CSV needs the declared grid");
+        match results.write_csv(path, census) {
             Ok(()) => println!("\nwrote {path}"),
+            Err(e) => eprintln!("failed to write {path}: {e}"),
+        }
+    }
+    if let (Some(c), Some(path)) = (census.as_ref(), opts.census_csv.as_ref()) {
+        match c.write_csv(path) {
+            Ok(()) => println!("wrote {path}"),
             Err(e) => eprintln!("failed to write {path}: {e}"),
         }
     }
@@ -95,15 +119,28 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
     }
 }
 
-/// Measure one case for one element type across all requested engines.
-pub fn run_case<T>(s: &Sized, opts: &Options, exec: &Exec<'_>, results: &mut Results)
-where
+/// Measure one case for one element type across all requested engines, in the
+/// order [`Options::exec_order`] gives (the declared rows rotated per process
+/// start).
+pub fn run_case<T>(
+    s: &Sized,
+    opts: &Options,
+    exec: &Exec<'_>,
+    results: &mut Results,
+    mut census: Option<&mut crate::report::Census>,
+) where
     T: BenchElem,
 {
+    let order = opts.exec_order();
     let problem = match problem_of::<T>(s) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{} [{}]: description failed: {e}", s.case.name, T::NAME);
+            if let Some(c) = census.as_deref_mut() {
+                for name in &order {
+                    c.mark_skipped(s.case.name, T::NAME, name, "description failed");
+                }
+            }
             return;
         }
     };
@@ -153,16 +190,19 @@ where
     };
 
     let push = |engine: &str,
-                secs: f64,
+                samples: Vec<f64>,
                 spread: f64,
                 prepare: f64,
                 reg_a: f64,
                 reg_b: f64,
                 notes: String,
-                results: &mut Results| {
+                results: &mut Results,
+                census: Option<&mut crate::report::Census>| {
+        // The arm's reported time is the requested statistic of its samples, so
+        // the evidence's `total_ms` and the human table always agree.
+        let secs = opts.statistic.of(&samples);
         results.push(Row {
             case: s.case.name.to_string(),
-            group: s.case.group.to_string(),
             dtype: T::NAME.to_string(),
             engine: engine.to_string(),
             threads: exec.budget(),
@@ -177,154 +217,195 @@ where
             reg_a,
             reg_b,
             notes,
+            samples,
         });
+        if let Some(c) = census {
+            c.mark_ok(s.case.name, T::NAME, engine);
+        }
     };
 
-    // ---- this library: the planner's choice, and the packed driver ---------
+    // ---- every engine, in the requested execution order ---------------------
     //
     // Regularity is reported against the orientation the packed engine actually
     // executes in, which is not necessarily `A`-rows / `B`-columns; a strategy
     // that does not use the packed driver reports no regularity (0, 0).
     let mut regularity = (0.0f64, 0.0f64);
     // BenchThreads owns the warm arena/pool outside the timed region.
-    for (name, config) in [("plan", knobs.config()), ("packed", knobs.packed_config())] {
+    for name in &order {
         if !opts.engine(name) {
             continue;
         }
-        // The plan is the work this arm does before the timed call, and the policy
-        // that excludes it is why the harness builds one at all; recording it keeps
-        // the exclusion legible, since the reference has no equivalent to hoist.
-        let (p, prepare) = timed_prepare(3, || plan_for(&config));
-        let Some(p) = p else {
-            continue;
-        };
-        let report = p.report();
-        let (reg_a, reg_b) = report
-            .packed
-            .as_ref()
-            .map_or((0.0, 0.0), |r| (r.regular_rows, r.regular_cols));
-        if report.packed.is_some() && regularity == (0.0, 0.0) {
-            regularity = (reg_a, reg_b);
-        }
-        let (secs, spread) = timed(opts.reps, opts.prime_ms, || {
-            // SAFETY: the buffers are sized by the layouts, `D` is exclusive and
-            // `beta = 0` reads no previous value.
-            unsafe {
-                p.execute_raw(
-                    exec,
-                    <T as Element>::one(),
-                    a.as_ptr(),
-                    b.as_ptr(),
-                    <T as Element>::zero(),
-                    std::ptr::null(),
-                    d.as_mut_ptr(),
-                )
+        match name.as_str() {
+            // ---- this library: the planner's choice, and the packed driver ---
+            "plan" | "packed" => {
+                let config = if name == "packed" {
+                    knobs.packed_config()
+                } else {
+                    knobs.config()
+                };
+                // The plan is the work this arm does before the timed call, and the
+                // policy that excludes it is why the harness builds one at all;
+                // recording it keeps the exclusion legible, since the reference has
+                // no equivalent to hoist.
+                let (p, prepare) = timed_prepare(3, || plan_for(&config));
+                let Some(p) = p else {
+                    if let Some(c) = census.as_deref_mut() {
+                        c.mark_skipped(s.case.name, T::NAME, name, "planning failed");
+                    }
+                    continue;
+                };
+                let report = p.report();
+                let (reg_a, reg_b) = report
+                    .packed
+                    .as_ref()
+                    .map_or((0.0, 0.0), |r| (r.regular_rows, r.regular_cols));
+                if report.packed.is_some() && regularity == (0.0, 0.0) {
+                    regularity = (reg_a, reg_b);
+                }
+                let (_, spread, samples) = timed(opts.reps, opts.prime_ms, || {
+                    // SAFETY: the buffers are sized by the layouts, `D` is exclusive
+                    // and `beta = 0` reads no previous value.
+                    unsafe {
+                        p.execute_raw(
+                            exec,
+                            <T as Element>::one(),
+                            a.as_ptr(),
+                            b.as_ptr(),
+                            <T as Element>::zero(),
+                            std::ptr::null(),
+                            d.as_mut_ptr(),
+                        )
+                    }
+                    .expect("a validated plan runs")
+                });
+                // `MR x NR`, the orientation and the blocking go in the notes because
+                // they are not constants per dtype: a CSV without them cannot be
+                // re-read later.
+                let notes = match &report.packed {
+                    Some(r) => format!(
+                        "{} {}x{} {} {}x{}x{} {} {}",
+                        r.family_id,
+                        r.mr,
+                        r.nr,
+                        if r.swapped { "BA" } else { "AB" },
+                        r.mc,
+                        r.kc,
+                        r.nc,
+                        tcontract_bench::partition::describe(r),
+                        check(name, &d, &mut reference)
+                    ),
+                    None => format!(
+                        "{} {}",
+                        report.algorithm.name(),
+                        check(name, &d, &mut reference)
+                    ),
+                }
+                .trim()
+                .to_string();
+                push(
+                    name,
+                    samples,
+                    spread,
+                    prepare,
+                    reg_a,
+                    reg_b,
+                    notes,
+                    results,
+                    census.as_deref_mut(),
+                );
             }
-            .expect("a validated plan runs")
-        });
-        // `MR x NR`, the orientation and the blocking go in the notes because
-        // they are not constants per dtype: a CSV without them cannot be
-        // re-read later.
-        let notes = match &report.packed {
-            Some(r) => format!(
-                "{} {}x{} {} {}x{}x{} {} {}",
-                r.family_id,
-                r.mr,
-                r.nr,
-                if r.swapped { "BA" } else { "AB" },
-                r.mc,
-                r.kc,
-                r.nc,
-                tcontract_bench::partition::describe(r),
-                check(name, &d, &mut reference)
-            ),
-            None => format!(
-                "{} {}",
-                report.algorithm.name(),
-                check(name, &d, &mut reference)
-            ),
-        }
-        .trim()
-        .to_string();
-        push(name, secs, spread, prepare, reg_a, reg_b, notes, results);
-    }
 
-    // Regularity for the baselines' rows: the packed engine's, so the column
-    // means one thing per row. (Only consumed when a baseline feature is
-    // enabled.)
-    #[cfg(any(feature = "blas", feature = "tblis"))]
-    let (reg_a, reg_b) = regularity;
-    #[cfg(not(any(feature = "blas", feature = "tblis")))]
-    let _ = regularity;
-
-    // ---- TTGT ------------------------------------------------------------
-    #[cfg(feature = "blas")]
-    if opts.engine("ttgt") {
-        let ((tp, mut scratch), prepare) = timed_prepare(3, || {
-            let tp = TtgtPlan::new(&problem);
-            let scratch = TtgtScratch::<T>::new(&tp);
-            (tp, scratch)
-        });
-        let mut dt: Vec<T> = vec![<T as Element>::zero(); s.elems_c()];
-        let (secs, spread) = timed(opts.reps, opts.prime_ms, || {
-            ttgt(
-                &tp,
-                <T as Element>::one(),
-                &a,
-                &b,
-                <T as Element>::zero(),
-                &dt.clone(),
-                &mut dt,
-                &mut scratch,
-            )
-        });
-        let notes = check("ttgt", &dt, &mut reference);
-        push("ttgt", secs, spread, prepare, reg_a, reg_b, notes, results);
-    }
-
-    // ---- TBLIS -----------------------------------------------------------
-    #[cfg(feature = "tblis")]
-    if opts.engine("tblis") {
-        use crate::tblis as tb;
-        let ((mut oa, mut ob, mut oc), prepare) = timed_prepare(3, || {
-            (
-                tb::Operand::new(s.la.extents(), s.la.strides(), s.case.a),
-                tb::Operand::new(s.lb.extents(), s.lb.strides(), s.case.b),
-                tb::Operand::new(s.lc.extents(), s.lc.strides(), s.case.c),
-            )
-        });
-        let mut dt: Vec<T> = vec![<T as Element>::zero(); s.elems_c()];
-        let ta = oa.tensor(
-            T::TBLIS_TYPE,
-            T::tblis_scalar(1.0),
-            a.as_ptr() as *mut std::ffi::c_void,
-        );
-        let tbv = ob.tensor(
-            T::TBLIS_TYPE,
-            T::tblis_scalar(1.0),
-            b.as_ptr() as *mut std::ffi::c_void,
-        );
-        let (secs, spread) = timed(opts.reps, opts.prime_ms, || {
-            let mut tc = oc.tensor(
-                T::TBLIS_TYPE,
-                T::tblis_scalar(0.0),
-                dt.as_mut_ptr() as *mut std::ffi::c_void,
-            );
-            unsafe {
-                tb::tblis_tensor_mult(
-                    std::ptr::null(),
-                    std::ptr::null(),
-                    &ta,
-                    oa.labels(),
-                    &tbv,
-                    ob.labels(),
-                    &mut tc,
-                    oc.labels(),
-                )
+            // ---- TTGT ----------------------------------------------------
+            #[cfg(feature = "blas")]
+            "ttgt" => {
+                let ((tp, mut scratch), prepare) = timed_prepare(3, || {
+                    let tp = TtgtPlan::new(&problem);
+                    let scratch = TtgtScratch::<T>::new(&tp);
+                    (tp, scratch)
+                });
+                let mut dt: Vec<T> = vec![<T as Element>::zero(); s.elems_c()];
+                let (_, spread, samples) = timed(opts.reps, opts.prime_ms, || {
+                    ttgt(
+                        &tp,
+                        <T as Element>::one(),
+                        &a,
+                        &b,
+                        <T as Element>::zero(),
+                        &dt.clone(),
+                        &mut dt,
+                        &mut scratch,
+                    )
+                });
+                let notes = check("ttgt", &dt, &mut reference);
+                push(
+                    "ttgt",
+                    samples,
+                    spread,
+                    prepare,
+                    regularity.0,
+                    regularity.1,
+                    notes,
+                    results,
+                    census.as_deref_mut(),
+                );
             }
-        });
-        let notes = check("tblis", &dt, &mut reference);
-        push("tblis", secs, spread, prepare, reg_a, reg_b, notes, results);
+
+            // ---- TBLIS ---------------------------------------------------
+            #[cfg(feature = "tblis")]
+            "tblis" => {
+                use crate::tblis as tb;
+                let ((mut oa, mut ob, mut oc), prepare) = timed_prepare(3, || {
+                    (
+                        tb::Operand::new(s.la.extents(), s.la.strides(), s.case.a),
+                        tb::Operand::new(s.lb.extents(), s.lb.strides(), s.case.b),
+                        tb::Operand::new(s.lc.extents(), s.lc.strides(), s.case.c),
+                    )
+                });
+                let mut dt: Vec<T> = vec![<T as Element>::zero(); s.elems_c()];
+                let ta = oa.tensor(
+                    T::TBLIS_TYPE,
+                    T::tblis_scalar(1.0),
+                    a.as_ptr() as *mut std::ffi::c_void,
+                );
+                let tbv = ob.tensor(
+                    T::TBLIS_TYPE,
+                    T::tblis_scalar(1.0),
+                    b.as_ptr() as *mut std::ffi::c_void,
+                );
+                let (_, spread, samples) = timed(opts.reps, opts.prime_ms, || {
+                    let mut tc = oc.tensor(
+                        T::TBLIS_TYPE,
+                        T::tblis_scalar(0.0),
+                        dt.as_mut_ptr() as *mut std::ffi::c_void,
+                    );
+                    unsafe {
+                        tb::tblis_tensor_mult(
+                            std::ptr::null(),
+                            std::ptr::null(),
+                            &ta,
+                            oa.labels(),
+                            &tbv,
+                            ob.labels(),
+                            &mut tc,
+                            oc.labels(),
+                        )
+                    }
+                });
+                let notes = check("tblis", &dt, &mut reference);
+                push(
+                    "tblis",
+                    samples,
+                    spread,
+                    prepare,
+                    regularity.0,
+                    regularity.1,
+                    notes,
+                    results,
+                    census.as_deref_mut(),
+                );
+            }
+            _ => {}
+        }
     }
 
     if comparisons == 0 {
@@ -337,9 +418,12 @@ where
 }
 
 fn print_tables(results: &Results, opts: &Options) {
-    let engines: Vec<&str> = ENGINE_ORDER
+    // The reported row order is the selection order (`--rows`/`--engines`);
+    // `--rotate-rows` moves execution order only, not what is printed.
+    let engines: Vec<&str> = opts
+        .engines
         .iter()
-        .copied()
+        .map(String::as_str)
         .filter(|e| results.rows.iter().any(|r| &r.engine == e))
         .collect();
 
@@ -391,18 +475,19 @@ fn print_tables(results: &Results, opts: &Options) {
         }
     }
 
-    print_ratio_table(results, "f64", "c64");
-    print_ratio_table(results, "f32", "c32");
+    print_ratio_table(results, opts, "f64", "c64");
+    print_ratio_table(results, opts, "f32", "c32");
 }
 
 /// The headline metric: complex GFLOP/s divided by real GFLOP/s for the same
 /// contraction. A value of 1.0 means the engine extracts the same fraction of
 /// the machine's FMA throughput from complex data as from real data; anything
 /// below that is the complex penalty.
-fn print_ratio_table(results: &Results, real: &str, cplx: &str) {
-    let engines: Vec<&str> = ENGINE_ORDER
+fn print_ratio_table(results: &Results, opts: &Options, real: &str, cplx: &str) {
+    let engines: Vec<&str> = opts
+        .engines
         .iter()
-        .copied()
+        .map(String::as_str)
         .filter(|e| results.rows.iter().any(|r| &r.engine == e))
         .collect();
     if engines.is_empty() {

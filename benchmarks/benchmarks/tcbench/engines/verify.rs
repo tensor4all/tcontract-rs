@@ -29,13 +29,24 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
 
     let cases: Vec<_> = corpus::corpus()
         .into_iter()
-        .filter(|c| {
-            opts.case_filter
-                .as_ref()
-                .map(|f| c.name.contains(f.as_str()))
-                .unwrap_or(true)
-        })
+        .filter(|c| opts.case_selected(c.name))
         .collect();
+
+    // The census covers `verify` as well as `run`: the same declared grid, in
+    // the run's execution order. A cell the check reached is `ok`; a cell it
+    // could not build is `skipped` with the reason. The toolkit's verify step
+    // passes `--csv`, so that is where its census goes; `--census-csv` works too.
+    let mut census = (opts.csv.is_some() || opts.census_csv.is_some()).then(|| {
+        crate::report::Census::declared(
+            &opts.regime,
+            &opts.n_spec,
+            &opts.batch,
+            exec.budget(),
+            &cases,
+            &opts.dtypes,
+            &opts.exec_order(),
+        )
+    });
 
     // Small enough that every case is quick, large enough to span several
     // cache blocks in at least one dimension.
@@ -49,28 +60,42 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
         "case", "dtype", "m", "n", "k", "plan", "packed", "vs ttgt", "vs tblis", "status",
     ]);
     let mut failures = 0usize;
-    // Known-value GEMM: A=B=1 implies every D element is exactly K.
+    // Known-value GEMM: A=B=1 implies every D element is exactly K. Not a corpus
+    // cell, so it is not in the census.
     let known = corpus::size_case(&corpus::corpus()[0], 256.0);
-    failures += check::<f64>(&known, exec, &mut t, true);
-    failures += check::<Complex<f64>>(&known, exec, &mut t, true);
+    failures += check::<f64>(&known, exec, &mut t, true, None, &[]);
+    failures += check::<Complex<f64>>(&known, exec, &mut t, true, None, &[]);
 
     for case in &cases {
         let s = corpus::size_case_stressed(case, opts.tensor_bytes(), opts.stress);
         if opts.wants("f32") {
-            failures += check::<f32>(&s, exec, &mut t, false);
+            failures += check::<f32>(&s, exec, &mut t, false, census.as_mut(), &opts.engines);
         }
         if opts.wants("f64") {
-            failures += check::<f64>(&s, exec, &mut t, false);
+            failures += check::<f64>(&s, exec, &mut t, false, census.as_mut(), &opts.engines);
         }
         if opts.wants("c32") {
-            failures += check::<Complex<f32>>(&s, exec, &mut t, false);
+            failures +=
+                check::<Complex<f32>>(&s, exec, &mut t, false, census.as_mut(), &opts.engines);
         }
         if opts.wants("c64") {
-            failures += check::<Complex<f64>>(&s, exec, &mut t, false);
+            failures +=
+                check::<Complex<f64>>(&s, exec, &mut t, false, census.as_mut(), &opts.engines);
         }
     }
 
     t.print();
+    for path in [opts.csv.as_ref(), opts.census_csv.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(c) = census.as_ref() {
+            match c.write_csv(path) {
+                Ok(()) => println!("wrote {path}"),
+                Err(e) => eprintln!("failed to write {path}: {e}"),
+            }
+        }
+    }
     if failures == 0 {
         println!("\nall comparisons within tolerance");
         ExitCode::SUCCESS
@@ -106,7 +131,14 @@ fn run_plan<T: BenchElem>(plan: &Plan<T>, exec: &Exec<'_>, a: &[T], b: &[T], d: 
     .expect("a validated plan runs");
 }
 
-fn check<T>(s: &Sized, exec: &Exec<'_>, t: &mut Table, known: bool) -> usize
+fn check<T>(
+    s: &Sized,
+    exec: &Exec<'_>,
+    t: &mut Table,
+    known: bool,
+    mut census: Option<&mut crate::report::Census>,
+    rows: &[String],
+) -> usize
 where
     T: BenchElem,
 {
@@ -118,6 +150,11 @@ where
     let (plan, packed) = match (build(&knobs.config()), build(&knobs.packed_config())) {
         (Ok(p), Ok(q)) => (p, q),
         (Err(e), _) | (_, Err(e)) => {
+            if let Some(c) = census.as_deref_mut() {
+                for row in rows {
+                    c.mark_skipped(s.case.name, T::NAME, row, "planning failed");
+                }
+            }
             t.row(vec![
                 s.case.name.into(),
                 T::NAME.into(),
@@ -245,5 +282,12 @@ where
         fmt(tblis_err),
         if bad { "FAIL".into() } else { "ok".into() },
     ]);
+    // The check exercised every requested engine row, so each is a measured
+    // cell (a FAIL is still measured; the exit status carries the verdict).
+    if let Some(c) = census {
+        for row in rows {
+            c.mark_ok(s.case.name, T::NAME, row);
+        }
+    }
     fails
 }
