@@ -539,7 +539,7 @@ where
 
         unsafe {
             plan.run_raw::<T>(
-                T::one(),
+                <T as Element>::one(),
                 a.as_ptr(),
                 b.as_ptr(),
                 T::zero(),

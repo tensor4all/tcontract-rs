@@ -1016,6 +1016,7 @@ version = "0.2.4"
 dependencies = [
  "faer",
  "num-complex",
+ "num-traits",
  "rand",
  "rand_chacha",
  "rayon",
