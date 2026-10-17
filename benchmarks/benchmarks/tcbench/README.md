@@ -75,7 +75,9 @@ diagnostic to apply by hand is that two arms whose rows carry the same family,
 blocking and partition policy must agree.
 
 
-CSV rows include the thread budget, dtype, equivalent M/N/K, GFLOP/s, latency
+CSV rows include the thread budget, dtype, the *declared* shape spec (a non-`gemm` case carries
+`m = n = --n`, `k` empty, so the census matches the declaration; the case's resolved extents stay
+in `macs` and the human table), GFLOP/s, latency
 and tcontract strategy/kernel notes. `manifest.txt` records the base commit,
 dirty status, binary SHA256, compiler, flags and actual topology;
 `source.patch` records tracked local harness edits. Archive new source files
@@ -84,3 +86,15 @@ and domain estimates describe the library's model, **not** actual affinity;
 use the captured `lscpu` topology to interpret this heterogeneous host.
 
 [2026-10-07 native run](results/2026-10-07-native/README.md).
+
+## Timing-v2 evidence
+
+The toolkit-driven runs pass a few flags this harness did not always have: `--regime` (the run label),
+`--n` (the declared size spec, also the MiB target; `--size` stays as the alias), `--batch` (must be
+`1`), `--family` (exact case ids), `--rows` (select and order engine rows), `--rotate-rows` (rotate the
+execution order by *k*, which is how whole-process repeats see each engine first), `--statistic
+best|median`, and `--census-csv` (one row per declared cell, including declared skips). The evidence CSV
+gains `regime,family,order,batch,row,status,note,total_ms,per_item_us,samples_ms,rayon_threads,vendor_threads`;
+`samples_ms` is the chronological per-call list as JSON and `per_item_us` is `total_ms * 1000 / batch`.
+None of it changes the harness's behaviour when the flags are absent. The samples are serial observations
+within one process, not replicates.
