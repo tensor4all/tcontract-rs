@@ -92,7 +92,7 @@ use crate::{ExecError, WidthPolicy};
 /// It is the literal form of [`BatchPolicy::default`], so a `Serial` context can
 /// hand out a `'static` policy without carrying one. A unit test pins the two
 /// together.
-pub(crate) static DEFAULT_BATCH_POLICY: BatchPolicy = BatchPolicy {
+pub(crate) const DEFAULT_BATCH_POLICY: BatchPolicy = BatchPolicy {
     strategy: BatchStrategy::Auto,
     model: WorkModel {
         // Reproduce `driver/batch.rs`: `item_ns = 2 * m * n * k * NS_PER_FLOP`.
@@ -106,7 +106,6 @@ pub(crate) static DEFAULT_BATCH_POLICY: BatchPolicy = BatchPolicy {
             entry_base_ns: 5_000.0,
             entry_per_thread_ns: 5_000.0,
         },
-        vendor_batch_max_item_dim: 16,
     },
 };
 
@@ -186,9 +185,6 @@ pub struct WorkModel {
     pub min_items_per_lane: usize,
     /// Team-width cost model, used to narrow the budget over the whole batch.
     pub width: WidthPolicy,
-    /// Largest item dimension for which a vendor route may batch, used only by
-    /// vendor routes (reserved for the sweep in this step).
-    pub vendor_batch_max_item_dim: usize,
 }
 
 impl Default for WorkModel {
@@ -201,7 +197,6 @@ impl Default for WorkModel {
             min_items: 2,
             min_items_per_lane: 1,
             width: WidthPolicy::default(),
-            vendor_batch_max_item_dim: 16,
         }
     }
 }
@@ -260,13 +255,6 @@ impl WorkModel {
     #[must_use]
     pub fn with_width(mut self, width: WidthPolicy) -> Self {
         self.width = width;
-        self
-    }
-
-    /// Return this model with a different vendor batch item limit.
-    #[must_use]
-    pub fn with_vendor_batch_max_item_dim(mut self, item_dim: usize) -> Self {
-        self.vendor_batch_max_item_dim = item_dim;
         self
     }
 }
@@ -415,7 +403,9 @@ impl BatchQuery {
 pub struct BatchDecision {
     /// Outer lanes; each lane runs a contiguous share of the items.
     pub lanes: usize,
-    /// Threads one item may use. `1` when `lanes > 1`.
+    /// Threads one item may use. `1` for a route that runs items serially inside
+    /// each lane; a [`BatchStrategy::Split`] asks for both lanes and item threads,
+    /// and a route that cannot run item threads inside lanes refuses it.
     pub item_threads: usize,
     /// Whether the whole batch goes to one vendor call.
     pub vendor_batch: bool,
@@ -888,13 +878,22 @@ mod tests {
     #[test]
     fn exec_batch_decision_refuses_the_vendor_route() {
         let policy = BatchPolicy::new(BatchStrategy::WholeBatchVendor);
-        // A serial context ignores the policy; only a pooled one applies it.
+        // A serial context preserves the policy: the refusal does not depend on
+        // whether execution has a pool.
         assert_eq!(
             crate::Exec::serial()
                 .with_batch_policy(policy)
                 .batch_policy()
                 .strategy,
-            BatchStrategy::Auto
+            BatchStrategy::WholeBatchVendor
+        );
+        assert_eq!(
+            crate::Exec::serial()
+                .with_batch_policy(policy)
+                .batch_decision(&BatchQuery::new(4, 1000.0)),
+            Err(ExecError::StrategyUnavailable {
+                strategy: BatchStrategy::WholeBatchVendor
+            })
         );
         let tp = rayon::ThreadPoolBuilder::new()
             .num_threads(2)

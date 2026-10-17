@@ -39,14 +39,19 @@ impl Par {
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub enum Exec<'a> {
-    /// Everything on the calling thread, with call-local scratch.
-    Serial,
+    /// Everything on the calling thread, with call-local scratch. Carries the
+    /// batch policy so a forced strategy is still resolved at one thread.
+    Serial {
+        /// The batch lane policy this context applies.
+        policy: BatchPolicy,
+    },
     /// Everything on the calling thread, with caller-owned reusable scratch.
-    ///
-    /// A serial context owns no storage, so a caller that wants a serial
-    /// steady state to allocate nothing keeps a provider alive across calls
-    /// and lends it here.
-    SerialWithWorkspace(&'a dyn crate::WorkspaceProvider),
+    SerialWithWorkspace {
+        /// The caller-owned storage.
+        workspace: &'a dyn crate::WorkspaceProvider,
+        /// The batch lane policy this context applies.
+        policy: BatchPolicy,
+    },
     /// A borrowed pool with a thread budget `<= pool.size()`.
     Rayon {
         /// The borrowed pool.
@@ -64,8 +69,8 @@ pub enum Exec<'a> {
 impl std::fmt::Debug for Exec<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Exec::Serial => f.write_str("Serial"),
-            Exec::SerialWithWorkspace(_) => f.write_str("SerialWithWorkspace(..)"),
+            Exec::Serial { .. } => f.write_str("Serial"),
+            Exec::SerialWithWorkspace { .. } => f.write_str("SerialWithWorkspace(..)"),
             Exec::Rayon {
                 pool,
                 budget,
@@ -83,12 +88,17 @@ impl std::fmt::Debug for Exec<'_> {
 impl<'a> Exec<'a> {
     /// The serial context.
     pub const fn serial() -> Exec<'static> {
-        Exec::Serial
+        Exec::Serial {
+            policy: crate::batch::DEFAULT_BATCH_POLICY,
+        }
     }
 
     /// Serial execution with caller-owned reusable storage.
     pub fn serial_with_workspace(workspace: &'a dyn crate::WorkspaceProvider) -> Self {
-        Exec::SerialWithWorkspace(workspace)
+        Exec::SerialWithWorkspace {
+            workspace,
+            policy: crate::batch::DEFAULT_BATCH_POLICY,
+        }
     }
 
     /// Use `pool` with its full size as budget and the default batch policy.
@@ -116,7 +126,7 @@ impl<'a> Exec<'a> {
     pub fn with_budget(self, max_threads: usize) -> Result<Self, ExecError> {
         let max = NonZeroUsize::new(max_threads).ok_or(ExecError::ZeroBudget)?;
         Ok(match self {
-            Exec::Serial | Exec::SerialWithWorkspace(_) => self,
+            Exec::Serial { .. } | Exec::SerialWithWorkspace { .. } => self,
             Exec::Rayon { pool, .. } => {
                 let cap = NonZeroUsize::new(pool.size()).unwrap_or(NonZeroUsize::MIN);
                 Exec::Rayon {
@@ -130,9 +140,8 @@ impl<'a> Exec<'a> {
 
     /// The batch lane policy this context applies.
     ///
-    /// A pooled context carries the policy set by [`Exec::with_batch_policy`]; a
-    /// serial context has one thread and reports the default, since its batch
-    /// decisions are all one lane.
+    /// A serial context has one thread but still carries a policy, so a forced
+    /// strategy is resolved (and can be refused) at one thread as well.
     ///
     /// # Examples
     ///
@@ -146,27 +155,32 @@ impl<'a> Exec<'a> {
     /// ```
     pub fn batch_policy(&self) -> &BatchPolicy {
         match self {
-            Exec::Serial | Exec::SerialWithWorkspace(_) => &crate::batch::DEFAULT_BATCH_POLICY,
+            Exec::Serial { policy } | Exec::SerialWithWorkspace { policy, .. } => policy,
             Exec::Rayon { policy, .. } => policy,
         }
     }
 
     /// Return this context with a different batch lane policy.
     ///
-    /// A serial context has one thread, so this is a no-op for it; the policy is
-    /// only read from a pooled context.
+    /// A serial context has one thread, so the policy cannot change its lane
+    /// count, but it is preserved: a forced
+    /// [`BatchStrategy::WholeBatchVendor`](crate::batch::BatchStrategy::WholeBatchVendor)
+    /// is still refused at one thread instead of silently running `Auto`.
     ///
     /// # Examples
     ///
     /// ```
     /// use tcontract_exec::{BatchPolicy, BatchStrategy, Exec};
     /// let exec = Exec::serial().with_batch_policy(BatchPolicy::new(BatchStrategy::Outer));
-    /// assert_eq!(exec.batch_policy().strategy, BatchStrategy::Auto);
+    /// assert_eq!(exec.batch_policy().strategy, BatchStrategy::Outer);
     /// ```
     #[must_use]
     pub fn with_batch_policy(self, policy: BatchPolicy) -> Self {
         match self {
-            Exec::Serial | Exec::SerialWithWorkspace(_) => self,
+            Exec::Serial { .. } => Exec::Serial { policy },
+            Exec::SerialWithWorkspace { workspace, .. } => {
+                Exec::SerialWithWorkspace { workspace, policy }
+            }
             Exec::Rayon { pool, budget, .. } => Exec::Rayon {
                 pool,
                 budget,
@@ -203,7 +217,7 @@ impl<'a> Exec<'a> {
     /// Most threads an operation may occupy (1 for a serial context).
     pub fn budget(&self) -> usize {
         match self {
-            Exec::Serial | Exec::SerialWithWorkspace(_) => 1,
+            Exec::Serial { .. } | Exec::SerialWithWorkspace { .. } => 1,
             Exec::Rayon { budget, .. } => budget.get(),
         }
     }
@@ -215,8 +229,8 @@ impl<'a> Exec<'a> {
     /// its own and lends it through [`Exec::serial_with_workspace`].
     pub fn workspace(&self) -> Option<&'a dyn crate::WorkspaceProvider> {
         match self {
-            Exec::Serial => None,
-            Exec::SerialWithWorkspace(workspace) => Some(*workspace),
+            Exec::Serial { .. } => None,
+            Exec::SerialWithWorkspace { workspace, .. } => Some(*workspace),
             Exec::Rayon { pool, .. } => Some(pool.workspace()),
         }
     }
@@ -224,7 +238,7 @@ impl<'a> Exec<'a> {
     /// Whether the calling thread is a worker of this context's pool.
     pub fn is_worker(&self) -> bool {
         match self {
-            Exec::Serial | Exec::SerialWithWorkspace(_) => false,
+            Exec::Serial { .. } | Exec::SerialWithWorkspace { .. } => false,
             Exec::Rayon { pool, .. } => pool.is_worker(),
         }
     }
@@ -327,7 +341,7 @@ impl<'a> Exec<'a> {
             return Ok(());
         }
         match self {
-            Exec::Serial | Exec::SerialWithWorkspace(_) => {
+            Exec::Serial { .. } | Exec::SerialWithWorkspace { .. } => {
                 if width == 1 {
                     f(0);
                     Ok(())

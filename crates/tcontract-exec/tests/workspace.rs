@@ -357,3 +357,56 @@ fn a_zero_request_keeps_a_warmed_panel_counted() {
     assert_eq!(arena.retained_panel_bytes(), 0);
     assert_eq!(arena.stats(), WorkspaceStats::default());
 }
+
+/// Reserving a B panel after a large A block must not be swallowed by the byte
+/// total: the bound is component-wise.
+#[test]
+fn reserve_keeps_component_wise_maxima() {
+    let mut ws = Workspace::with_req(&WorkspaceReq {
+        a_bytes: 128,
+        ..Default::default()
+    });
+    assert_eq!(ws.req().a_bytes, 128);
+    assert_eq!(ws.req().b_bytes, 0);
+    ws.reserve(&WorkspaceReq {
+        b_bytes: 64,
+        ..Default::default()
+    });
+    assert_eq!(ws.req().a_bytes, 128, "the A block must be kept");
+    assert_eq!(ws.req().b_bytes, 64, "the B panel must be added");
+    // A same-total request does not shrink or replace a component.
+    ws.reserve(&WorkspaceReq {
+        a_bytes: 32,
+        b_bytes: 16,
+        ..Default::default()
+    });
+    assert_eq!(ws.req().a_bytes, 128);
+    assert_eq!(ws.req().b_bytes, 64);
+}
+
+/// `prepare_for` warms one worker slot per worker the executor may use.
+#[test]
+fn prepare_for_warms_every_worker_slot() {
+    let tp = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    let pool = Pool::borrow(&tp);
+    let exec = Exec::rayon(&pool).with_budget(2).unwrap();
+    let req = WorkspaceReq {
+        a_bytes: 4096,
+        ..Default::default()
+    };
+    let mut ws = Workspace::with_req(&req);
+    assert_eq!(ws.slots(), 1);
+    ws.prepare_for(&exec);
+    assert_eq!(ws.slots(), 2, "both workers must be warmed");
+    assert!(
+        ws.retained_bytes() >= 2 * req.a_bytes,
+        "two slots are retained: {}",
+        ws.retained_bytes()
+    );
+    let before = ws.retained_bytes();
+    ws.prepare_for(&exec);
+    assert_eq!(ws.retained_bytes(), before, "a second prepare is a no-op");
+}

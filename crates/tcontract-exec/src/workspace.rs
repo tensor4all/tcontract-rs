@@ -80,6 +80,21 @@ impl WorkspaceReq {
             + (self.worker_scatter + self.team_scatter) * core::mem::size_of::<i64>()
             + self.barriers * core::mem::size_of::<Barrier>()
     }
+
+    /// Whether `have` covers every component of this request.
+    ///
+    /// Capacity is checked component-wise, never by the byte total: a large A
+    /// block does not stand in for a missing B panel, and the driver would grow
+    /// the arena for the shortage rather than refuse it. [`Workspace::reserve`]
+    /// keeps the same component-wise maxima.
+    pub fn covered_by(&self, have: &WorkspaceReq) -> bool {
+        self.a_bytes <= have.a_bytes
+            && self.tile_bytes <= have.tile_bytes
+            && self.worker_scatter <= have.worker_scatter
+            && self.b_bytes <= have.b_bytes
+            && self.team_scatter <= have.team_scatter
+            && self.barriers <= have.barriers
+    }
 }
 
 /// What an owner currently holds and currently lends out.
@@ -638,24 +653,29 @@ fn fresh_worker(req: &WorkspaceReq, f: &mut dyn FnMut(*mut u8, *mut u8, &mut Vec
 /// bound allocates nothing.
 ///
 /// A plan computes a conservative requirement (`Plan::workspace_req` in the
-/// owning crate) and `execute_raw_in` checks it against [`Workspace::have`]
-/// before any write. The bound is grow-only: [`Workspace::reserve`] enlarges it
-/// for a larger later requirement.
+/// owning crate) and `execute_raw_in` checks it component-wise against
+/// [`Workspace::req`] before any write. The bound is grow-only and component-wise:
+/// [`Workspace::reserve`] keeps the maximum of each field, so a large A block
+/// does not stand in for a missing B panel. A parallel executor must call
+/// [`Workspace::prepare_for`] so every worker slot is warmed before the execute.
 ///
 /// # Examples
 ///
 /// ```
 /// use tcontract_exec::{Workspace, WorkspaceReq};
 /// let mut ws = Workspace::with_req(&WorkspaceReq { a_bytes: 64, ..Default::default() });
-/// assert!(ws.have() >= 64);
+/// assert!(ws.req().a_bytes >= 64);
 /// ws.reserve(&WorkspaceReq { b_bytes: 128, ..Default::default() });
-/// assert!(ws.have() >= 128);
+/// // Component-wise: the A block is kept and the B panel is added.
+/// assert!(ws.req().a_bytes >= 64 && ws.req().b_bytes >= 128);
 /// let _provider = ws.as_provider();
 /// ```
 #[derive(Debug, Default)]
 pub struct Workspace {
     arena: ArenaProvider,
     req: WorkspaceReq,
+    /// Worker slots warmed for an executor; see [`Workspace::prepare_for`].
+    slots: usize,
 }
 
 impl Workspace {
@@ -663,17 +683,28 @@ impl Workspace {
     /// thread and one team set are grown to hold it, so a later execute within
     /// the bound does not grow the arena.
     pub fn with_req(req: &WorkspaceReq) -> Self {
-        let arena = ArenaProvider::new();
-        Self::warm(&arena, req);
-        Self { arena, req: *req }
+        let mut ws = Self {
+            arena: ArenaProvider::new(),
+            req: *req,
+            slots: 0,
+        };
+        ws.warm();
+        ws.slots = 1;
+        ws
     }
 
-    /// Grow the bound to cover `req` as well, warming the arena for it. The bound
-    /// never shrinks.
+    /// Grow the bound to cover `req` as well, component-wise. The bound never
+    /// shrinks, and every field keeps its own maximum.
     pub fn reserve(&mut self, req: &WorkspaceReq) {
-        if req.bytes() > self.req.bytes() {
-            Self::warm(&self.arena, req);
-            self.req = *req;
+        let before = self.req;
+        self.req.a_bytes = self.req.a_bytes.max(req.a_bytes);
+        self.req.tile_bytes = self.req.tile_bytes.max(req.tile_bytes);
+        self.req.worker_scatter = self.req.worker_scatter.max(req.worker_scatter);
+        self.req.b_bytes = self.req.b_bytes.max(req.b_bytes);
+        self.req.team_scatter = self.req.team_scatter.max(req.team_scatter);
+        self.req.barriers = self.req.barriers.max(req.barriers);
+        if self.req != before {
+            self.warm();
         }
     }
 
@@ -682,9 +713,32 @@ impl Workspace {
         self.req.bytes()
     }
 
-    /// The requirement this workspace was sized to.
+    /// The per-component bound this workspace was sized to.
     pub fn req(&self) -> &WorkspaceReq {
         &self.req
+    }
+
+    /// How many worker slots have been warmed. [`Workspace::prepare_for`] raises
+    /// it to the executor's budget.
+    pub fn slots(&self) -> usize {
+        self.slots
+    }
+
+    /// Warm one worker slot per worker the executor may run on, so a parallel
+    /// execute within the bound does not allocate a slot per lane. `broadcast`
+    /// runs the closure on `budget` distinct workers, one call to `with_worker`
+    /// each; a context that cannot co-schedule (a serial one or a same-pool
+    /// worker) keeps the calling thread's slot only.
+    pub fn prepare_for(&mut self, exec: &crate::Exec<'_>) {
+        let slots = exec.budget().max(1);
+        if slots <= self.slots {
+            return;
+        }
+        let (arena, req) = (&self.arena, &self.req);
+        let warmed = exec.broadcast(slots, &|_| arena.with_worker(req, &mut |_, _, _| {}));
+        if warmed.is_ok() {
+            self.slots = slots;
+        }
     }
 
     /// The provider a plan lends to the driver for one call.
@@ -692,13 +746,19 @@ impl Workspace {
         &self.arena
     }
 
+    /// Bytes the owner currently retains, idle or in use. A test observes it to
+    /// prove an execute did not grow the arena.
+    pub fn retained_bytes(&self) -> usize {
+        self.arena.retained_bytes()
+    }
+
     /// First-touch the worker buffers (this thread's slot) and one team set so
     /// the first execute within the bound allocates only the arena's bookkeeping.
-    fn warm(arena: &ArenaProvider, req: &WorkspaceReq) {
-        arena.with_worker(req, &mut |_, _, _| {});
-        let mut lease = arena.take_team(req, 1, 1);
-        if req.b_bytes > 0 {
-            lease.panel(req.b_bytes);
+    fn warm(&self) {
+        self.arena.with_worker(&self.req, &mut |_, _, _| {});
+        let mut lease = self.arena.take_team(&self.req, 1, 1);
+        if self.req.b_bytes > 0 {
+            lease.panel(self.req.b_bytes);
         }
         drop(lease);
     }
