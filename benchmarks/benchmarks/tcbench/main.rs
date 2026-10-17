@@ -245,7 +245,10 @@ impl Options {
                     });
                     i += 1;
                 }
-                other => eprintln!("warning: ignoring unknown option {other}"),
+                other => {
+                    eprintln!("unknown option {other}");
+                    std::process::exit(2);
+                }
             }
             i += 1;
         }
