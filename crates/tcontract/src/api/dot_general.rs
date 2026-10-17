@@ -27,6 +27,16 @@ pub struct DotGeneral {
 }
 
 /// The axes of a validated [`DotGeneral`] against concrete extents.
+///
+/// # Migration (0.3)
+///
+/// `lhs_free`, `rhs_free` and `out_dims` are `tinyvec` inline vectors, not
+/// `Vec<usize>`, so a plan build at the usual ranks allocates no axis metadata
+/// (see #121). They deref to `[usize]`; read them as a slice
+/// (`shape.out_dims.as_slice()`) and convert to an owned `Vec` with
+/// `shape.out_dims.to_vec()` where a downstream field or API still wants one.
+/// `IntoIterator`-style loops keep working through the deref, but an assignment
+/// to a `Vec<usize>` site needs the explicit `.to_vec()`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DotShape {
     /// Free axes of A, in order.

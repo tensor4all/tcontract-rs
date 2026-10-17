@@ -1,8 +1,8 @@
 //! One geometry decision shared by reporting and execution.
 
 use super::{block, dynamic, pack_b_needed, BLOCK_MC_BUDGET};
-use crate::plan::{PackedPlan, PackedRoute, NS_PER_FLOP};
-use tcontract_exec::{BatchQuery, Exec, ExecError, WorkspaceReq};
+use crate::plan::{PackedPlan, PackedRoute};
+use tcontract_exec::{BatchQuery, BatchStrategy, Exec, ExecError, WorkspaceReq};
 use tcontract_kernel::pack::panel_len;
 use tcontract_kernel::{Element, PartitionPolicy, ResolvedGemm};
 
@@ -82,28 +82,38 @@ pub(crate) fn execution_geometry<T: Element>(
         }
         _ => None,
     };
-    // The route is decided once, before any allocation or write. With a pinned
-    // grid or dynamic tiles the batch lanes are not asked for and the team
-    // width is the packed width rule for the whole batch (`Auto`'s stage one);
-    // otherwise [`Exec::batch_decision`] returns both the lanes and, when it
-    // keeps one lane, the effective team width. Forced strategies are evaluated
-    // against this context's budget, exactly as [`Exec::batch_decision`]
-    // documents.
-    let (lanes, one_lane_width) = if explicit_grid.is_none() && dyn_jobs.is_none() {
-        let decision = exec.batch_decision(&batch_query(plan, m, n, k, T::IS_COMPLEX))?;
+    // The route is decided once, before any allocation or write. A forced
+    // strategy is resolved before a pinned grid or dynamic tiles, so a forced
+    // `Sequential` cannot launch a team and a forced `Outer` cannot silently
+    // become inner parallelism.
+    let policy = *exec.batch_policy();
+    let forced = !matches!(policy.strategy, BatchStrategy::Auto);
+    let decision = exec.batch_decision(&batch_query(plan, m, n, k, T::IS_COMPLEX))?;
+    // A split asks for lanes *and* item threads; no route here runs an item on
+    // a sub-team inside an outer lane, so it is refused before any write.
+    if decision.lanes > 1 && decision.item_threads > 1 {
+        return Err(ExecError::StrategyUnavailable {
+            strategy: policy.strategy,
+        });
+    }
+    let (lanes, one_lane_width) = if forced {
         (decision.lanes, decision.item_threads)
+    } else if explicit_grid.is_some() || dyn_jobs.is_some() {
+        // `Auto` with a pinned grid or dynamic tiles keeps the legacy budget the
+        // driver was handed (which `Plan::batch_context` narrowed for `Auto`).
+        (1, budget)
     } else {
-        let total_ns =
-            2.0 * plan.stats.macs() as f64 * if T::IS_COMPLEX { 4.0 } else { 1.0 } * NS_PER_FLOP;
-        (
-            1,
-            exec.width_for(total_ns, &exec.batch_policy().model.width),
-        )
+        (decision.lanes, decision.item_threads)
     };
-    // The grid is unused on the lane route: every lane owns whole entries. The
-    // pinned-grid and dynamic-tile routes keep the legacy resolution (the budget
-    // the driver was handed, which `Plan::batch_context` narrows for `Auto`).
-    let want = if lanes > 1 || explicit_grid.is_some() || dyn_jobs.is_some() {
+    // A forced outer route cannot honor a pinned grid or dynamic tiles: reject
+    // rather than silently ignore one of the two requests.
+    if forced && lanes > 1 && (explicit_grid.is_some() || dyn_jobs.is_some()) {
+        return Err(ExecError::StrategyUnavailable {
+            strategy: policy.strategy,
+        });
+    }
+    // The grid is unused on the lane route: every lane owns whole entries.
+    let want = if lanes > 1 {
         budget
     } else {
         one_lane_width.min(budget)
@@ -167,17 +177,47 @@ pub(crate) fn call_workspace_req<T: Element>(
         .expect("validated family ABI for this scheme");
     let (mr, nr) = (fam.mr, fam.nr);
     let budget = exec.budget().max(1);
-    let (mc, kc, nc) = (rg.mc, rg.kc, rg.nc);
+    let (kc, nc) = (rg.kc, rg.nc);
     let swap = plan.transposes_gemm(mr);
     let (am, ak, bk, bn) = if swap {
         (&plan.b_n, &plan.b_k, &plan.a_k, &plan.a_m)
     } else {
         (&plan.a_m, &plan.a_k, &plan.b_k, &plan.b_n)
     };
-    let (m, n, k) = (am.len(), bn.len(), ak.len());
+    let (n, k) = (bn.len(), ak.len());
     let direct_b = !pack_b_needed(fam.b_access, bk, bn, nr);
     let element = core::mem::size_of::<T::Real>();
-    // The packed A block at the serial blocking.
+    // The blocked traversal's two tile grids and the A block it needs. It
+    // replaces MC with the rounded block rows, which can exceed the serial MC, so
+    // the A bound is the maximum of the two; whether the shape is eligible is
+    // shape-only, so include the grid whenever it could apply.
+    let (blocked_mc, grid_elems) = match block::blocked_eligibility(
+        &plan.stats,
+        swap,
+        k,
+        n,
+        kc,
+        nc,
+        (64 / element).max(1),
+        BLOCK_MC_BUDGET,
+        mr,
+    ) {
+        None => (0, 0),
+        Some(shape) => {
+            let mut axes_buf = [block::Role::EMPTY; block::MAX_AXES];
+            let axes = block::role_into(&plan.stats, swap, &mut axes_buf);
+            let block_rows = axes[shape.span].extent.saturating_mul(shape.line_len);
+            let blocked_mc = block_rows.next_multiple_of(mr);
+            let grid = tcontract_kernel::tile_planes(fam.tile_fmt)
+                .saturating_mul(mr)
+                .saturating_mul(nr)
+                .saturating_mul(block_rows.div_ceil(mr))
+                .saturating_mul(n.div_ceil(nr));
+            (blocked_mc, grid)
+        }
+    };
+    // The packed A block: the serial MC or the blocked path's rounded rows.
+    let mc = rg.mc.max(blocked_mc);
     let a_bytes = panel_len(mc, mr, kc, fam.a_pack) * element;
     // The shared B panel at the widest grid: the largest slice is one column
     // group, and lanes round the slice up to a cache line.
@@ -189,37 +229,20 @@ pub(crate) fn call_workspace_req<T: Element>(
     } else {
         budget * b_group * element
     };
-    // The blocked traversal's two tile grids, when the shape could take it.
-    let grid_elems = match block::blocked_eligibility(
-        &plan.stats,
-        swap,
-        k,
-        n,
-        kc,
-        nc,
-        (64 / element).max(1),
-        BLOCK_MC_BUDGET,
-        mr,
-    ) {
-        None => 0,
-        Some(shape) => {
-            let mut axes_buf = [block::Role::EMPTY; block::MAX_AXES];
-            let axes = block::role_into(&plan.stats, swap, &mut axes_buf);
-            let block_rows = axes[shape.span].extent.saturating_mul(shape.line_len);
-            tcontract_kernel::tile_planes(fam.tile_fmt)
-                .saturating_mul(mr)
-                .saturating_mul(nr)
-                .saturating_mul(block_rows.div_ceil(mr))
-                .saturating_mul(n.div_ceil(nr))
-        }
+    // Every block-scatter vector, including the nonzero-beta C one, oriented
+    // exactly as execution orients them under the transpose, and the widest
+    // barrier count.
+    let (dm, dn) = if swap {
+        (&plan.d_n, &plan.d_m)
+    } else {
+        (&plan.d_m, &plan.d_n)
     };
-    // Every block-scatter vector, including the nonzero-beta C one, and the
-    // widest barrier count.
-    let team_scatter = m.div_ceil(mr)
-        + n.div_ceil(nr)
-        + plan.d_m.len().div_ceil(mr)
-        + plan.d_n.len().div_ceil(nr)
-        + plan.c_m.len().div_ceil(mr);
+    let cm = if swap { &plan.c_n } else { &plan.c_m };
+    let team_scatter = am.len().div_ceil(mr)
+        + bn.len().div_ceil(nr)
+        + dm.len().div_ceil(mr)
+        + dn.len().div_ceil(nr)
+        + cm.len().div_ceil(mr);
     WorkspaceReq {
         a_bytes,
         tile_bytes: (fam.tile + fam.induced_scratch(kc)) * element + 2 * grid_elems * element,

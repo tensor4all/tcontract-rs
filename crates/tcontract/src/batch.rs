@@ -194,7 +194,7 @@ pub fn contract_batched<T: Scalar>(items: &mut [BatchItem<'_, T>], exec: &Exec<'
     let first_error: Mutex<Option<crate::api::Error>> = Mutex::new(None);
     let item_exec = exec
         .workspace()
-        .map_or(Exec::Serial, Exec::serial_with_workspace);
+        .map_or(Exec::serial(), Exec::serial_with_workspace);
     let lanes = exec.with_budget(decision.lanes)?;
     lanes.for_each_partition(cells.len(), &|i| {
         let mut cell = cells[i].lock().unwrap_or_else(|e| e.into_inner());

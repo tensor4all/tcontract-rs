@@ -347,7 +347,7 @@ impl Plan {
         d: *mut T,
     ) {
         // SAFETY: forwarded.
-        unsafe { self.run_raw_with(&Exec::Serial, None, alpha, a, b, beta, c, d) }
+        unsafe { self.run_raw_with(&Exec::serial(), None, alpha, a, b, beta, c, d) }
             .expect("a serial route is always available")
     }
 
