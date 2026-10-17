@@ -916,9 +916,9 @@ dependencies = [
 
 [[package]]
 name = "strided-basic"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02d5117e8a9157eb60ad6e3791f77c789779ee4062ffbe89856335433081ca84"
+checksum = "cee653e92971b79791eacc08580f099d64ddde3fe124f2122b0c4e92d2cbb1d2"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "faer",
  "num-complex",
@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "faer",
  "rayon",
@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract-kernel"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "libc",
  "num-complex",
