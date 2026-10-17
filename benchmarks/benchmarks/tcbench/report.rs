@@ -102,11 +102,28 @@ impl Results {
     /// emitted in the census order, which is the declared rotation.
     pub fn write_csv(&self, path: &str, census: &Census) -> std::io::Result<()> {
         let mut s = String::from(
-            "case,group,dtype,engine,threads,m,n,k,macs,seconds,spread,prepare_s,gflops,regular_a,regular_b,notes,regime,family,order,batch,row,status,note,total_ms,per_item_us,samples_ms,rayon_threads,vendor_threads\n",
+            "case,group,dtype,engine,threads,m,n,k,macs,seconds,spread,prepare_s,gflops,regular_a,regular_b,notes,regime,family,order,batch,row,status,note,total_ms,per_item_us,samples_ms,rayon_threads,vendor_threads,case_m,case_n,case_k\n",
         );
         let batch: f64 = self.batch.parse().unwrap_or(1.0);
         for c in &census.rows {
-            let (m, n, k) = declared_shape(&self.n_spec, &c.family);
+            let measured = self.get(&c.family, &c.dtype, &c.row);
+            // The declared spec names the grid, so it is what the identity
+            // columns carry once `--n` is given. Without it the harness has no
+            // declared grid to name and those columns keep the resolved extents
+            // they carried before the census existed; the resolved extents are
+            // in `case_m`/`case_n`/`case_k` either way.
+            let (m, n, k) = if self.n_spec.is_empty() {
+                match measured {
+                    Some(r) => (r.m.to_string(), r.n.to_string(), r.k.to_string()),
+                    None => Default::default(),
+                }
+            } else {
+                declared_shape(&self.n_spec, &c.family)
+            };
+            let (case_m, case_n, case_k) = match measured {
+                Some(r) => (r.m.to_string(), r.n.to_string(), r.k.to_string()),
+                None => Default::default(),
+            };
             // The identity columns both a measured and a skipped row share.
             let mut fields = vec![
                 c.family.clone(),
@@ -119,9 +136,7 @@ impl Results {
                 k,
             ];
             if c.status == "ok" {
-                let r = self
-                    .get(&c.family, &c.dtype, &c.row)
-                    .expect("a census cell marked ok was measured");
+                let r = measured.expect("a census cell marked ok was measured");
                 // `total_ms` is the requested statistic of the chronological
                 // samples and `per_item_us` divides it by the unit batch; the
                 // harness's own per-macs figure stays derivable from `macs`
@@ -160,6 +175,9 @@ impl Results {
                     samples_ms,
                     r.threads.to_string(),
                     r.threads.to_string(),
+                    case_m,
+                    case_n,
+                    case_k,
                 ]);
             } else {
                 // A skipped cell carries no timing: `samples_ms` stays empty
@@ -186,6 +204,9 @@ impl Results {
                     String::new(),
                     c.threads.to_string(),
                     c.threads.to_string(),
+                    case_m,
+                    case_n,
+                    case_k,
                 ]);
             }
             let _ = writeln!(

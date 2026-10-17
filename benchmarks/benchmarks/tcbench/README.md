@@ -96,5 +96,8 @@ execution order by *k*, which is how whole-process repeats see each engine first
 best|median`, and `--census-csv` (one row per declared cell, including declared skips). The evidence CSV
 gains `regime,family,order,batch,row,status,note,total_ms,per_item_us,samples_ms,rayon_threads,vendor_threads`;
 `samples_ms` is the chronological per-call list as JSON and `per_item_us` is `total_ms * 1000 / batch`.
-None of it changes the harness's behaviour when the flags are absent. The samples are serial observations
+The evidence CSV also carries `case_m,case_n,case_k` - the case's *resolved* extents - because the
+identity columns name the declared grid; without `--n` those identity columns keep the resolved
+extents they carried before the census existed. None of it changes the harness's behaviour when the
+flags are absent. The samples are serial observations
 within one process, not replicates.
