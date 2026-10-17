@@ -17,6 +17,7 @@
 //! assert_eq!(width, 2);
 //! assert_eq!(pool.stats().entries, 1);
 //! ```
+pub mod batch;
 mod error;
 mod exec;
 mod pool;
@@ -26,6 +27,7 @@ mod workspace;
 #[cfg(feature = "strided")]
 pub mod strided;
 
+pub use batch::{BatchDecision, BatchPolicy, BatchQuery, BatchStrategy, WorkModel};
 pub use error::ExecError;
 pub use exec::{Exec, Par};
 pub use pool::{Pool, PoolStats};
