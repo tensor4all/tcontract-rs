@@ -13,9 +13,9 @@ fn data(len: usize, seed: usize, scale: f64) -> Vec<f64> {
 
 /// A column-major view of `x`.
 ///
-/// The metadata is computed here, so the view owns it.
+/// The metadata is computed here and copied into the view's inline storage.
 fn cm(x: &[f64], d: [usize; 2]) -> StridedView<'_, f64> {
-    StridedView::new_owned(x, d.to_vec(), vec![1, d[0] as isize], 0).unwrap()
+    StridedView::new(x, &d, &[1, d[0] as isize], 0).unwrap()
 }
 
 fn pool(threads: usize) -> rayon::ThreadPool {
@@ -92,7 +92,7 @@ fn a_bad_item_leaves_every_output_untouched() {
     let mut d1 = vec![0.0f64; 8];
     {
         fn view(x: &[f64], d: [usize; 2], s: [isize; 2]) -> StridedView<'_, f64> {
-            StridedView::new_owned(x, d.to_vec(), s.to_vec(), 0).unwrap()
+            StridedView::new(x, &d, &s, 0).unwrap()
         }
         let mut batch = vec![
             BatchItem {

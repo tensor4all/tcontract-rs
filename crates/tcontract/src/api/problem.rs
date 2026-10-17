@@ -12,6 +12,28 @@ use crate::api::dot_general::DotGeneral;
 use crate::api::error::{Error, OperandId, Result, ShapeError};
 use crate::api::labels::Labels;
 use crate::api::validate::{self, Lowered};
+use tinyvec::TinyVec;
+
+/// Inline capacity for one operand's metadata, matching
+/// [`strided_view::INLINE_RANK`]. Rank at or below this allocates nothing.
+pub(crate) const INLINE_RANK: usize = 8;
+/// Inline capacity for the combined role set: two rank-[`INLINE_RANK`] operands
+/// can contribute up to `2 * INLINE_RANK` distinct labels. Above it the vector
+/// spills, so arbitrary rank still works.
+pub(crate) const COMBINED_RANK: usize = 2 * INLINE_RANK;
+
+/// Extents (`usize`) with inline storage for [`INLINE_RANK`] axes.
+pub(crate) type DimVec = TinyVec<[usize; INLINE_RANK]>;
+/// Signed strides (`isize`) with inline storage for [`INLINE_RANK`] axes.
+pub(crate) type StrideVec = TinyVec<[isize; INLINE_RANK]>;
+/// Labels (`i64`) with inline storage for [`INLINE_RANK`] axes.
+pub(crate) type LabelVec = TinyVec<[i64; INLINE_RANK]>;
+/// One role's axes with inline storage for [`COMBINED_RANK`].
+pub(crate) type RoleVec = TinyVec<[RoleAxis; COMBINED_RANK]>;
+/// An index list (`usize`) with inline storage for [`INLINE_RANK`] axes.
+pub(crate) type IndexVec = TinyVec<[usize; INLINE_RANK]>;
+/// An index list that can reach `2 * INLINE_RANK` (an output's rank).
+pub(crate) type OutputVec = TinyVec<[usize; COMBINED_RANK]>;
 
 /// The storage and accumulation type of every operand of a problem.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -69,8 +91,8 @@ impl DType {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LayoutSpec {
-    dims: Vec<usize>,
-    strides: Vec<isize>,
+    dims: DimVec,
+    strides: StrideVec,
     offset: isize,
 }
 
@@ -89,8 +111,8 @@ impl LayoutSpec {
             .into());
         }
         Ok(Self {
-            dims: dims.to_vec(),
-            strides: strides.to_vec(),
+            dims: dims.iter().copied().collect(),
+            strides: strides.iter().copied().collect(),
             offset,
         })
     }
@@ -110,7 +132,7 @@ impl LayoutSpec {
             }
             .into());
         }
-        let mut d = Vec::with_capacity(dims.len());
+        let mut d = DimVec::new();
         for (axis, &e) in dims.iter().enumerate() {
             if e < 0 {
                 return Err(ShapeError::NegativeExtent { axis, extent: e }.into());
@@ -120,7 +142,7 @@ impl LayoutSpec {
         let s = strides
             .iter()
             .map(|&x| isize::try_from(x).map_err(|_| ShapeError::Overflow { what: "stride" }))
-            .collect::<core::result::Result<Vec<_>, _>>()?;
+            .collect::<core::result::Result<StrideVec, _>>()?;
         let offset =
             isize::try_from(offset).map_err(|_| ShapeError::Overflow { what: "offset" })?;
         Ok(Self {
@@ -132,12 +154,12 @@ impl LayoutSpec {
 
     /// Extent of each axis.
     pub fn dims(&self) -> &[usize] {
-        &self.dims
+        self.dims.as_slice()
     }
 
     /// Signed element stride of each axis.
     pub fn strides(&self) -> &[isize] {
-        &self.strides
+        self.strides.as_slice()
     }
 
     /// The logical offset.
@@ -153,7 +175,7 @@ impl LayoutSpec {
     /// Whether a view with these extents, strides and offset has exactly this
     /// layout.
     pub fn matches(&self, dims: &[usize], strides: &[isize], offset: isize) -> bool {
-        self.dims == dims && self.strides == strides && self.offset == offset
+        self.dims.as_slice() == dims && self.strides.as_slice() == strides && self.offset == offset
     }
 }
 
@@ -233,7 +255,7 @@ pub enum CSpec {
 /// stride zero (so an isolated reduction is a `K` axis with stride zero in
 /// the other input); [`in_a`](Self::in_a)/[`in_b`](Self::in_b) tell a missing
 /// operand from a genuine zero stride.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RoleAxis {
     pub(crate) label: i64,
     pub(crate) extent: usize,
@@ -282,31 +304,31 @@ impl RoleAxis {
 /// decisions of plan construction, not of the problem.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Roles {
-    pub(crate) m: Vec<RoleAxis>,
-    pub(crate) n: Vec<RoleAxis>,
-    pub(crate) k: Vec<RoleAxis>,
-    pub(crate) h: Vec<RoleAxis>,
+    pub(crate) m: RoleVec,
+    pub(crate) n: RoleVec,
+    pub(crate) k: RoleVec,
+    pub(crate) h: RoleVec,
 }
 
 impl Roles {
     /// Axes of A, C and D.
     pub fn m(&self) -> &[RoleAxis] {
-        &self.m
+        self.m.as_slice()
     }
 
     /// Axes of B, C and D.
     pub fn n(&self) -> &[RoleAxis] {
-        &self.n
+        self.n.as_slice()
     }
 
     /// Contracted (and isolated, reduced) axes.
     pub fn k(&self) -> &[RoleAxis] {
-        &self.k
+        self.k.as_slice()
     }
 
     /// Batch axes.
     pub fn h(&self) -> &[RoleAxis] {
-        &self.h
+        self.h.as_slice()
     }
 }
 
@@ -358,7 +380,158 @@ pub struct Problem {
     lowered: Lowered,
 }
 
+/// A borrowed view of one operand's layout, for [`ProblemRef`].
+///
+/// # Examples
+///
+/// ```
+/// use tcontract::api::LayoutRef;
+/// let l = LayoutRef { dims: &[2, 3], strides: &[1, 2], offset: 0 };
+/// assert_eq!(l.rank(), 2);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LayoutRef<'a> {
+    /// Extents, one per axis.
+    pub dims: &'a [usize],
+    /// Signed element strides, one per axis.
+    pub strides: &'a [isize],
+    /// The logical offset.
+    pub offset: isize,
+}
+
+impl LayoutRef<'_> {
+    /// Number of axes.
+    pub fn rank(&self) -> usize {
+        self.dims.len()
+    }
+}
+
+/// The borrowed C mode of a [`ProblemRef`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CRef<'a> {
+    /// No C term.
+    Absent,
+    /// Accumulate from D itself, with this `op_C`.
+    Output(Op),
+    /// Accumulate from a separately described C layout and `op_C`.
+    Separate(LayoutRef<'a>, Op),
+}
+
+/// The borrowed contraction description of a [`ProblemRef`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ContractionRef<'a> {
+    /// Label semantics, as [`Labels`].
+    Labels {
+        /// Labels of A.
+        a: &'a [i64],
+        /// Labels of B.
+        b: &'a [i64],
+        /// Labels of a separate C, if any.
+        c: Option<&'a [i64]>,
+        /// Labels of D.
+        d: &'a [i64],
+    },
+    /// Axis-list semantics, as [`DotGeneral`].
+    DotGeneral {
+        /// Contracted axes of A.
+        lhs_contract: &'a [usize],
+        /// Contracted axes of B.
+        rhs_contract: &'a [usize],
+        /// Batch axes of A.
+        lhs_batch: &'a [usize],
+        /// Batch axes of B.
+        rhs_batch: &'a [usize],
+    },
+}
+
+/// A borrowed, inline description of a contraction, for
+/// [`Problem::from_ref`] and `Plan::compile`.
+///
+/// It borrows every layout, label and axis list, so a caller that keeps those in
+/// its own storage can compile a plan without handing ownership over. The
+/// element-wise operations are carried inline. A `DotGeneral` contraction ignores
+/// `c`, exactly as [`Problem::from_dot_general`] does (its C is D with the
+/// identity op).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProblemRef<'a> {
+    /// The storage type.
+    pub dtype: DType,
+    /// Operand A and its element-wise op.
+    pub a: (LayoutRef<'a>, Op),
+    /// Operand B and its element-wise op.
+    pub b: (LayoutRef<'a>, Op),
+    /// The C mode.
+    pub c: CRef<'a>,
+    /// The output D and its element-wise op.
+    pub d: (LayoutRef<'a>, Op),
+    /// The contraction description.
+    pub contraction: ContractionRef<'a>,
+}
+
 impl Problem {
+    /// Lower a borrowed [`ProblemRef`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Problem::from_labels`] or [`Problem::from_dot_general`], whichever
+    /// `p.contraction` selects, plus [`ShapeError::LayoutRank`] for a layout whose
+    /// extents and strides differ in length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract::api::{CRef, ContractionRef, DType, LayoutRef, Op, Problem, ProblemRef};
+    /// let a = LayoutRef { dims: &[2, 3], strides: &[1, 2], offset: 0 };
+    /// let b = LayoutRef { dims: &[3, 4], strides: &[1, 3], offset: 0 };
+    /// let d = LayoutRef { dims: &[2, 4], strides: &[1, 2], offset: 0 };
+    /// let p = ProblemRef {
+    ///     dtype: DType::F64,
+    ///     a: (a, Op::Identity),
+    ///     b: (b, Op::Identity),
+    ///     c: CRef::Absent,
+    ///     d: (d, Op::Identity),
+    ///     contraction: ContractionRef::Labels {
+    ///         a: &[0, 2], b: &[2, 1], c: None, d: &[0, 1],
+    ///     },
+    /// };
+    /// let problem = Problem::from_ref(&p).unwrap();
+    /// assert_eq!(problem.roles().k().len(), 1);
+    /// ```
+    pub fn from_ref(p: &ProblemRef<'_>) -> Result<Self> {
+        let spec = |(l, op): (LayoutRef<'_>, Op)| -> Result<OperandSpec> {
+            Ok(OperandSpec::new(LayoutSpec::new(l.dims, l.strides, l.offset)?).with_op(op))
+        };
+        let (a, b, d) = (spec(p.a)?, spec(p.b)?, spec(p.d)?);
+        match p.contraction {
+            ContractionRef::Labels {
+                a: la,
+                b: lb,
+                c: lc,
+                d: ld,
+            } => {
+                let c = match p.c {
+                    CRef::Absent => CSpec::Absent,
+                    CRef::Output(op) => CSpec::Output(op),
+                    CRef::Separate(l, op) => CSpec::Separate(spec((l, op))?),
+                };
+                let mut labels = Labels::new(la, lb, ld);
+                if let Some(lc) = lc {
+                    labels = labels.with_c(lc);
+                }
+                Self::from_labels(p.dtype, a, b, c, d, &labels)
+            }
+            ContractionRef::DotGeneral {
+                lhs_contract,
+                rhs_contract,
+                lhs_batch,
+                rhs_batch,
+            } => {
+                let dot = DotGeneral::new(lhs_contract, rhs_contract, lhs_batch, rhs_batch);
+                Self::from_dot_general(p.dtype, a, b, d, &dot)
+            }
+        }
+    }
+
     /// Lower a label description.
     ///
     /// # Errors
@@ -401,9 +574,9 @@ impl Problem {
         dot: &DotGeneral,
     ) -> Result<Self> {
         let shape = dot.validate(a.layout().dims(), b.layout().dims())?;
-        if shape.out_dims != d.layout().dims() {
+        if shape.out_dims.as_slice() != d.layout().dims() {
             return Err(Error::Shape(ShapeError::OutputExtents {
-                expected: shape.out_dims,
+                expected: shape.out_dims.to_vec(),
                 actual: d.layout().dims().to_vec(),
             }));
         }
@@ -412,15 +585,20 @@ impl Problem {
             dot.lhs_batch().len() as i64,
             dot.lhs_contract().len() as i64,
         );
-        let (mut la, mut lb) = (vec![0i64; a.layout().rank()], vec![0i64; b.layout().rank()]);
-        let mut ld = Vec::with_capacity(d.layout().rank());
+        // INVARIANT: ranks above `INLINE_RANK` spill rather than allocate only
+        // when they fit; the vectors below are construction scratch.
+        let mut la: LabelVec = LabelVec::new();
+        la.resize(a.layout().rank(), 0);
+        let mut lb: LabelVec = LabelVec::new();
+        lb.resize(b.layout().rank(), 0);
+        let mut ld: LabelVec = LabelVec::new();
         let mut next = nb + nc;
-        for &x in &shape.lhs_free {
+        for &x in shape.lhs_free.iter() {
             la[x] = next;
             ld.push(next);
             next += 1;
         }
-        for &x in &shape.rhs_free {
+        for &x in shape.rhs_free.iter() {
             lb[x] = next;
             ld.push(next);
             next += 1;
@@ -522,9 +700,9 @@ impl Problem {
     pub fn macs(&self) -> u128 {
         let r = &self.lowered.roles;
         r.m.iter()
-            .chain(&r.n)
-            .chain(&r.k)
-            .chain(&r.h)
+            .chain(r.n.as_slice())
+            .chain(r.k.as_slice())
+            .chain(r.h.as_slice())
             .map(|x| x.extent as u128)
             .product()
     }

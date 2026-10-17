@@ -25,4 +25,15 @@ pub enum ExecError {
     /// the caller is already a worker of the pool).
     #[error("co-scheduled execution unavailable in this context")]
     Unavailable,
+    /// A forced batch strategy is unavailable on this route:
+    /// [`BatchStrategy::WholeBatchVendor`](crate::batch::BatchStrategy::WholeBatchVendor)
+    /// without a vendor batch call, or a
+    /// [`BatchStrategy::Split`](crate::batch::BatchStrategy::Split) that asks for
+    /// both lanes and item threads on a route that runs each item serially inside
+    /// its lane.
+    #[error("batch strategy {strategy:?} is unavailable for this route")]
+    StrategyUnavailable {
+        /// The requested strategy.
+        strategy: crate::batch::BatchStrategy,
+    },
 }

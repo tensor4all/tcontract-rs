@@ -87,6 +87,7 @@ pub trait Scalar:
     + strided_basic::ElementOpApply
     + core::ops::Add<Output = Self>
     + core::ops::Mul<Output = Self>
+    + num_traits::One
     + Send
     + Sync
     + 'static

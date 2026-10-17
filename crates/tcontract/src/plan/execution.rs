@@ -5,7 +5,7 @@ use core::mem::MaybeUninit;
 use super::{Plan, Strategy};
 use crate::api::{CSpec, LayoutError, OperandId, Result, Scalar, ShapeError, Unsupported};
 use crate::strategy::elementwise::CRead;
-use tcontract_exec::Exec;
+use tcontract_exec::{Exec, WorkspaceReq};
 use tcontract_kernel::Element;
 
 /// The storage guarantee of a destination, not a provider selection.
@@ -91,6 +91,44 @@ pub enum SliceAccumulationSource<'a, T> {
 }
 
 impl<T: Scalar> Plan<T> {
+    /// A conservative upper bound on the workspace one execution through this
+    /// plan needs, for a caller that owns a
+    /// [`Workspace`](tcontract_exec::Workspace) and runs
+    /// [`Plan::execute_raw_in`] (#121).
+    ///
+    /// It is computed from the same packed geometry the driver resolves, widened
+    /// to the widest grid and lane count. A Faer plan's fresh-output alternative
+    /// is included; an elementwise route and an initialized Faer route take no
+    /// workspace, so their request is zero. A `Workspace` sized to this bound and
+    /// used through `execute_raw_in` grows the arena for none of the buffers.
+    ///
+    /// # Examples
+    /// ```
+    /// use tcontract::{OutputContract, Plan, PlanConfig};
+    /// use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
+    /// use tcontract_exec::Exec;
+    /// let l = OperandSpec::new(LayoutSpec::new(&[1], &[1], 0)?);
+    /// let p = Problem::from_labels(DType::F64, l.clone(), l.clone(), CSpec::Absent,
+    ///     l, &Labels::new(&[0], &[0], &[0]))?;
+    /// // The packed driver owns a workspace; a fusable plan runs on faer and
+    /// // needs none.
+    /// let plan = Plan::<f64>::new(&p, &PlanConfig::packed())?;
+    /// let req = plan.workspace_req(&Exec::serial(), OutputContract::Initialized);
+    /// assert!(req.a_bytes > 0);
+    /// # Ok::<(), tcontract::Error>(())
+    /// ```
+    pub fn workspace_req(&self, exec: &Exec<'_>, output: OutputContract) -> WorkspaceReq {
+        let packed = match (&self.strategy, output) {
+            (Strategy::Packed(pk), _) => Some(pk.as_ref()),
+            (Strategy::Faer(_), OutputContract::Fresh) => self.fresh_packed.as_deref(),
+            _ => None,
+        };
+        match packed {
+            Some(pk) => crate::driver::call_workspace_req::<T>(&pk.plan, &pk.rg, exec),
+            None => WorkspaceReq::default(),
+        }
+    }
+
     /// Resolve the numerical route on the current calling thread without
     /// taking a workspace or writing. This is not a reservation. Buffer and
     /// C-mode validation belongs to execution; fresh storage cannot accumulate
@@ -125,6 +163,17 @@ impl<T: Scalar> Plan<T> {
         {
             return Err(Unsupported::Reason("fresh output was not prepared; set PlanConfig::fresh_output when constructing the plan").into());
         }
+        // Availability first, before any route can write: tcontract has no vendor
+        // batched call, so a forced whole-batch vendor route is refused here.
+        if matches!(
+            exec.batch_policy().strategy,
+            tcontract_exec::BatchStrategy::WholeBatchVendor
+        ) {
+            return Err(tcontract_exec::ExecError::StrategyUnavailable {
+                strategy: tcontract_exec::BatchStrategy::WholeBatchVendor,
+            }
+            .into());
+        }
         if self.problem.out_empty() {
             return Ok(ExecutionRoute::Empty);
         }
@@ -138,7 +187,7 @@ impl<T: Scalar> Plan<T> {
             (Strategy::Elementwise(_), _) => return Ok(ExecutionRoute::Elementwise),
         };
         let pk = packed.ok_or(Unsupported::Reason("fresh output was not prepared; set PlanConfig::fresh_output when constructing the plan"))?;
-        let exec = exec.with_budget(self.width(exec))?;
+        let exec = self.batch_context(exec)?;
         let geometry = crate::driver::execution_geometry::<T>(&pk.plan, &pk.rg, &exec)?;
         Ok(ExecutionRoute::Packed {
             kind: geometry.kind(),

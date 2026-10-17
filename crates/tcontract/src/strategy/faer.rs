@@ -32,11 +32,10 @@
 //!   all false. With `beta == 0` C is not read. A separate C that is D itself
 //!   (same mapping, same origin) is the in-place case above.
 
-use tcontract_exec::{Exec, Par, WidthPolicy};
+use tcontract_exec::{BatchQuery, Exec, ExecError, Par};
 use tcontract_kernel::Element;
 
 use crate::api::{CSpec, OperandId, Problem, RoleAxis, Scalar};
-use crate::plan::NS_PER_FLOP;
 
 /// One fused group: `(extent, stride)` in each of A, B and D.
 #[derive(Clone, Copy, Debug)]
@@ -204,11 +203,13 @@ impl FaerPlan {
             .fold(1u64, |v, &e| v.saturating_mul(e as u64))
     }
 
-    fn flops<T: Scalar>(&self, items: usize) -> f64 {
-        2.0 * self.m.extent as f64
+    /// Multiply-adds of one batch item, the faer route's `item_muladds` in the
+    /// shared batch vocabulary: `m * n * k`, four times for complex (faer runs
+    /// four real GEMMs).
+    fn item_muladds<T: Scalar>(&self) -> f64 {
+        self.m.extent as f64
             * self.n.extent as f64
             * self.k.extent as f64
-            * items as f64
             * if T::IS_COMPLEX { 4.0 } else { 1.0 }
     }
 
@@ -230,7 +231,7 @@ impl FaerPlan {
         b: *const T,
         accumulate: bool,
         d: *mut T,
-    ) {
+    ) -> Result<(), ExecError> {
         let (mut ca, mut cb) = (self.conj_a, self.conj_b);
         let mut alpha = alpha;
         if self.conj_d {
@@ -240,10 +241,16 @@ impl FaerPlan {
             alpha = Element::conj(alpha);
         }
         let count = self.h.extent;
-        let policy = WidthPolicy::default();
-        let width = |items: usize| exec.width_for(self.flops::<T>(items) * NS_PER_FLOP, &policy);
-        let inner = width(1);
-        let total = width(count);
+        // The one batch decision, resolved before any item runs. The faer
+        // capability keeps the inner route unless one item alone is too small
+        // for a team, at which point the items take the lanes. `Auto` reproduces
+        // the pre-#123 `inner`/`total` widths exactly, and a forced strategy is
+        // honoured as-is.
+        let decision = exec.batch_decision(
+            &BatchQuery::new(count, self.item_muladds::<T>())
+                .with_item_parallel(true)
+                .with_outer_only_when_item_serial(true),
+        )?;
         let (ap, bp, dp) = (SendConst(a), SendConst(b), SendMut(d));
         let item = |i: usize, par: faer::Par| {
             let i = i as isize;
@@ -262,17 +269,25 @@ impl FaerPlan {
                 )
             }
         };
-        if inner == 1 && total > 1 && count > 1 {
-            let lanes = exec.with_budget(total.min(count)).unwrap_or(*exec);
+        if decision.vendor_batch {
+            // tcontract has no vendor batch call; the central preflight refuses
+            // `WholeBatchVendor` before dispatch, so this is unreachable.
+            return Err(ExecError::StrategyUnavailable {
+                strategy: tcontract_exec::BatchStrategy::WholeBatchVendor,
+            });
+        }
+        if decision.lanes > 1 {
+            let lanes = exec.with_budget(decision.lanes).unwrap_or(*exec);
             lanes.for_each_partition(count, &|i| item(i, faer::Par::Seq));
         } else {
             // One pool entry for the whole batch.
-            exec.install(inner, |par: Par| {
+            exec.install(decision.item_threads, |par: Par| {
                 for i in 0..count {
                     item(i, to_faer(par));
                 }
             });
         }
+        Ok(())
     }
 
     /// One GEMM of the batch.

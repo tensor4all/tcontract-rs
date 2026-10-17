@@ -1,5 +1,7 @@
 //! The label front end.
 
+use crate::api::problem::LabelVec;
+
 /// Per-operand `i64` labels, with free output order and a separate C.
 ///
 /// A label repeated within one operand selects a diagonal (extents must agree,
@@ -17,38 +19,38 @@
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Labels {
-    a: Vec<i64>,
-    b: Vec<i64>,
-    c: Option<Vec<i64>>,
-    d: Vec<i64>,
+    a: LabelVec,
+    b: LabelVec,
+    c: Option<LabelVec>,
+    d: LabelVec,
 }
 
 impl Labels {
     /// Labels of A, B and D, with no separate C.
     pub fn new(a: &[i64], b: &[i64], d: &[i64]) -> Self {
         Self {
-            a: a.to_vec(),
-            b: b.to_vec(),
+            a: a.iter().copied().collect(),
+            b: b.iter().copied().collect(),
             c: None,
-            d: d.to_vec(),
+            d: d.iter().copied().collect(),
         }
     }
 
     /// The same labels with the labels of a separately described C.
     #[must_use]
     pub fn with_c(mut self, c: &[i64]) -> Self {
-        self.c = Some(c.to_vec());
+        self.c = Some(c.iter().copied().collect());
         self
     }
 
     /// Labels of A.
     pub fn a(&self) -> &[i64] {
-        &self.a
+        self.a.as_slice()
     }
 
     /// Labels of B.
     pub fn b(&self) -> &[i64] {
-        &self.b
+        self.b.as_slice()
     }
 
     /// Labels of a separate C, if any.
@@ -58,6 +60,6 @@ impl Labels {
 
     /// Labels of D.
     pub fn d(&self) -> &[i64] {
-        &self.d
+        self.d.as_slice()
     }
 }

@@ -32,7 +32,7 @@ Dependencies are those of `cargo tree` (normal and build edges):
 | `tcontract-exec` | Execution context: serial, a host's Rayon pool through a borrowed, owned or shared-`Arc` wrapper, width chosen from work, kernel-level entry, SPMD `broadcast`, and the workspace provider (`ArenaProvider`, `WorkspaceReq`, `TeamLease`: pool-owned, reusable scratch); `strided::run_with_exec` bridges strided-rs kernels (feature `strided`). | rayon, thiserror; strided-basic (optional) |
 | `strided-view`, `strided-basic` (external, strided-rs) | Checked borrowed strided views, scalar and conjugation contracts; copy, permutation and elementwise kernels. | none in tcontract |
 | `tcontract-kernel` | The kernel crate: packed formats, kernel-family descriptors, CPU masks and validation, the registry with deterministic built-in families, resolution with a frozen blocking policy (explicit inputs, no environment reads), the partition policy, caller-scoped `KernelCatalog`/`KernelHandle` for downstream kernels, packing, scatter and write-back, cache blocking (`blocking::{probe,model}`), and the microkernel families: Lukas Devos's scalar, AVX2, AVX-512 and NEON register-tile kernels (`kernels::{reference,x86,aarch64}`), the portable reference kernels and the native interleaved complex kernels. Ids: `{isa}.{dtype}.{scheme}.{MR}x{NR}`. No executor and no ambient state. | num-complex |
-| `tcontract` | Binary contraction with free, contracted and batch indices (`dot_general` and label semantics) over one validated `Problem` (`api`: `Labels` and `DotGeneral` front ends, one lowering, one `Error`, the object-safe `ContractionBackend<T>` / `PreparedContraction<T>` traits taking an `&Exec`), planned once into a `Plan<T>` (`plan`: role folding and orientation, offsets, family and strategy resolution, an immutable `PlanReport`) and executed by one of three strategies (`strategy`, `driver`): the packed driver (packing traversal, loop nest, write-back, static and dynamic partition), faer on a copy-free batched-GEMM fusion, and an elementwise pass. Threads and workspace come from a `tcontract_exec::Exec`. Thin permute / add wrappers, the labels-based unary update (`unary`: `Unary`, `add`, one operation for a permutation, a diagonal and a reduction, lowered to a rank-zero `B`), `contract_batched`; `check_raw` / `execute_raw` are the pointer-level entry of the C adapter; `execute_slices` runs a plan on plain slices without building views. | faer, num-complex, thiserror, `tcontract-kernel`, `tcontract-exec`, `strided-view`, `strided-basic` |
+| `tcontract` | Binary contraction with free, contracted and batch indices (`dot_general` and label semantics) over one validated `Problem` (`api`: `Labels` and `DotGeneral` front ends, one lowering, one `Error`, the object-safe `ContractionBackend<T>` / `PreparedContraction<T>` traits taking an `&Exec`), planned once into a `Plan<T>` (`plan`: role folding and orientation, offsets, family and strategy resolution, an immutable `PlanReport`) and executed by one of three strategies (`strategy`, `driver`): the packed driver (packing traversal, loop nest, write-back, static and dynamic partition), faer on a copy-free batched-GEMM fusion, and an elementwise pass. Threads and workspace come from a `tcontract_exec::Exec`. Thin permute / add wrappers, the labels-based unary update (`unary`: `Unary`, `add`, one operation for a permutation, a diagonal and a reduction, lowered to a rank-zero `B`), `contract_batched`; `check_raw` / `execute_raw` are the pointer-level entry of the C adapter; `execute_slices` runs a plan on plain slices without building views; `workspace_req` / `execute_raw_in` run a packed plan on a caller-owned bounded `Workspace`, and `ProblemRef` / `Plan::compile` build a plan from borrowed metadata. | faer, num-complex, num-traits, thiserror, tinyvec, `tcontract-kernel`, `tcontract-exec`, `strided-view`, `strided-basic` |
 | `tcontract-capi` | `libtcontract_capi` (`cdylib`, `staticlib`, `rlib`): the TAPP C ABI (tensor infos, label-based products lowered once into a `tcontract::Problem`, run through `Plan<T>::execute_raw`, batched products as sequential items), DLPack types and operand borrowing, the one status table (behind `TAPP_check_success` / `TAPP_explain_error`), the thread-local last-error message, the `TAPP_executor` (including the Rayon extension) and ABI version queries. Contains no algorithm and no second validator. Modules: `abi`, `handle`, `tensor_info`, `product`, `execute`, `executor`, `status`, `dlpack`, `tensor`. | `tcontract`, `tcontract-exec`, num-complex, rayon, strided-view |
 | `tcontract-testkit` | Test support: an independent label oracle, seeded fixtures, a naive second backend (naive loop nest over the problem's roles) proving the trait seam, and the downstream-kernel fixture `custom_kernels`. Not a production fallback; never published or selected by default. | `tcontract`, `tcontract-kernel`, `tcontract-exec`, strided-view, rand |
 | `tcontract-bench` (`benchmarks/`) | The benchmark harness: `tcbench` over the contraction corpus, Rust and C ABI rows at 1 and 4 threads. Not part of the library. | `tcontract-capi`, `tcontract`, `tcontract-kernel`, `tcontract-exec`, strided-rs |
@@ -134,12 +134,26 @@ TAPP_error tcontract_tapp_executor_borrow_pool(TAPP_executor *out, tcontract_poo
 pub enum Exec<'a> {
     Serial,                                        // no storage owner
     SerialWithWorkspace(&'a dyn WorkspaceProvider), // caller-owned serial scratch
-    Rayon { pool: &'a Pool<'a>, budget: NonZeroUsize }, // pool borrowed from the host
+    Rayon { pool: &'a Pool<'a>, budget: NonZeroUsize, policy: BatchPolicy }, // host pool
     // Host(&'a dyn BroadcastExecutor): host scheduler with guaranteed width, Phase 2
 }
 ```
 
 Implemented in Phase 1a as `crates/tcontract-exec` (`install`, `for_each_partition`, `broadcast`, `width_for`); see the [decision log](decision-log.md#execution).
+
+**Batch lane policy.** A pooled `Exec` also carries a `tcontract_exec::batch::BatchPolicy`
+(`Exec::batch_policy`, `Exec::with_batch_policy`; `with_budget` preserves it).
+`Exec::batch_decision(&BatchQuery)` is the one decision function every
+operation that owns batch lanes calls: `Auto` applies the `WorkModel`,
+`Sequential` / `Outer` / `Inner` / `Split` force a route and are clamped to the
+items and the budget, and `WholeBatchVendor` needs a route that has a vendor
+batched call, otherwise it is refused with `StrategyUnavailable` before any
+output write. The packed driver presents a balanced-lanes query
+(`Auto` reproduces its two-stage narrowing), the faer batched GEMM an
+item-serial-outer query (reproducing its inner/item-width rule), and
+`contract_batched` maps its default `Auto` to `Outer`/`Inner` by item count.
+The defaults reproduce the pre-policy tcontract decisions; the shared, swept
+defaults are a later step.
 
 **Three widths, kept distinct.**
 
@@ -213,6 +227,11 @@ choice that cannot be honoured is an error from the constructor — an unknown
 id, a CPU without the required instructions, a blocking override that is not
 positive or exclusive. `list_kernels` returns the registry for diagnostics.
 
+A plan can be built from owned metadata (`Plan::new`/`Plan::from_problem`) or
+from a borrowed `ProblemRef` (`Problem::from_ref` and `Plan::compile`), which
+keeps the construction inputs in the caller's storage and has the plan own only
+the compiled metadata.
+
 The packed driver is told where its scratch lives: a host that owns threads
 passes a `tcontract_exec::Exec` that lends a workspace (per-thread A block and tile,
 a page-aligned shared B panel, scatter vectors and barriers). A pool owns one for
@@ -221,6 +240,13 @@ every operation on it; a serial caller that wants reuse passes an
 owner get per-call buffers. Nothing is process-global, the owner reports its
 retained and leased bytes and can `trim` the idle half, and a lease returns to
 the owner that issued it.
+
+On the allocation-free path a caller keeps a bounded
+`tcontract_exec::Workspace` (`workspace_req`/`have`/`reserve`), asks the plan for
+its conservative bound with `Plan::workspace_req(exec, output)`, and runs
+`Plan::execute_raw_in`. The bound is checked against the workspace before any
+write and a shortage is `Error::Workspace { needed, have }`; a `Workspace` sized
+to the bound and used within it grows for none of the buffers.
 
 ### Opt-in dynamic output assignment (`DynamicTiles`)
 
@@ -314,6 +340,8 @@ speeds anything up.
 ## Contraction
 
 A contraction is one lowered, role-grouped `Problem`; `Labels` and `DotGeneral` are front ends over one lowering. Repeated labels on one operand select a diagonal (strides add), a label on only one input is a reduction (a K axis with the other input's stride zero), and the output must be injective. The `Problem` keeps the original layouts plus normalized M/N/K/H role axes with signed A/B/C/D strides. Planning is `O(M + N + K)` and happens once; execution uses offset tables and no labels.
+
+Since 0.3 the axis metadata (`LayoutSpec`, `Labels`, `Roles`, `DotShape`, `DotGeneral`) is stored in `tinyvec` inline vectors, so lowering and `Problem::clone` allocate nothing at the usual ranks and an arbitrary rank still spills. The public fields of `DotShape` are therefore `TinyVec`, not `Vec`: read them as a slice (`.as_slice()`) and convert with `.to_vec()` where a `Vec` is still wanted. `ProblemRef` / `Plan::compile` build a plan from borrowed metadata in the same style.
 
 | Strategy | Source | Idea |
 | --- | --- | --- |

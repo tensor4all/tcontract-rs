@@ -1,6 +1,6 @@
 [package]
 name = "tcontract"
-version = "0.2.4"
+version = "0.3.0"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
@@ -11,9 +11,11 @@ description = "Binary tensor contraction for the tcontract stack: one Problem, a
 [dependencies]
 faer = { workspace = true }
 num-complex = { workspace = true }
+num-traits = { workspace = true }
 strided-basic = { workspace = true }
 strided-view = { workspace = true }
 thiserror = { workspace = true }
+tinyvec = { workspace = true }
 tcontract-exec = { workspace = true, features = ["strided"] }
 tcontract-kernel = { workspace = true, features = ["std"] }
 
@@ -30,3 +32,7 @@ tcontract-testkit = { workspace = true }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "overhead_smoke"
+harness = false

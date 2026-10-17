@@ -76,6 +76,12 @@ jobs:
       - run: cargo test --profile ci --workspace --no-fail-fast
       # tcontract-exec alone, without the `strided` adapter the workspace unifies on.
       - run: cargo test --profile ci -p tcontract-exec --no-fail-fast
+      # The allocation-free overhead smoke gates: ratio guard, same-run measurement,
+      # OVERHEAD_GATE turns a failed ratio into a non-zero exit. One OS is enough; the
+      # subject is the per-call overhead, not the platform.
+      - name: Overhead smoke gates (ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: OVERHEAD_GATE=1 cargo bench --profile release -p tcontract --bench overhead_smoke
 
   # The packed driver's micro-kernels are written for an optimized build, so the suites
   # run once more under `release-test` (see `Cargo.toml` for the profile and what it

@@ -38,13 +38,16 @@ use core::mem::MaybeUninit;
 
 use strided_basic::{
     axpy, fma, map_into, map_update_into, mul_into_uninit, zip_map2_into, zip_map3_into,
-    zip_update2_into, zip_update3_into, ElementOp, Identity, StridedError,
+    zip_update2_into, zip_update3_into, ElementOp, Identity, RawStridedMut, RawStridedRef,
+    StridedError, UpdatePlan,
 };
 use strided_view::{StridedView, StridedViewMut};
 use tcontract_exec::strided::run_with_exec;
 use tcontract_exec::Exec;
 use tcontract_kernel::Element;
+use tinyvec::TinyVec;
 
+use crate::api::problem::COMBINED_RANK;
 use crate::api::scalar::sealed::Sealed;
 use crate::api::{Error, OperandId, Problem, Result, RoleAxis, Scalar};
 
@@ -193,20 +196,31 @@ unsafe fn write_view_uninit<'a, T>(
 
 /// The axes of a pass: extents and the `[A, B, C, D]` element strides of each
 /// axis, extent-1 axes dropped.
+///
+/// Both vectors store inline up to the combined role count (`2 * INLINE_RANK`,
+/// the most distinct labels two rank-[`INLINE_RANK`] operands can carry) and
+/// spill above it, so a plan build at rank `<= INLINE_RANK` allocates no axis
+/// metadata.
 #[derive(Clone, Debug)]
 pub struct ElementPlan {
-    dims: Vec<usize>,
+    dims: TinyVec<[usize; COMBINED_RANK]>,
     /// The `A`, `B`, `C` and `D` strides, one `dims.len()` run each.
-    strides: Vec<isize>,
+    strides: TinyVec<[isize; 4 * COMBINED_RANK]>,
     total: usize,
+    /// The compiled plain `D = beta * op_C(C)` traversal (destination `D`, source
+    /// `C`), when the destination layout allowed it. The in-place self-update
+    /// `D = beta * D` cannot use it, because the typed plan forbids an aliased
+    /// source and destination; that arm keeps its per-call `map_update_into`.
+    beta_update: Option<UpdatePlan>,
 }
 
 impl ElementPlan {
     fn from_axes(axes: impl Iterator<Item = (usize, [isize; 4])> + Clone) -> Self {
         let axes = axes.filter(|a| a.0 != 1);
         let n = axes.clone().count();
-        let mut dims = Vec::with_capacity(n);
-        let mut strides = vec![0isize; 4 * n];
+        let mut dims: TinyVec<[usize; COMBINED_RANK]> = TinyVec::new();
+        let mut strides: TinyVec<[isize; 4 * COMBINED_RANK]> = TinyVec::new();
+        strides.resize(4 * n, 0);
         for (i, (e, s)) in axes.enumerate() {
             dims.push(e);
             for (j, &x) in s.iter().enumerate() {
@@ -217,6 +231,7 @@ impl ElementPlan {
             total: dims.iter().product(),
             dims,
             strides,
+            beta_update: None,
         }
     }
 
@@ -257,10 +272,17 @@ impl ElementPlan {
     }
 
     /// The pass over the output's elements (`M`, `N` and batch axes), without
-    /// inputs.
+    /// inputs. Compiles the plain `D = beta * op_C(C)` replay once, here, so an
+    /// output-only call does not re-plan its traversal.
     pub(crate) fn output(p: &Problem) -> Self {
         let r = p.roles();
-        Self::from_roles(r.m().iter().chain(r.n()).chain(r.h()), false)
+        let plan = Self::from_roles(r.m().iter().chain(r.n()).chain(r.h()), false);
+        let st = plan.strides();
+        let beta_update = UpdatePlan::compile(&plan.dims, st[3], st[2]).ok();
+        Self {
+            beta_update,
+            ..plan
+        }
     }
 
     /// Run the update.
@@ -461,11 +483,37 @@ impl<T: Scalar> Job<'_, T> {
         let beta = self.beta;
         self.with(exec, |dims, st| unsafe {
             match self.mode {
+                // The in-place self-update aliases source and destination, which
+                // the typed plan forbids; keep the per-call strided update.
                 Mode::InPlace => {
                     let mut dv = write_view(self.d.get(), dims, st[3]);
                     map_update_into::<T, OC>(&mut dv, move |z| beta * z)
                 }
                 Mode::Separate(p) => {
+                    // The plain pass replays the traversal compiled at plan time.
+                    if OC::IS_IDENTITY {
+                        if let Some(update) = &self.plan.beta_update {
+                            let (dlo, dhi) = offset_span(dims, st[3]);
+                            let dest_data = core::slice::from_raw_parts_mut(
+                                self.d.get().cast::<MaybeUninit<T>>().offset(dlo),
+                                (dhi - dlo) as usize + 1,
+                            );
+                            // SAFETY: the layout is validated, injective and
+                            // exclusively owned; a fresh destination is never read.
+                            let mut dest = RawStridedMut::new(dest_data, dims, st[3], -dlo)
+                                .expect("validated destination layout");
+                            let (slo, shi) = offset_span(dims, st[2]);
+                            let src_data = core::slice::from_raw_parts(
+                                p.get().offset(slo),
+                                (shi - slo) as usize + 1,
+                            );
+                            // SAFETY: the separate C is disjoint from D and bounds
+                            // validated; the layout matches the compiled plan.
+                            let src = RawStridedRef::new(src_data, dims, st[2], -slo)
+                                .expect("validated source layout");
+                            return update.execute_uninit(&mut dest, &src, beta, |x| x);
+                        }
+                    }
                     let cv = read_view::<T, OC>(p.get(), dims, st[2]);
                     map_into(
                         &mut write_view_uninit(self.d.get(), dims, st[3]),

@@ -1,0 +1,1086 @@
+//! Batch lane policy: the shared vocabulary and the one decision function.
+//!
+//! Three libraries decide how a batch of independent problems is split over a
+//! thread budget (tcontract's packed driver and faer strategy, cpueinsum's
+//! grouped GEMM, tlinalg's lane plan). This module gives them one vocabulary
+//! and one pure function, [`batch_decision`], so a caller can force a route and
+//! two crates cannot drift on the same decision. The types are plain data with
+//! no `rayon` dependency; they live apart from [`Exec`](crate::Exec) so moving
+//! them later is a re-export, not a redesign.
+//!
+//! # Strategies
+//!
+//! [`BatchStrategy::Auto`] is the only heuristic. Every other variant forces a
+//! route and never falls back: the route either honors it (clamped to the
+//! items and the budget) or the library reports
+//! [`ExecError::StrategyUnavailable`].
+//! [`BatchStrategy::WholeBatchVendor`] is the one forced route that may be
+//! unavailable, and it is refused from the query's vendor capability alone,
+//! before any output write.
+//!
+//! Forced strategies are evaluated against the **original host budget**. Only
+//! `Auto` narrows, because the packed driver narrows its `Exec` twice (see
+//! below).
+//!
+//! # What `Auto` computes
+//!
+//! `Auto` has two forms, chosen by the query. This is how one formula serves
+//! both the shared work model and the packed driver's legacy rule:
+//!
+//! * Without `balanced_lanes`, the issue's generic formula: estimate
+//!   `item_ns` and `total_ns`, cap the lanes at `total_ns /
+//!   min_work_per_lane_ns`, and fan out only when `lanes >= 2`, `items >=
+//!   min_items` and `items >= lanes * min_items_per_lane`. Each lane runs
+//!   items serially; with one lane, `item_threads` is the width of one item, so
+//!   a route that permits it (faer) can parallelize inside the item.
+//! * With `balanced_lanes`, the packed two-stage rule below, which the default
+//!   [`WorkModel`] reproduces to the lane.
+//!
+//! # The legacy rules and how `Auto` expresses them
+//!
+//! This step lands the vocabulary with defaults that reproduce today's
+//! tcontract packed decision; the sweep that fits one shared default to all
+//! three libraries is a later step. The three legacy rules and their mapping:
+//!
+//! | Legacy rule | Source | Encoding here |
+//! |---|---|---|
+//! | packed balanced lanes | `crates/tcontract/src/driver/batch.rs:38`, `plan/mod.rs:641`, `driver/route.rs:49` | `Auto` + `balanced_lanes` + the default [`WorkModel`] (its `width` is the existing [`WidthPolicy`], its item cost is `NS_PER_FLOP`) |
+//! | faer item-width-1 | `crates/tcontract/src/strategy/faer.rs:243` | `Auto` + `item_parallel`; a decision with `item_threads > 1` is the inner route, `lanes > 1` with item threads one is the outer route |
+//! | `contract_batched` item count | `crates/tcontract/src/batch.rs:140` | forced strategies, not `Auto`: [`BatchStrategy::Outer`] when the items fill the budget; below that one lane, the caller running each item on the whole budget (`Sequential`/`Inner`). It has no work threshold. |
+//!
+//! The packed rule is two-stage. `plan/mod.rs:641` first narrows the `Exec` to
+//! `width_for(total_ns)` over the whole batch, and `driver/batch.rs:38`
+//! recomputes the width against that narrowed budget and only then applies its
+//! *tiny* (one item already below the serial threshold) and *balanced* (every
+//! lane non-empty, the split near-even, the batch alone fills the budget)
+//! tests. `Auto` reproduces exactly that: it narrows `budget` with
+//! `model.width`, then applies the tiny/balanced tests when the query says
+//! `balanced_lanes`, and reports the narrowed width as `item_threads` when it
+//! keeps one lane. The test `auto_matches_legacy_packed_table` pins this on a
+//! table.
+//!
+//! # Examples
+//!
+//! ```
+//! use std::num::NonZeroUsize;
+//! use tcontract_exec::batch::{batch_decision, BatchPolicy, BatchQuery, BatchStrategy};
+//! use tcontract_exec::ExecError;
+//!
+//! let budget = NonZeroUsize::new(8).unwrap();
+//! let query = BatchQuery::new(16, 64.0);
+//!
+//! // A forced route is clamped, never a fallback.
+//! let outer = BatchPolicy::new(BatchStrategy::Outer);
+//! let d = batch_decision(&outer, budget, &query).unwrap();
+//! assert_eq!((d.lanes, d.item_threads, d.vendor_batch), (8, 1, false));
+//!
+//! // The vendor route needs the caller to say it exists.
+//! let vendor = BatchPolicy::new(BatchStrategy::WholeBatchVendor);
+//! assert!(matches!(
+//!     batch_decision(&vendor, budget, &query),
+//!     Err(ExecError::StrategyUnavailable { .. })
+//! ));
+//! ```
+
+use core::num::NonZeroUsize;
+
+use crate::{ExecError, WidthPolicy};
+
+/// The default policy [`BatchStrategy::Auto`] applies when no explicit policy is
+/// set on an [`Exec`](crate::Exec).
+///
+/// It is the literal form of [`BatchPolicy::default`], so a `Serial` context can
+/// hand out a `'static` policy without carrying one. A unit test pins the two
+/// together.
+pub(crate) const DEFAULT_BATCH_POLICY: BatchPolicy = BatchPolicy {
+    strategy: BatchStrategy::Auto,
+    model: WorkModel {
+        // Reproduce `driver/batch.rs`: `item_ns = 2 * m * n * k * NS_PER_FLOP`.
+        item_overhead_ns: 0.0,
+        muladds_per_ns: 10.0,
+        min_work_per_lane_ns: 0.0,
+        min_items: 2,
+        min_items_per_lane: 1,
+        width: WidthPolicy {
+            serial_below_ns: 50_000.0,
+            entry_base_ns: 5_000.0,
+            entry_per_thread_ns: 5_000.0,
+        },
+    },
+};
+
+/// How the items of a batch are split over a thread budget.
+///
+/// # Examples
+///
+/// ```
+/// use tcontract_exec::batch::BatchStrategy;
+/// assert_eq!(BatchStrategy::default(), BatchStrategy::Auto);
+/// ```
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BatchStrategy {
+    /// Choose from the [`WorkModel`] and the query's route capabilities.
+    #[default]
+    Auto,
+    /// One lane, one item thread: no parallelism at all.
+    Sequential,
+    /// `lanes = min(budget, items)`, each item serial.
+    Outer,
+    /// One lane; the item kernel gets the whole budget.
+    Inner,
+    /// Exactly `lanes` lanes (clamped to the items and the budget), the rest
+    /// of the budget split evenly as item threads.
+    Split {
+        /// Requested lane count.
+        lanes: NonZeroUsize,
+    },
+    /// One vendor batched call for the whole batch; only where the query says
+    /// a vendor batch route exists.
+    WholeBatchVendor,
+}
+
+/// The cost and fan-out model [`BatchStrategy::Auto`] applies.
+///
+/// The defaults are the values tcontract used before this vocabulary existed,
+/// not a tuned result: they reproduce the packed decision together with the
+/// existing [`WidthPolicy`]. The shared, swept defaults are a later step.
+///
+/// The three item-cost fields follow tenferro's restored
+/// `CpuBatchThresholds`: one item costs roughly `item_overhead_ns` plus one
+/// nanosecond per `muladds_per_ns` multiply-adds, a lane needs
+/// `min_work_per_lane_ns` of estimated work, and a fan-out needs `min_items`
+/// items, at least `min_items_per_lane` per lane.
+///
+/// # Examples
+///
+/// ```
+/// use tcontract_exec::batch::WorkModel;
+///
+/// let model = WorkModel::default().with_min_items(4).with_muladds_per_ns(32.0);
+/// assert_eq!(model.min_items, 4);
+/// assert_eq!(model.muladds_per_ns, 32.0);
+/// ```
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorkModel {
+    /// Estimated fixed cost of one item, in nanoseconds.
+    ///
+    /// The default is zero so that [`Default`] reproduces the packed
+    /// `NS_PER_FLOP` estimate exactly.
+    pub item_overhead_ns: f64,
+    /// Estimated multiply-adds per nanosecond on one lane.
+    ///
+    /// `1.0 / NS_PER_FLOP / 2.0 == 10.0` reproduces
+    /// `2 * macs * NS_PER_FLOP`: the packed driver counts two flops per
+    /// multiply-add. A value `<= 0` is treated as one multiply-add per
+    /// nanosecond.
+    pub muladds_per_ns: f64,
+    /// Least estimated work a lane must receive, in nanoseconds; `0` disables
+    /// the work gate (the packed default).
+    pub min_work_per_lane_ns: f64,
+    /// Fewest items for which `Auto` fans out at all.
+    pub min_items: usize,
+    /// Fewest items each lane must receive.
+    pub min_items_per_lane: usize,
+    /// Team-width cost model, used to narrow the budget over the whole batch.
+    pub width: WidthPolicy,
+}
+
+impl Default for WorkModel {
+    fn default() -> Self {
+        Self {
+            // Reproduce `driver/batch.rs`: `item_ns = 2 * m * n * k * NS_PER_FLOP`.
+            item_overhead_ns: 0.0,
+            muladds_per_ns: 10.0,
+            min_work_per_lane_ns: 0.0,
+            min_items: 2,
+            min_items_per_lane: 1,
+            width: WidthPolicy::default(),
+        }
+    }
+}
+
+impl WorkModel {
+    /// Return this model with a different per-item overhead.
+    #[must_use]
+    pub fn with_item_overhead_ns(mut self, nanoseconds: f64) -> Self {
+        self.item_overhead_ns = nanoseconds;
+        self
+    }
+
+    /// Return this model with a different lane throughput.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract_exec::batch::WorkModel;
+    /// assert_eq!(WorkModel::default().with_muladds_per_ns(16.0).muladds_per_ns, 16.0);
+    /// ```
+    #[must_use]
+    pub fn with_muladds_per_ns(mut self, muladds_per_ns: f64) -> Self {
+        self.muladds_per_ns = muladds_per_ns;
+        self
+    }
+
+    /// Return this model with a different minimum work per lane.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract_exec::batch::WorkModel;
+    /// assert_eq!(WorkModel::default().with_min_work_per_lane_ns(8_000.0).min_work_per_lane_ns, 8_000.0);
+    /// ```
+    #[must_use]
+    pub fn with_min_work_per_lane_ns(mut self, nanoseconds: f64) -> Self {
+        self.min_work_per_lane_ns = nanoseconds;
+        self
+    }
+
+    /// Return this model with a different minimum fan-out item count.
+    #[must_use]
+    pub fn with_min_items(mut self, items: usize) -> Self {
+        self.min_items = items;
+        self
+    }
+
+    /// Return this model with a different minimum item count per lane.
+    #[must_use]
+    pub fn with_min_items_per_lane(mut self, items: usize) -> Self {
+        self.min_items_per_lane = items;
+        self
+    }
+
+    /// Return this model with a different team-width cost model.
+    #[must_use]
+    pub fn with_width(mut self, width: WidthPolicy) -> Self {
+        self.width = width;
+        self
+    }
+}
+
+/// A strategy and the model its `Auto` arm applies.
+///
+/// # Examples
+///
+/// ```
+/// use tcontract_exec::batch::{BatchPolicy, BatchStrategy};
+/// assert_eq!(BatchPolicy::default().strategy, BatchStrategy::Auto);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BatchPolicy {
+    /// The route selector.
+    pub strategy: BatchStrategy,
+    /// The cost model `Auto` applies.
+    pub model: WorkModel,
+}
+
+impl BatchPolicy {
+    /// A policy with `strategy` and the default model.
+    #[must_use]
+    pub fn new(strategy: BatchStrategy) -> Self {
+        Self {
+            strategy,
+            model: WorkModel::default(),
+        }
+    }
+
+    /// Return this policy with a different strategy.
+    #[must_use]
+    pub fn with_strategy(mut self, strategy: BatchStrategy) -> Self {
+        self.strategy = strategy;
+        self
+    }
+
+    /// Return this policy with a different model.
+    #[must_use]
+    pub fn with_model(mut self, model: WorkModel) -> Self {
+        self.model = model;
+        self
+    }
+}
+
+/// What one batch of one route looks like to [`batch_decision`].
+///
+/// Work is described by an estimate, not by dimensions: each family supplies
+/// the multiply-adds of **one** item (GEMM `mnk`, LU `n^3/3`, solve `n^2 k`,
+/// QR `2mn^2/3`, with complex elements weighing four). The two booleans and
+/// `balanced_lanes` say what the route permits; they are how the legacy rules
+/// above become inputs instead of hidden constants.
+///
+/// # Examples
+///
+/// ```
+/// use tcontract_exec::batch::BatchQuery;
+///
+/// let query = BatchQuery::new(32, 4096.0)
+///     .with_item_parallel(false)
+///     .with_vendor_batch(true);
+/// assert_eq!(query.items, 32);
+/// assert!(!query.item_parallel);
+/// assert!(query.vendor_batch);
+/// ```
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BatchQuery {
+    /// Number of independent items; `0` means there is no work.
+    pub items: usize,
+    /// Multiply-adds of one item.
+    pub item_muladds: f64,
+    /// The route permits item-parallel width greater than one, i.e.
+    /// `item_threads > 1` is meaningful. `Auto` keeps item threads one when
+    /// this is false.
+    pub item_parallel: bool,
+    /// The route has a vendor call for the whole batch at this shape.
+    /// [`BatchStrategy::WholeBatchVendor`] is available only when this is true.
+    pub vendor_batch: bool,
+    /// `Auto` may only keep lanes when every lane is non-empty, the split is
+    /// near-even and the batch alone fills the narrowed budget: the packed
+    /// driver's balanced-lanes rule.
+    pub balanced_lanes: bool,
+    /// `Auto` prefers the inner route (one lane, the item kernel gets a team) and
+    /// fans out over items only when one item alone cannot use a team: the faer
+    /// batched-GEMM rule. The item width is then the width of one item, not the
+    /// whole budget.
+    pub outer_only_when_item_serial: bool,
+}
+
+impl BatchQuery {
+    /// A query for `items` items of `item_muladds` multiply-adds each, on a
+    /// route that permits item parallelism and has no vendor batch route.
+    #[must_use]
+    pub fn new(items: usize, item_muladds: f64) -> Self {
+        Self {
+            items,
+            item_muladds,
+            item_parallel: true,
+            vendor_batch: false,
+            balanced_lanes: false,
+            outer_only_when_item_serial: false,
+        }
+    }
+
+    /// Return this query with the item-parallel capability set.
+    #[must_use]
+    pub fn with_item_parallel(mut self, item_parallel: bool) -> Self {
+        self.item_parallel = item_parallel;
+        self
+    }
+
+    /// Return this query with the vendor batch capability set.
+    #[must_use]
+    pub fn with_vendor_batch(mut self, vendor_batch: bool) -> Self {
+        self.vendor_batch = vendor_batch;
+        self
+    }
+
+    /// Return this query with the balanced-lanes capability set.
+    #[must_use]
+    pub fn with_balanced_lanes(mut self, balanced_lanes: bool) -> Self {
+        self.balanced_lanes = balanced_lanes;
+        self
+    }
+
+    /// Return this query with the "outer only when one item cannot use a team"
+    /// capability set (the faer batched-GEMM rule).
+    #[must_use]
+    pub fn with_outer_only_when_item_serial(mut self, value: bool) -> Self {
+        self.outer_only_when_item_serial = value;
+        self
+    }
+}
+
+/// The route [`batch_decision`] selected.
+///
+/// # Examples
+///
+/// ```
+/// use tcontract_exec::batch::BatchDecision;
+/// let d = BatchDecision { lanes: 2, item_threads: 1, vendor_batch: false };
+/// assert_eq!(d.lanes * d.item_threads, 2);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatchDecision {
+    /// Outer lanes; each lane runs a contiguous share of the items.
+    pub lanes: usize,
+    /// Threads one item may use. `1` for a route that runs items serially inside
+    /// each lane; a [`BatchStrategy::Split`] asks for both lanes and item threads,
+    /// and a route that cannot run item threads inside lanes refuses it.
+    pub item_threads: usize,
+    /// Whether the whole batch goes to one vendor call.
+    pub vendor_batch: bool,
+}
+
+/// Decide the route for one batch on `budget` threads under `policy`.
+///
+/// Forced strategies are clamped (`lanes <= min(items, budget)`,
+/// `lanes * item_threads <= budget`) but never fall back.
+/// [`BatchStrategy::WholeBatchVendor`] returns
+/// [`ExecError::StrategyUnavailable`] when `query.vendor_batch` is false, before
+/// any output write. `Auto` narrows the budget first (see the module docs) and
+/// uses the original budget only for the forced strategies.
+///
+/// # Errors
+///
+/// [`ExecError::StrategyUnavailable`] for a forced `WholeBatchVendor` on a
+/// route without a vendor batch call.
+///
+/// # Examples
+///
+/// ```
+/// use std::num::NonZeroUsize;
+/// use tcontract_exec::batch::{batch_decision, BatchPolicy, BatchQuery, BatchStrategy};
+///
+/// let budget = NonZeroUsize::new(4).unwrap();
+/// let query = BatchQuery::new(2, 1024.0);
+/// let split = BatchPolicy::new(BatchStrategy::Split {
+///     lanes: NonZeroUsize::new(8).unwrap(),
+/// });
+/// let d = batch_decision(&split, budget, &query).unwrap();
+/// // Clamped to the items and the budget.
+/// assert_eq!((d.lanes, d.item_threads), (2, 2));
+/// ```
+pub fn batch_decision(
+    policy: &BatchPolicy,
+    budget: NonZeroUsize,
+    query: &BatchQuery,
+) -> Result<BatchDecision, ExecError> {
+    let budget = budget.get();
+    match policy.strategy {
+        BatchStrategy::Auto => Ok(auto_decision(&policy.model, budget, query)),
+        BatchStrategy::Sequential => Ok(BatchDecision {
+            lanes: 1,
+            item_threads: 1,
+            vendor_batch: false,
+        }),
+        BatchStrategy::Outer => Ok(BatchDecision {
+            lanes: clamp_lanes(budget, query.items),
+            item_threads: 1,
+            vendor_batch: false,
+        }),
+        BatchStrategy::Inner => Ok(BatchDecision {
+            lanes: 1,
+            item_threads: budget.max(1),
+            vendor_batch: false,
+        }),
+        BatchStrategy::Split { lanes } => {
+            let lanes = clamp_lanes(budget, query.items).min(lanes.get());
+            Ok(BatchDecision {
+                lanes,
+                item_threads: budget / lanes,
+                vendor_batch: false,
+            })
+        }
+        BatchStrategy::WholeBatchVendor => {
+            if query.vendor_batch {
+                Ok(BatchDecision {
+                    lanes: 1,
+                    item_threads: 1,
+                    vendor_batch: true,
+                })
+            } else {
+                Err(ExecError::StrategyUnavailable {
+                    strategy: BatchStrategy::WholeBatchVendor,
+                })
+            }
+        }
+    }
+}
+
+/// `lanes = min(budget, items)`, never below one.
+fn clamp_lanes(budget: usize, items: usize) -> usize {
+    items.clamp(1, budget.max(1))
+}
+
+/// The `Auto` arm.
+///
+/// Without `balanced_lanes` this is the issue's generic formula: estimate the
+/// work, cap the lanes by the work model, and fan out when the `min_items` and
+/// `min_items_per_lane` gates pass. With `balanced_lanes` it is the packed
+/// driver's two-stage narrowing, which is what the default [`WorkModel`]
+/// reproduces to the lane.
+fn auto_decision(model: &WorkModel, budget: usize, query: &BatchQuery) -> BatchDecision {
+    let items = query.items;
+    if items == 0 || budget < 2 {
+        return one_lane(1);
+    }
+    let item_ns = item_ns(model, query.item_muladds);
+    let total_ns = item_ns * items as f64;
+    if query.outer_only_when_item_serial {
+        faer_auto(model, budget, query, item_ns, total_ns)
+    } else if query.balanced_lanes {
+        packed_auto(model, budget, query, item_ns, total_ns)
+    } else {
+        generic_auto(model, budget, query, item_ns, total_ns)
+    }
+}
+
+/// The faer batched-GEMM rule: prefer the inner route, and fan out over items
+/// only when one item alone is too small for a team (`width_for(item_ns) == 1`)
+/// and there are at least two items with work enough to leave the caller.
+///
+/// This is the item-width-1 rule of `strategy/faer.rs`: a large item gets the
+/// whole team, a tiny one gets lanes so the team would not pay barriers for
+/// nothing.
+fn faer_auto(
+    model: &WorkModel,
+    budget: usize,
+    query: &BatchQuery,
+    item_ns: f64,
+    total_ns: f64,
+) -> BatchDecision {
+    let inner = width_for(item_ns, &model.width, budget);
+    if inner > 1 {
+        return one_lane(inner);
+    }
+    let total = width_for(total_ns, &model.width, budget);
+    if total > 1 && query.items > 1 {
+        let lanes = budget.min(query.items).min(total);
+        return BatchDecision {
+            lanes,
+            item_threads: 1,
+            vendor_batch: false,
+        };
+    }
+    one_lane(1)
+}
+
+/// The issue's generic `auto_lanes`: lanes from the work model alone.
+fn generic_auto(
+    model: &WorkModel,
+    budget: usize,
+    query: &BatchQuery,
+    item_ns: f64,
+    total_ns: f64,
+) -> BatchDecision {
+    let items = query.items;
+    let by_work = work_lane_cap(model, total_ns);
+    let lanes = budget.min(items).min(by_work);
+    if lanes >= 2
+        && items >= model.min_items
+        && items >= lanes.saturating_mul(model.min_items_per_lane)
+    {
+        return BatchDecision {
+            lanes,
+            item_threads: 1,
+            vendor_batch: false,
+        };
+    }
+    // One lane: the inner route is the width of one item, when the route
+    // permits item parallelism (the faer rule).
+    let threads = if query.item_parallel {
+        width_for(item_ns, &model.width, budget)
+    } else {
+        1
+    };
+    one_lane(threads)
+}
+
+/// The packed driver's two-stage narrowing: `plan/mod.rs:641` narrows the
+/// budget over the whole batch, `driver/batch.rs:38` then applies the
+/// tiny/balanced rule against the narrowed budget.
+fn packed_auto(
+    model: &WorkModel,
+    budget: usize,
+    query: &BatchQuery,
+    item_ns: f64,
+    total_ns: f64,
+) -> BatchDecision {
+    let items = query.items;
+    let narrowed = width_for(total_ns, &model.width, budget);
+    let one_lane_threads = if query.item_parallel { narrowed } else { 1 };
+    if narrowed < 2 {
+        return one_lane(one_lane_threads);
+    }
+    let mut lanes = items.min(narrowed).min(work_lane_cap(model, total_ns));
+    let gates_pass = lanes >= 2
+        && items >= model.min_items
+        && items >= lanes.saturating_mul(model.min_items_per_lane);
+    if !gates_pass {
+        return one_lane(one_lane_threads);
+    }
+    // Tiny items keep lanes (a team would pay barriers for nothing); otherwise
+    // the batch alone must fill the narrowed budget and split near-evenly.
+    let tiny = item_ns < model.width.serial_below_ns;
+    let balanced = items.saturating_mul(10)
+        >= 9usize
+            .saturating_mul(lanes)
+            .saturating_mul(items.div_ceil(lanes));
+    if !(tiny || (items >= narrowed && balanced)) {
+        lanes = 1;
+    }
+    BatchDecision {
+        lanes,
+        item_threads: if lanes > 1 { 1 } else { one_lane_threads },
+        vendor_batch: false,
+    }
+}
+
+/// Most lanes the estimated total work can fill, given
+/// [`WorkModel::min_work_per_lane_ns`]. Zero disables the gate.
+fn work_lane_cap(model: &WorkModel, total_ns: f64) -> usize {
+    if model.min_work_per_lane_ns > 0.0 {
+        let raw = total_ns / model.min_work_per_lane_ns;
+        if raw.is_finite() && raw >= 1.0 {
+            raw.floor() as usize
+        } else {
+            1
+        }
+    } else {
+        usize::MAX
+    }
+}
+
+/// One lane carrying `threads` item threads.
+fn one_lane(threads: usize) -> BatchDecision {
+    BatchDecision {
+        lanes: 1,
+        item_threads: threads.max(1),
+        vendor_batch: false,
+    }
+}
+
+/// Estimated cost of one item in nanoseconds.
+fn item_ns(model: &WorkModel, item_muladds: f64) -> f64 {
+    let rate = if model.muladds_per_ns > 0.0 {
+        model.muladds_per_ns
+    } else {
+        1.0
+    };
+    model.item_overhead_ns + item_muladds / rate
+}
+
+/// Team width for `serial_ns` at `budget`, minimizing `WidthPolicy`.
+///
+/// The one body lives in [`crate::width`], which [`Exec::width_for`](crate::Exec::width_for)
+/// also calls; the pure module keeps no copy.
+fn width_for(serial_ns: f64, policy: &WidthPolicy, budget: usize) -> usize {
+    crate::width::width_for(serial_ns, policy, budget)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn budget(n: usize) -> NonZeroUsize {
+        NonZeroUsize::new(n).unwrap()
+    }
+
+    /// Independent copy of the legacy packed computation.
+    ///
+    /// `plan/mod.rs:641` narrows the `Exec` with `width_for(total_ns)`, then
+    /// `driver/batch.rs:38` recomputes the width against that narrowed budget
+    /// and applies the tiny/balanced rule. Returns `(lanes, item_threads)` where
+    /// `item_threads` is the narrowed team width the route uses with one lane.
+    fn legacy_packed(items: usize, item_muladds: f64, host_budget: usize) -> (usize, usize) {
+        let policy = WidthPolicy::default();
+        // `NS_PER_FLOP` applies to flops, and the packed driver counts two flops
+        // per multiply-add.
+        let item_ns = 2.0 * item_muladds * 0.05;
+        let total_ns = item_ns * items as f64;
+        let narrowed = legacy_width_for(total_ns, &policy, host_budget);
+        if items < 2 || narrowed < 2 {
+            return (1, narrowed);
+        }
+        let width = legacy_width_for(total_ns, &policy, narrowed);
+        if width < 2 {
+            return (1, narrowed);
+        }
+        let tiny = item_ns < policy.serial_below_ns;
+        let lanes = items.min(width);
+        let balanced = 10 * items >= 9 * lanes * items.div_ceil(lanes);
+        let lanes = if tiny || (items >= narrowed && balanced) {
+            lanes
+        } else {
+            1
+        };
+        (lanes, if lanes > 1 { 1 } else { narrowed })
+    }
+
+    /// Byte-for-byte copy of `Exec::width_for`'s arithmetic.
+    fn legacy_width_for(serial_ns: f64, policy: &WidthPolicy, budget: usize) -> usize {
+        if budget == 1 || serial_ns.is_nan() || serial_ns < policy.serial_below_ns {
+            return 1;
+        }
+        let cost = |k: usize| {
+            if k == 1 {
+                serial_ns
+            } else {
+                policy.entry_base_ns + policy.entry_per_thread_ns * k as f64 + serial_ns / k as f64
+            }
+        };
+        (1..=budget)
+            .min_by(|&a, &b| cost(a).total_cmp(&cost(b)))
+            .unwrap_or(1)
+    }
+
+    #[test]
+    fn auto_matches_legacy_packed_table() {
+        let policy = BatchPolicy::default();
+        let items = [0usize, 1, 2, 3, 7, 8, 9, 16, 64, 512];
+        let muladds = [
+            1.0,
+            64.0,
+            4_096.0,
+            32_768.0,
+            262_144.0,
+            1_000_000.0,
+            8_000_000.0,
+        ];
+        let budgets = [1usize, 2, 3, 4, 8, 16];
+        for &h in &items {
+            for &m in &muladds {
+                for &b in &budgets {
+                    let query = BatchQuery::new(h, m).with_balanced_lanes(true);
+                    let got = batch_decision(&policy, budget(b), &query).unwrap();
+                    let want = legacy_packed(h, m, b);
+                    assert_eq!(
+                        (got.lanes, got.item_threads, got.vendor_batch),
+                        (want.0, want.1, false),
+                        "items={h} item_muladds={m} budget={b}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generic_auto_matches_tenferro_auto_lanes_table() {
+        // tenferro's `CpuBatchThresholds` defaults: 50 ns per item, 16
+        // multiply-adds per ns, 8 us per lane. This is the table at
+        // tenferro-rs `dot_runtime/tests.rs:3025` (`auto_lane_count_needs_enough_work_per_lane`).
+        let model = WorkModel::default()
+            .with_item_overhead_ns(50.0)
+            .with_muladds_per_ns(16.0)
+            .with_min_work_per_lane_ns(8_000.0);
+        let policy = BatchPolicy::new(BatchStrategy::Auto).with_model(model);
+        let lanes = |item_muladds: f64, batch: usize, threads: usize| {
+            batch_decision(
+                &policy,
+                budget(threads),
+                &BatchQuery::new(batch, item_muladds),
+            )
+            .unwrap()
+            .lanes
+        };
+        // 4^3 = 64 multiply-adds: per-call overhead dominates, so many items
+        // fill a lane.
+        assert_eq!(lanes(64.0, 1024, 4), 4);
+        assert_eq!(lanes(64.0, 64, 4), 1);
+        // Larger items need fewer per lane (16^3 is 306 ns, so 27 per lane);
+        // lanes never exceed the threads.
+        assert_eq!(lanes(32_768.0, 8, 16), 2);
+        assert_eq!(lanes(4_096.0, 128, 8), 4);
+        // One lane of work is no fan-out.
+        assert_eq!(lanes(4_096.0, 32, 8), 1);
+        // Two items of tiny work still pass the item gate but not the work
+        // gate: zero minimum work lets the item thresholds decide alone.
+        let no_work_gate =
+            BatchPolicy::new(BatchStrategy::Auto).with_model(model.with_min_work_per_lane_ns(0.0));
+        assert_eq!(
+            batch_decision(&no_work_gate, budget(4), &BatchQuery::new(64, 64.0))
+                .unwrap()
+                .lanes,
+            4
+        );
+        assert_eq!(
+            batch_decision(&no_work_gate, budget(4), &BatchQuery::new(1, 64.0))
+                .unwrap()
+                .lanes,
+            1
+        );
+    }
+
+    #[test]
+    fn default_matches_the_static_policy() {
+        // `Exec::batch_policy` hands a `Serial` context the static policy, so the
+        // two must not drift.
+        assert_eq!(BatchPolicy::default(), DEFAULT_BATCH_POLICY);
+        assert_eq!(WorkModel::default(), DEFAULT_BATCH_POLICY.model);
+    }
+
+    /// Independent copy of the pre-#123 faer schedule.
+    ///
+    /// `strategy/faer.rs` computed `inner = width_for(item_ns)` and
+    /// `total = width_for(item_ns * count)` and picked outer lanes only when
+    /// `inner == 1 && total > 1 && count > 1`. Returns `(lanes, item_threads)`.
+    fn legacy_faer(count: usize, item_muladds: f64, budget: usize) -> (usize, usize) {
+        let policy = WidthPolicy::default();
+        let item_ns = item_muladds / 10.0;
+        let total_ns = item_ns * count as f64;
+        let inner = legacy_width_for(item_ns, &policy, budget);
+        let total = legacy_width_for(total_ns, &policy, budget);
+        if inner == 1 && total > 1 && count > 1 {
+            (total.min(count), 1)
+        } else {
+            (1, inner)
+        }
+    }
+
+    #[test]
+    fn auto_matches_legacy_faer_table() {
+        let policy = BatchPolicy::default();
+        let items = [1usize, 2, 3, 8, 16, 64, 512];
+        let muladds = [
+            1.0,
+            64.0,
+            4_096.0,
+            32_768.0,
+            262_144.0,
+            1_000_000.0,
+            8_000_000.0,
+        ];
+        let budgets = [1usize, 2, 3, 4, 8, 16];
+        for &count in &items {
+            for &m in &muladds {
+                for &b in &budgets {
+                    let query = BatchQuery::new(count, m).with_outer_only_when_item_serial(true);
+                    let got = batch_decision(&policy, budget(b), &query).unwrap();
+                    let want = legacy_faer(count, m, b);
+                    assert_eq!(
+                        (got.lanes, got.item_threads, got.vendor_batch),
+                        (want.0, want.1, false),
+                        "count={count} item_muladds={m} budget={b}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn faer_auto_keeps_one_item_on_the_team() {
+        // A large item: the inner route, with the width of one item.
+        let query = BatchQuery::new(4, 1_000_000.0).with_outer_only_when_item_serial(true);
+        let d = batch_decision(&BatchPolicy::default(), budget(8), &query).unwrap();
+        assert!(d.item_threads > 1, "{d:?}");
+        assert_eq!(d.lanes, 1);
+    }
+
+    #[test]
+    fn exec_carries_the_policy_and_budget_keeps_it() {
+        let tp = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let pool = crate::Pool::borrow(&tp);
+        let exec =
+            crate::Exec::rayon(&pool).with_batch_policy(BatchPolicy::new(BatchStrategy::Outer));
+        assert_eq!(exec.batch_policy().strategy, BatchStrategy::Outer);
+        let narrowed = exec.with_budget(2).unwrap();
+        assert_eq!(narrowed.budget(), 2);
+        assert_eq!(narrowed.batch_policy().strategy, BatchStrategy::Outer);
+        assert_eq!(
+            crate::Exec::serial().batch_policy().strategy,
+            BatchStrategy::Auto
+        );
+    }
+
+    #[test]
+    fn exec_batch_decision_refuses_the_vendor_route() {
+        let policy = BatchPolicy::new(BatchStrategy::WholeBatchVendor);
+        // A serial context preserves the policy: the refusal does not depend on
+        // whether execution has a pool.
+        assert_eq!(
+            crate::Exec::serial()
+                .with_batch_policy(policy)
+                .batch_policy()
+                .strategy,
+            BatchStrategy::WholeBatchVendor
+        );
+        assert_eq!(
+            crate::Exec::serial()
+                .with_batch_policy(policy)
+                .batch_decision(&BatchQuery::new(4, 1000.0)),
+            Err(ExecError::StrategyUnavailable {
+                strategy: BatchStrategy::WholeBatchVendor
+            })
+        );
+        let tp = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let pool = crate::Pool::borrow(&tp);
+        let exec = crate::Exec::rayon(&pool).with_batch_policy(policy);
+        assert_eq!(
+            exec.batch_decision(&BatchQuery::new(4, 1000.0)),
+            Err(ExecError::StrategyUnavailable {
+                strategy: BatchStrategy::WholeBatchVendor
+            })
+        );
+    }
+
+    #[test]
+    fn forced_strategies_are_clamped_not_fallen_back() {
+        let query = BatchQuery::new(3, 1_000.0);
+        // Sequential ignores the budget and the item count.
+        assert_eq!(
+            batch_decision(
+                &BatchPolicy::new(BatchStrategy::Sequential),
+                budget(8),
+                &query
+            )
+            .unwrap(),
+            BatchDecision {
+                lanes: 1,
+                item_threads: 1,
+                vendor_batch: false
+            }
+        );
+        // Outer uses min(items, budget), each item serial.
+        assert_eq!(
+            batch_decision(&BatchPolicy::new(BatchStrategy::Outer), budget(8), &query).unwrap(),
+            BatchDecision {
+                lanes: 3,
+                item_threads: 1,
+                vendor_batch: false
+            }
+        );
+        // Inner is one lane with the whole budget.
+        assert_eq!(
+            batch_decision(&BatchPolicy::new(BatchStrategy::Inner), budget(8), &query).unwrap(),
+            BatchDecision {
+                lanes: 1,
+                item_threads: 8,
+                vendor_batch: false
+            }
+        );
+        // Split is clamped to the items and the budget, then shares the rest.
+        assert_eq!(
+            batch_decision(
+                &BatchPolicy::new(BatchStrategy::Split { lanes: budget(8) }),
+                budget(8),
+                &query
+            )
+            .unwrap(),
+            BatchDecision {
+                lanes: 3,
+                item_threads: 2,
+                vendor_batch: false
+            }
+        );
+        // A split wider than the budget clamps to the budget.
+        let many = BatchQuery::new(64, 1_000.0);
+        assert_eq!(
+            batch_decision(
+                &BatchPolicy::new(BatchStrategy::Split { lanes: budget(64) }),
+                budget(4),
+                &many
+            )
+            .unwrap(),
+            BatchDecision {
+                lanes: 4,
+                item_threads: 1,
+                vendor_batch: false
+            }
+        );
+        // Empty items clamp to one lane, never zero.
+        let empty = BatchQuery::new(0, 1.0);
+        assert_eq!(
+            batch_decision(&BatchPolicy::new(BatchStrategy::Outer), budget(4), &empty).unwrap(),
+            BatchDecision {
+                lanes: 1,
+                item_threads: 1,
+                vendor_batch: false
+            }
+        );
+        assert_eq!(
+            batch_decision(
+                &BatchPolicy::new(BatchStrategy::Split { lanes: budget(2) }),
+                budget(4),
+                &empty
+            )
+            .unwrap(),
+            BatchDecision {
+                lanes: 1,
+                item_threads: 4,
+                vendor_batch: false
+            }
+        );
+    }
+
+    #[test]
+    fn forced_strategies_use_the_original_budget() {
+        // Auto narrows the whole batch to six lanes, but Outer is evaluated
+        // against the original host budget of eight.
+        let query = BatchQuery::new(9, 200_000.0).with_balanced_lanes(true);
+        let auto = batch_decision(&BatchPolicy::default(), budget(8), &query).unwrap();
+        assert_eq!((auto.lanes, auto.item_threads), (6, 1));
+        let outer =
+            batch_decision(&BatchPolicy::new(BatchStrategy::Outer), budget(8), &query).unwrap();
+        assert_eq!((outer.lanes, outer.item_threads), (8, 1));
+    }
+
+    #[test]
+    fn whole_batch_vendor_requires_the_route() {
+        let policy = BatchPolicy::new(BatchStrategy::WholeBatchVendor);
+        let without = BatchQuery::new(4, 1_000.0);
+        assert_eq!(
+            batch_decision(&policy, budget(4), &without),
+            Err(ExecError::StrategyUnavailable {
+                strategy: BatchStrategy::WholeBatchVendor
+            })
+        );
+        let with = without.with_vendor_batch(true);
+        assert_eq!(
+            batch_decision(&policy, budget(4), &with).unwrap(),
+            BatchDecision {
+                lanes: 1,
+                item_threads: 1,
+                vendor_batch: true
+            }
+        );
+    }
+
+    #[test]
+    fn item_parallel_capability_keeps_item_threads_one() {
+        // A moderate single item widens the narrow route to the team budget; a
+        // route that forbids item parallelism keeps one thread.
+        let query = BatchQuery::new(1, 1_000_000.0);
+        let allowed = batch_decision(&BatchPolicy::default(), budget(8), &query).unwrap();
+        assert!(allowed.item_threads > 1, "{allowed:?}");
+        let forbidden = query.with_item_parallel(false);
+        let d = batch_decision(&BatchPolicy::default(), budget(8), &forbidden).unwrap();
+        assert_eq!((d.lanes, d.item_threads), (1, 1));
+    }
+
+    #[test]
+    fn work_gate_reduces_lanes_and_disabling_it_does_not() {
+        let query = BatchQuery::new(8, 8_000_000.0).with_balanced_lanes(true);
+        let disabled = WorkModel::default();
+        let enabled = WorkModel::default().with_min_work_per_lane_ns(1_000_000.0);
+        let d0 = batch_decision(
+            &BatchPolicy::new(BatchStrategy::Auto).with_model(disabled),
+            budget(8),
+            &query,
+        )
+        .unwrap();
+        let d1 = batch_decision(
+            &BatchPolicy::new(BatchStrategy::Auto).with_model(enabled),
+            budget(8),
+            &query,
+        )
+        .unwrap();
+        assert!(d0.lanes > d1.lanes, "{d0:?} vs {d1:?}");
+    }
+
+    #[test]
+    fn balanced_lanes_can_hold_a_lane_back() {
+        // Nine items on eight lanes leave one lane with two: the packed rule
+        // keeps the team instead of cutting an unbalanced batch.
+        let query = BatchQuery::new(9, 1_000_000.0).with_item_parallel(true);
+        let packed = batch_decision(
+            &BatchPolicy::new(BatchStrategy::Auto).with_model(WorkModel::default()),
+            budget(8),
+            &query.with_balanced_lanes(true),
+        )
+        .unwrap();
+        let generic = batch_decision(
+            &BatchPolicy::new(BatchStrategy::Auto).with_model(WorkModel::default()),
+            budget(8),
+            &query.with_balanced_lanes(false),
+        )
+        .unwrap();
+        assert_eq!(packed.lanes, 1);
+        assert!(generic.lanes > 1, "{generic:?}");
+    }
+}

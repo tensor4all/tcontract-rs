@@ -48,7 +48,7 @@ pub(crate) mod test_support;
 use core::marker::PhantomData;
 
 use strided_view::{StridedView, StridedViewMut};
-use tcontract_exec::{Exec, WidthPolicy};
+use tcontract_exec::Exec;
 use tcontract_kernel::{Element, KernelCatalog, ResolvedGemm, SelectError};
 
 pub(crate) use analysis::PackedPlan;
@@ -60,7 +60,7 @@ pub use report::{Algorithm, PackedReport, PlanReport, Reason};
 
 use crate::api::{
     AccumulationSource, AliasError, CSpec, ConfigError, Diagnostics, LayoutError, OperandId,
-    PreparedContraction, Problem, Result, Scalar,
+    PreparedContraction, Problem, Result, Scalar, Unsupported,
 };
 use crate::driver;
 use crate::resolve;
@@ -78,6 +78,10 @@ struct Packed<T: Scalar> {
     rg: ResolvedGemm<<T as Scalar>::Re>,
 }
 
+#[allow(clippy::large_enum_variant)]
+// INVARIANT: `ElementPlan`'s axis metadata is
+// inline (tinyvec) so an all-batch plan allocates nothing; boxing it would add
+// one allocation to the very path #121 removes.
 #[derive(Debug)]
 enum Strategy<T: Scalar> {
     Packed(Box<Packed<T>>),
@@ -151,6 +155,38 @@ impl<T: Scalar> Plan<T> {
     /// As [`Plan::new`].
     pub fn from_problem(problem: Problem, config: &PlanConfig) -> Result<Self> {
         Self::build(problem, config, None)
+    }
+
+    /// Compile a plan from a borrowed [`ProblemRef`](crate::api::ProblemRef): the
+    /// construction inputs are borrowed, the plan owns the compiled metadata it
+    /// lowers them to (#121).
+    ///
+    /// # Errors
+    ///
+    /// As [`Plan::new`], plus the lowering errors of
+    /// [`Problem::from_ref`](crate::api::Problem::from_ref).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract::api::{CRef, ContractionRef, DType, LayoutRef, Op, ProblemRef};
+    /// use tcontract::{Plan, PlanConfig};
+    /// let a = LayoutRef { dims: &[2, 3], strides: &[1, 2], offset: 0 };
+    /// let b = LayoutRef { dims: &[3, 4], strides: &[1, 3], offset: 0 };
+    /// let d = LayoutRef { dims: &[2, 4], strides: &[1, 2], offset: 0 };
+    /// let pref = ProblemRef {
+    ///     dtype: DType::F64,
+    ///     a: (a, Op::Identity),
+    ///     b: (b, Op::Identity),
+    ///     c: CRef::Absent,
+    ///     d: (d, Op::Identity),
+    ///     contraction: ContractionRef::Labels { a: &[0, 2], b: &[2, 1], c: None, d: &[0, 1] },
+    /// };
+    /// let plan = Plan::<f64>::compile(&pref, &PlanConfig::default()).unwrap();
+    /// assert_eq!(plan.problem().roles().k().len(), 1);
+    /// ```
+    pub fn compile(problem: &crate::api::ProblemRef<'_>, config: &PlanConfig) -> Result<Self> {
+        Self::from_problem(crate::api::Problem::from_ref(problem)?, config)
     }
 
     /// [`Plan::new`] on the packed driver, choosing the kernel family with a
@@ -615,6 +651,104 @@ impl<T: Scalar> Plan<T> {
         #[cfg(feature = "phase-timing")]
         crate::phase::report_previous();
         self.check_raw(a, b, c, d)?;
+        // SAFETY: preflight passed; no caller workspace, so the context's own
+        // storage (or call-local scratch) serves the call.
+        unsafe { self.raw_dispatch(None, None, exec, alpha, a, b, beta, c, d) }
+    }
+
+    /// [`Plan::execute_raw`] with a caller-owned, bounded
+    /// [`Workspace`](tcontract_exec::Workspace): the plan checks
+    /// [`Plan::workspace_req`] against the workspace's bound before any write
+    /// and returns [`Error::Workspace`](crate::api::Error::Workspace) when it is
+    /// short, so a steady state within the bound allocates nothing.
+    ///
+    /// `output` is the storage guarantee of `D`, as in
+    /// [`OutputContract`](crate::OutputContract).
+    ///
+    /// # Errors
+    ///
+    /// As [`Plan::execute_raw`], plus
+    /// [`Error::Workspace`](crate::api::Error::Workspace) when `workspace` is
+    /// smaller than the plan's conservative requirement.
+    ///
+    /// # Safety
+    ///
+    /// As [`Plan::execute_raw`].
+    #[allow(clippy::too_many_arguments)] // INVARIANT: the contraction argument set.
+    pub unsafe fn execute_raw_in(
+        &self,
+        workspace: &mut tcontract_exec::Workspace,
+        exec: &Exec<'_>,
+        alpha: T,
+        a: *const T,
+        b: *const T,
+        beta: T,
+        c: *const T,
+        d: *mut T,
+        output: OutputContract,
+    ) -> Result<()> {
+        #[cfg(feature = "phase-timing")]
+        crate::phase::report_previous();
+        self.check_raw(a, b, c, d)?;
+        // Sizing and dispatch share one output-route decision: `workspace_req`
+        // resolves `output` exactly as `raw_dispatch` will, so a plan that sizes
+        // zero cannot dispatch its packed alternative.
+        let required = self.workspace_req(exec, output);
+        // A workspace not warmed for every worker of this executor would have a
+        // worker allocate its own slot mid-execute: refuse instead. The executor
+        // the driver uses is the narrowed one (`Auto`/`Sequential`).
+        let needed_slots = self.batch_context(exec)?.budget();
+        if !required.covered_by(workspace.req()) || workspace.slots() < needed_slots {
+            return Err(crate::api::Error::Workspace {
+                needed: required.bytes(),
+                have: workspace.have(),
+            });
+        }
+        // SAFETY: preflight passed and the bound was checked before any write;
+        // the workspace outlives the borrow taken here.
+        unsafe {
+            self.raw_dispatch(
+                Some(workspace.as_provider()),
+                Some(output),
+                exec,
+                alpha,
+                a,
+                b,
+                beta,
+                c,
+                d,
+            )
+        }
+    }
+
+    /// The fresh-route decision for a declared output contract: the
+    /// reference-free packed alternative is used only for a `Fresh` output that
+    /// was prepared.
+    fn fresh_route(&self, output: OutputContract) -> bool {
+        output == OutputContract::Fresh
+            && (!matches!(self.strategy, Strategy::Faer(_)) || self.fresh_packed.is_some())
+    }
+
+    /// The raw semantics shared by [`Plan::execute_raw`] and
+    /// [`Plan::execute_raw_in`]: the C read, the storage contract, then the one
+    /// dispatch. `check_raw` and any workspace-bound check already ran.
+    ///
+    /// # Safety
+    ///
+    /// As [`Plan::execute_raw`], with the preflight already done.
+    #[allow(clippy::too_many_arguments)] // INVARIANT: the contraction argument set.
+    unsafe fn raw_dispatch(
+        &self,
+        workspace: Option<&dyn tcontract_exec::WorkspaceProvider>,
+        output: Option<OutputContract>,
+        exec: &Exec<'_>,
+        alpha: T,
+        a: *const T,
+        b: *const T,
+        beta: T,
+        c: *const T,
+        d: *mut T,
+    ) -> Result<()> {
         let zero = <T as Element>::zero();
         let c_read = match self.problem.c_spec() {
             CSpec::Absent => CRead::None,
@@ -626,22 +760,59 @@ impl<T: Scalar> Plan<T> {
         let write_only = beta == zero
             || matches!(c_read, CRead::None)
             || matches!(c_read, CRead::Separate(cp) if !core::ptr::eq(cp, d));
-        let fresh = write_only
-            && (!matches!(self.strategy, Strategy::Faer(_)) || self.fresh_packed.is_some());
+        let fresh = match output {
+            // `execute_raw` has no declared contract: keep its write-only
+            // optimization (a fresh route is only safe when write-only).
+            None => write_only && self.fresh_route(OutputContract::Fresh),
+            // An initialized destination uses the initialized route, which needs
+            // no prepared fresh alternative and no workspace.
+            Some(OutputContract::Initialized) => false,
+            Some(OutputContract::Fresh) => {
+                if !write_only {
+                    // A fresh D would be read as the accumulation source.
+                    return Err(LayoutError::CMode.into());
+                }
+                if !self.fresh_route(OutputContract::Fresh) {
+                    return Err(Unsupported::Reason(
+                        "fresh output was not prepared; set PlanConfig::fresh_output when constructing the plan",
+                    )
+                    .into());
+                }
+                true
+            }
+        };
         #[cfg(feature = "phase-timing")]
         let whole = std::time::Instant::now();
-        // SAFETY: preflight passed; raw's write-only contract selects a
-        // preprepared fresh route unless execution needs the previous D.
-        let out = unsafe { self.run_storage(exec, alpha, a, b, beta, c_read, d, fresh) };
+        // SAFETY: the caller's contract and the preflight.
+        let out =
+            unsafe { self.run_storage_in(workspace, exec, alpha, a, b, beta, c_read, d, fresh) };
         #[cfg(feature = "phase-timing")]
         crate::phase::add_total(whole.elapsed().as_nanos() as u64);
         out
     }
 
-    /// The width the work estimate asks for at the executor's budget.
+    /// The width the work estimate asks for at the executor's budget, under the
+    /// context's own width model.
     fn width(&self, exec: &Exec<'_>) -> usize {
         let flops = 2.0 * self.problem.macs() as f64 * if T::IS_COMPLEX { 4.0 } else { 1.0 };
-        exec.width_for(flops * NS_PER_FLOP, &WidthPolicy::default())
+        exec.width_for(flops * NS_PER_FLOP, &exec.batch_policy().model.width)
+    }
+
+    /// The context the driver sees: `Auto` narrows the budget over the whole
+    /// batch first (the packed two-stage rule's stage one), a forced batch
+    /// strategy is left on the original host budget, as
+    /// [`tcontract_exec::Exec::batch_decision`] documents.
+    fn batch_context<'a>(&self, exec: &Exec<'a>) -> Result<Exec<'a>> {
+        match exec.batch_policy().strategy {
+            // `Auto` narrows the budget over the whole batch (the packed
+            // two-stage rule's stage one).
+            tcontract_exec::BatchStrategy::Auto => Ok(exec.with_budget(self.width(exec))?),
+            // A forced sequential route is one thread for the whole call,
+            // including the faer output pass and any packed team.
+            tcontract_exec::BatchStrategy::Sequential => Ok(exec.with_budget(1)?),
+            // Every other forced strategy is resolved on the original budget.
+            _ => Ok(*exec),
+        }
     }
 
     /// After preflight: output-empty returns; `alpha == 0` / empty `K` uses the
@@ -687,9 +858,43 @@ impl<T: Scalar> Plan<T> {
         d: *mut T,
         fresh: bool,
     ) -> Result<()> {
+        // SAFETY: forwarded.
+        unsafe { self.run_storage_in(None, exec, alpha, a, b, beta, c, d, fresh) }
+    }
+
+    /// [`Plan::run_storage`] with an explicit caller workspace. `None` keeps the
+    /// current behaviour (the context's own provider, or call-local scratch).
+    ///
+    /// # Safety
+    /// As `run_storage`.
+    #[allow(clippy::too_many_arguments)] // INVARIANT: the contraction argument set.
+    unsafe fn run_storage_in(
+        &self,
+        workspace: Option<&dyn tcontract_exec::WorkspaceProvider>,
+        exec: &Exec<'_>,
+        alpha: T,
+        a: *const T,
+        b: *const T,
+        beta: T,
+        c: CRead<T>,
+        d: *mut T,
+        fresh: bool,
+    ) -> Result<()> {
         let p = &self.problem;
         if p.out_empty() {
             return Ok(());
+        }
+        // Availability is resolved here, before the output-only pass below can
+        // write: tcontract has no vendor batched call, so a forced whole-batch
+        // vendor route is refused whatever this plan's strategy is.
+        if matches!(
+            exec.batch_policy().strategy,
+            tcontract_exec::BatchStrategy::WholeBatchVendor
+        ) {
+            return Err(tcontract_exec::ExecError::StrategyUnavailable {
+                strategy: tcontract_exec::BatchStrategy::WholeBatchVendor,
+            }
+            .into());
         }
         let zero = <T as Element>::zero();
         let (conj_a, conj_b) = (p.a().op().is_conj(), p.b().op().is_conj());
@@ -716,7 +921,7 @@ impl<T: Scalar> Plan<T> {
         }
         if fresh {
             if let Some(pk) = &self.fresh_packed {
-                let exec = exec.with_budget(self.width(exec))?;
+                let exec = self.batch_context(exec)?;
                 let cp = match c {
                     CRead::Separate(c) => c,
                     _ => d.cast_const(),
@@ -726,16 +931,7 @@ impl<T: Scalar> Plan<T> {
                 // pointers without first forming initialized output references.
                 return unsafe {
                     driver::execute_packed(
-                        &pk.plan,
-                        &pk.rg,
-                        &exec,
-                        exec.workspace(),
-                        alpha,
-                        a,
-                        b,
-                        beta,
-                        cp,
-                        d,
+                        &pk.plan, &pk.rg, &exec, workspace, alpha, a, b, beta, cp, d,
                     )
                     .map_err(Into::into)
                 };
@@ -747,32 +943,37 @@ impl<T: Scalar> Plan<T> {
             // accumulates the product. D itself (in place, or a separate C
             // that is the same mapping at D's origin) needs the pass only
             // when `beta` and the conjugations are not the identity;
-            // `beta == 0` reads no C and faer overwrites D.
+            // `beta == 0` reads no C and faer overwrites D. The batch policy is
+            // resolved first so a forced `Sequential` limits this pass too.
+            let exec = self.batch_context(exec)?;
             let accumulate = match c {
                 CRead::None => false,
                 _ if beta == zero => false,
                 CRead::Separate(cp) if !core::ptr::eq(cp, d) => {
                     // SAFETY: the caller's contract (C disjoint from D).
-                    unsafe { self.output.run(exec, expr, Inputs::None, c, d) }?;
+                    unsafe { self.output.run(&exec, expr, Inputs::None, c, d) }?;
                     true
                 }
                 _ => {
                     let identity = beta == <T as Element>::one() && !conj_c && !conj_d;
                     if !identity {
                         // SAFETY: the caller's contract; in-place update of D.
-                        unsafe { self.output.run(exec, expr, Inputs::None, CRead::InPlace, d) }?;
+                        unsafe {
+                            self.output
+                                .run(&exec, expr, Inputs::None, CRead::InPlace, d)
+                        }?;
                     }
                     true
                 }
             };
             // SAFETY: the caller's contract; the fusion was proven copy-free
             // over exactly this problem's layouts.
-            unsafe { f.run(exec, alpha, a, b, accumulate, d) };
+            unsafe { f.run(&exec, alpha, a, b, accumulate, d)? };
             return Ok(());
         }
         match &self.strategy {
             Strategy::Packed(pk) => {
-                let exec = exec.with_budget(self.width(exec))?;
+                let exec = self.batch_context(exec)?;
                 // The caller owns the workspace: a pool lends its arena, a
                 // caller that wants serial reuse lends its own provider, and a
                 // bare serial context runs with call-local scratch.
@@ -784,16 +985,7 @@ impl<T: Scalar> Plan<T> {
                 // plan when it was built.
                 unsafe {
                     driver::execute_packed(
-                        &pk.plan,
-                        &pk.rg,
-                        &exec,
-                        exec.workspace(),
-                        alpha,
-                        a,
-                        b,
-                        beta,
-                        cp,
-                        d,
+                        &pk.plan, &pk.rg, &exec, workspace, alpha, a, b, beta, cp, d,
                     )?
                 };
             }
