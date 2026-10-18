@@ -423,8 +423,13 @@ Audit hints:
 - faer parallelism is derived from `Exec`: `Par::Seq` for width one,
   `Par::rayon(k)` inside the borrowed pool's `install` otherwise. Never pick
   `Par` inside a helper.
-- One budget governs batch-level and inner parallelism: a batch that fans out
-  over items runs each item serially.
+- One budget governs batch-level and inner parallelism: `lanes * item_threads`
+  from the shared batch decision never exceeds it (`tcontract_exec::batch`). A
+  route that can nest runs each item with the `item_threads` it was granted
+  inside its lane (faer nests in the borrowed pool); a route whose kernel cannot
+  refuses that decision typed before any write (the packed driver's co-scheduled
+  teams, `contract_batched`). No route silently discards the item width — see
+  the route contract on `BatchDecision`.
 - Thresholds are measured per kernel and machine and live in one place per
   kernel family; they are policy values, not scattered constants.
 - BLAS/OpenMP provider threading stays controlled by provider variables

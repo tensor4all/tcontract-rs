@@ -98,3 +98,57 @@ fn one_large_gemm_enters_the_pool_once_and_width_one_never() {
     assert_eq!(one, serial);
     assert_eq!(pool.stats().entries, 0);
 }
+
+/// A forced `Split` is honoured on this route, not silently discarded: at a
+/// budget of four it resolves to two lanes of two item threads, every item runs
+/// on the width it was granted, and the result is the sequential result exactly.
+#[test]
+fn a_forced_split_gives_every_item_its_item_threads() {
+    use std::num::NonZeroUsize;
+    use tcontract_exec::{BatchPolicy, BatchQuery, BatchStrategy};
+
+    let dims = [8usize, 8, 8, 8];
+    let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
+    let tp = pool(4);
+    let pool = Pool::borrow(&tp);
+    let at = |strategy| {
+        Exec::rayon(&pool)
+            .with_budget(4)
+            .unwrap()
+            .with_batch_policy(BatchPolicy::new(strategy))
+    };
+
+    // The decision the route has to honour: two lanes of two item threads.
+    let split = at(BatchStrategy::Split {
+        lanes: NonZeroUsize::new(2).unwrap(),
+    });
+    let query = BatchQuery::new(8, 8.0 * 8.0 * 8.0)
+        .with_item_parallel(true)
+        .with_outer_only_when_item_serial(true);
+    let decision = split.batch_decision(&query).unwrap();
+    assert_eq!((decision.lanes, decision.item_threads), (2, 2));
+
+    let want = run(&plan, dims, &a, &b, &at(BatchStrategy::Sequential));
+    pool.reset_stats();
+    let got = run(&plan, dims, &a, &b, &split);
+    assert_eq!(got, want, "the split changed the result");
+    let stats = pool.stats();
+    assert_eq!(stats.entries, 1, "one pool entry for the whole batch");
+    // One `Par::Threads(2)` grant per item, taken from the `Exec` inside its lane
+    // (`PoolStats::inline_runs` counts the parallel requests a worker serves in
+    // place, one per item here): the item width was honoured, not replaced by
+    // `Par::Seq`.
+    assert_eq!(
+        stats.inline_runs, dims[3] as u64,
+        "every item ran on its two item threads inside its lane"
+    );
+
+    // `Outer` grants no item threads, so no item takes a `Par::Threads` grant.
+    pool.reset_stats();
+    assert_eq!(
+        run(&plan, dims, &a, &b, &at(BatchStrategy::Outer)),
+        want,
+        "Outer lanes changed the result"
+    );
+    assert_eq!(pool.stats().inline_runs, 0);
+}

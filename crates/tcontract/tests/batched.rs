@@ -193,3 +193,76 @@ fn fewer_items_than_the_width_run_inner_spmd_and_more_items_partition_the_batch(
         "items run serially on their lanes"
     );
 }
+
+/// A forced `Split` that asks for item threads inside the lanes is refused with
+/// a typed error before any write: this schedule runs one item per lane, so it
+/// cannot honour both axes and must not silently drop the item width (the route
+/// contract on `BatchDecision`, as the packed driver applies it).
+#[test]
+fn a_forced_split_asking_for_both_axes_is_refused_before_any_write() {
+    use std::num::NonZeroUsize;
+    use tcontract::Error;
+    use tcontract_exec::{BatchPolicy, BatchStrategy, ExecError};
+
+    let (m, n, k) = (8usize, 8usize, 8usize);
+    let plan = Plan::<f64>::new(&matmul_problem(m, n, k), &packed()).unwrap();
+    let a = data(m * k, 1, 0.5);
+    let b = data(k * n, 2, 0.25);
+    let tp = pool(4);
+    let pool = Pool::borrow(&tp);
+    let with = |strategy| {
+        Exec::rayon(&pool)
+            .with_budget(4)
+            .unwrap()
+            .with_batch_policy(BatchPolicy::new(strategy))
+    };
+    // Two items, two lanes, two item threads each: the packed schedule cannot
+    // nest, so the whole batch is refused.
+    let split = with(BatchStrategy::Split {
+        lanes: NonZeroUsize::new(2).unwrap(),
+    });
+    let mut outs = vec![vec![7.0f64; m * n]; 2];
+    {
+        let mut batch: Vec<BatchItem<'_, f64>> = outs
+            .iter_mut()
+            .map(|d| BatchItem {
+                plan: &plan,
+                alpha: 1.0,
+                a: StridedView::new(&a, &[m, k], &[1, m as isize], 0).unwrap(),
+                b: StridedView::new(&b, &[k, n], &[1, k as isize], 0).unwrap(),
+                beta: 0.0,
+                source: None,
+                d: StridedViewMut::new(d, &[m, n], &[1, m as isize], 0).unwrap(),
+            })
+            .collect();
+        let err = contract_batched(&mut batch, &split).unwrap_err();
+        assert!(
+            matches!(err, Error::Exec(ExecError::StrategyUnavailable { .. })),
+            "{err}"
+        );
+    }
+    assert!(
+        outs.iter().all(|d| d.iter().all(|&x| x == 7.0)),
+        "a refused split wrote to D"
+    );
+
+    // The same two items with `Outer` (no item threads) still run.
+    let outer = with(BatchStrategy::Outer);
+    let mut outs = vec![vec![0.0f64; m * n]; 2];
+    {
+        let mut batch: Vec<BatchItem<'_, f64>> = outs
+            .iter_mut()
+            .map(|d| BatchItem {
+                plan: &plan,
+                alpha: 1.0,
+                a: StridedView::new(&a, &[m, k], &[1, m as isize], 0).unwrap(),
+                b: StridedView::new(&b, &[k, n], &[1, k as isize], 0).unwrap(),
+                beta: 0.0,
+                source: None,
+                d: StridedViewMut::new(d, &[m, n], &[1, m as isize], 0).unwrap(),
+            })
+            .collect();
+        contract_batched(&mut batch, &outer).unwrap();
+    }
+    assert!(outs.iter().all(|d| d.iter().any(|&x| x != 0.0)));
+}
