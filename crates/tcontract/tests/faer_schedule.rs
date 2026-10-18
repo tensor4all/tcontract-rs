@@ -152,3 +152,55 @@ fn a_forced_split_gives_every_item_its_item_threads() {
     );
     assert_eq!(pool.stats().inline_runs, 0);
 }
+
+/// The same split on items large enough to leave faer's serial nano-GEMM path,
+/// so the item's `Par::rayon(2)` reaches the provider's parallel GEMM:
+/// `faer-0.24.4/src/linalg/matmul/mod.rs:16` sends `m * n * k <= 16^3` to
+/// `nano_gemm` and `:1405` hands the x86 gemm `par.degree()` only once
+/// `m * n * k >= 4096 * size_of::<T>()` (32768 f64 elements). One 128^3 item is
+/// 2^21 multiply-adds. Bounded completion, because a lane worker that cannot
+/// nest would hang at the provider's barrier instead of failing.
+#[test]
+fn a_split_on_large_items_nests_faer_parallelism_and_matches_sequential() {
+    use std::num::NonZeroUsize;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tcontract_exec::{BatchPolicy, BatchStrategy};
+
+    let dims = [128usize, 128, 128, 4];
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
+        let tp = pool(4);
+        let pool = Pool::borrow(&tp);
+        let at = |strategy| {
+            Exec::rayon(&pool)
+                .with_budget(4)
+                .unwrap()
+                .with_batch_policy(BatchPolicy::new(strategy))
+        };
+        let want = run(&plan, dims, &a, &b, &at(BatchStrategy::Sequential));
+        pool.reset_stats();
+        let got = run(
+            &plan,
+            dims,
+            &a,
+            &b,
+            &at(BatchStrategy::Split {
+                lanes: NonZeroUsize::new(2).unwrap(),
+            }),
+        );
+        let stats = pool.stats();
+        tx.send((got == want, stats.entries, stats.inline_runs))
+            .unwrap();
+    });
+    let (same, entries, inline_runs) = rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("a nested faer GEMM deadlocked");
+    assert!(same, "the split changed the result");
+    assert_eq!(entries, 1, "one pool entry for the whole batch");
+    assert_eq!(
+        inline_runs, dims[3] as u64,
+        "every large item ran on its two item threads inside its lane"
+    );
+}

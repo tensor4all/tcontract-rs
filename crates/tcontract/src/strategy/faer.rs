@@ -277,19 +277,15 @@ impl FaerPlan {
             });
         }
         if decision.lanes > 1 {
-            // The decision is the whole concurrency of the call (`BatchDecision`'s
-            // route contract): `lanes` outer lanes, and each item on the
-            // `item_threads` it was granted inside its lane. faer nests inside
-            // the borrowed pool, so the decision's `lanes * item_threads <=
-            // budget` keeps the whole call within the host's budget.
-            // INVARIANT: `batch_decision` clamps `lanes * item_threads` to the
-            // budget for every forced strategy (`Split` shares what is left), and
-            // `Auto` reports item threads only with one lane, so `item_exec`'s
-            // width is the item's own share and never the lane's.
+            // Each lane runs its items on the granted `item_threads`, taken from
+            // the context and never chosen here (`BatchDecision`'s route contract);
+            // faer nests in the borrowed pool.
+            // INVARIANT: `batch_decision` keeps `lanes * item_threads <= budget`
+            // (`Split` shares what is left, and `Auto` reports item threads only
+            // with one lane), so `item_exec`'s width is the item's own share.
             let lanes = exec.with_budget(decision.lanes).unwrap_or(*exec);
             let item_exec = exec.with_budget(decision.item_threads).unwrap_or(*exec);
             lanes.for_each_partition(count, &|i| {
-                // One `Par` grant per item, from the context and never chosen here.
                 item_exec.install(decision.item_threads, |par| item(i, to_faer(par)));
             });
         } else {

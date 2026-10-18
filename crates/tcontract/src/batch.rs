@@ -16,8 +16,8 @@
 //! reproduce the pre-#123 contract: `Outer` (the items fill the budget) or
 //! `Inner` (fewer items than the budget, each item on the whole context). A
 //! forced strategy is honoured as-is, and a forced `WholeBatchVendor` is refused
-//! before any write. Both shapes here run an item on one thread inside its lane,
-//! so a forced `Split` that asks for item threads as well is refused with
+//! before any write. A forced `Split` that asks for item threads as well is
+//! refused with
 //! [`ExecError::StrategyUnavailable`](tcontract_exec::ExecError::StrategyUnavailable)
 //! before any write rather than silently serializing the items (see
 //! [`BatchDecision`](tcontract_exec::BatchDecision)'s route contract; the faer
@@ -178,12 +178,9 @@ pub fn contract_batched<T: Scalar>(items: &mut [BatchItem<'_, T>], exec: &Exec<'
         }
         .into());
     }
-    // The decision is never partially applied (`BatchDecision`'s route
-    // contract). This schedule runs one item per lane, serially, or the items one
-    // after another on the whole context, so it cannot give an item threads
-    // inside a lane: a forced `Split` that asks for both axes is refused before
-    // any write, as the packed driver does, instead of silently dropping the
-    // item width.
+    // This schedule cannot run an item on threads inside its lane, so a `Split`
+    // that asks for both axes is refused before any write (see `BatchDecision`'s
+    // route contract) instead of silently dropping the item width.
     if decision.lanes > 1 && decision.item_threads > 1 {
         return Err(tcontract_exec::ExecError::StrategyUnavailable {
             strategy: exec.batch_policy().strategy,
