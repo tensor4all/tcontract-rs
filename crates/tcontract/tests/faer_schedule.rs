@@ -98,3 +98,109 @@ fn one_large_gemm_enters_the_pool_once_and_width_one_never() {
     assert_eq!(one, serial);
     assert_eq!(pool.stats().entries, 0);
 }
+
+/// A forced `Split` is honoured on this route, not silently discarded: at a
+/// budget of four it resolves to two lanes of two item threads, every item runs
+/// on the width it was granted, and the result is the sequential result exactly.
+#[test]
+fn a_forced_split_gives_every_item_its_item_threads() {
+    use std::num::NonZeroUsize;
+    use tcontract_exec::{BatchPolicy, BatchQuery, BatchStrategy};
+
+    let dims = [8usize, 8, 8, 8];
+    let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
+    let tp = pool(4);
+    let pool = Pool::borrow(&tp);
+    let at = |strategy| {
+        Exec::rayon(&pool)
+            .with_budget(4)
+            .unwrap()
+            .with_batch_policy(BatchPolicy::new(strategy))
+    };
+
+    // The decision the route has to honour: two lanes of two item threads.
+    let split = at(BatchStrategy::Split {
+        lanes: NonZeroUsize::new(2).unwrap(),
+    });
+    let query = BatchQuery::new(8, 8.0 * 8.0 * 8.0)
+        .with_item_parallel(true)
+        .with_outer_only_when_item_serial(true);
+    let decision = split.batch_decision(&query).unwrap();
+    assert_eq!((decision.lanes, decision.item_threads), (2, 2));
+
+    let want = run(&plan, dims, &a, &b, &at(BatchStrategy::Sequential));
+    pool.reset_stats();
+    let got = run(&plan, dims, &a, &b, &split);
+    assert_eq!(got, want, "the split changed the result");
+    let stats = pool.stats();
+    assert_eq!(stats.entries, 1, "one pool entry for the whole batch");
+    // One `Par::Threads(2)` grant per item, taken from the `Exec` inside its lane
+    // (`PoolStats::inline_runs` counts the parallel requests a worker serves in
+    // place, one per item here): the item width was honoured, not replaced by
+    // `Par::Seq`.
+    assert_eq!(
+        stats.inline_runs, dims[3] as u64,
+        "every item ran on its two item threads inside its lane"
+    );
+
+    // `Outer` grants no item threads, so no item takes a `Par::Threads` grant.
+    pool.reset_stats();
+    assert_eq!(
+        run(&plan, dims, &a, &b, &at(BatchStrategy::Outer)),
+        want,
+        "Outer lanes changed the result"
+    );
+    assert_eq!(pool.stats().inline_runs, 0);
+}
+
+/// The same split on items large enough to leave faer's serial nano-GEMM path,
+/// so the item's `Par::rayon(2)` reaches the provider's parallel GEMM:
+/// `faer-0.24.4/src/linalg/matmul/mod.rs:16` sends `m * n * k <= 16^3` to
+/// `nano_gemm` and `:1405` hands the x86 gemm `par.degree()` only once
+/// `m * n * k >= 4096 * size_of::<T>()` (32768 f64 elements). One 128^3 item is
+/// 2^21 multiply-adds. Bounded completion, because a lane worker that cannot
+/// nest would hang at the provider's barrier instead of failing.
+#[test]
+fn a_split_on_large_items_nests_faer_parallelism_and_matches_sequential() {
+    use std::num::NonZeroUsize;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tcontract_exec::{BatchPolicy, BatchStrategy};
+
+    let dims = [128usize, 128, 128, 4];
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
+        let tp = pool(4);
+        let pool = Pool::borrow(&tp);
+        let at = |strategy| {
+            Exec::rayon(&pool)
+                .with_budget(4)
+                .unwrap()
+                .with_batch_policy(BatchPolicy::new(strategy))
+        };
+        let want = run(&plan, dims, &a, &b, &at(BatchStrategy::Sequential));
+        pool.reset_stats();
+        let got = run(
+            &plan,
+            dims,
+            &a,
+            &b,
+            &at(BatchStrategy::Split {
+                lanes: NonZeroUsize::new(2).unwrap(),
+            }),
+        );
+        let stats = pool.stats();
+        tx.send((got == want, stats.entries, stats.inline_runs))
+            .unwrap();
+    });
+    let (same, entries, inline_runs) = rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("a nested faer GEMM deadlocked");
+    assert!(same, "the split changed the result");
+    assert_eq!(entries, 1, "one pool entry for the whole batch");
+    assert_eq!(
+        inline_runs, dims[3] as u64,
+        "every large item ran on its two item threads inside its lane"
+    );
+}

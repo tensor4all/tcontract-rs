@@ -130,7 +130,10 @@ pub enum BatchStrategy {
     /// One lane; the item kernel gets the whole budget.
     Inner,
     /// Exactly `lanes` lanes (clamped to the items and the budget), the rest
-    /// of the budget split evenly as item threads.
+    /// of the budget split evenly as item threads. A route that cannot run item
+    /// threads inside a lane refuses the resulting decision with
+    /// [`ExecError::StrategyUnavailable`] before any write; it never silently
+    /// runs the items serially (see [`BatchDecision`]'s route contract).
     Split {
         /// Requested lane count.
         lanes: NonZeroUsize,
@@ -392,6 +395,31 @@ impl BatchQuery {
 
 /// The route [`batch_decision`] selected.
 ///
+/// # The route contract
+///
+/// A decision is the **whole** concurrency of one call, and a route must never
+/// discard half of it: `lanes` outer lanes run a contiguous share of the items,
+/// each lane may run its items on `item_threads` threads, and `batch_decision`
+/// keeps `lanes * item_threads <= budget`. A route that cannot run an item on a
+/// sub-team inside a lane either honours both axes or refuses a decision that
+/// asks for both — only a forced [`BatchStrategy::Split`] produces `lanes > 1`
+/// together with `item_threads > 1` — with
+/// [`ExecError::StrategyUnavailable`], before it writes any output. Silently
+/// running the items serially inside the lanes is not a route.
+///
+/// The routes in tcontract, and where each one stands:
+///
+/// * the faer strategy honours both axes: every item runs with
+///   `Par::rayon(item_threads)` inside its lane's share of the borrowed pool,
+///   which nests there (`crates/tcontract/src/strategy/faer.rs`);
+/// * the packed driver refuses it
+///   (`crates/tcontract/src/driver/route.rs`): its inner parallelism is a
+///   co-scheduled, barrier-bearing team, and a lane worker cannot join one
+///   without blocking on an outer barrier;
+/// * `contract_batched` refuses it too (`crates/tcontract/src/batch.rs`): its
+///   schedule is one item per lane, or the items one after another on the whole
+///   context, as the decision log records.
+///
 /// # Examples
 ///
 /// ```
@@ -405,7 +433,8 @@ pub struct BatchDecision {
     pub lanes: usize,
     /// Threads one item may use. `1` for a route that runs items serially inside
     /// each lane; a [`BatchStrategy::Split`] asks for both lanes and item threads,
-    /// and a route that cannot run item threads inside lanes refuses it.
+    /// and a route that cannot run item threads inside lanes refuses it (see the
+    /// type's route contract).
     pub item_threads: usize,
     /// Whether the whole batch goes to one vendor call.
     pub vendor_batch: bool,
@@ -419,6 +448,11 @@ pub struct BatchDecision {
 /// [`ExecError::StrategyUnavailable`] when `query.vendor_batch` is false, before
 /// any output write. `Auto` narrows the budget first (see the module docs) and
 /// uses the original budget only for the forced strategies.
+///
+/// This function itself only refuses `WholeBatchVendor`. Whether a *route* can
+/// run the returned decision is the route's own preflight: a decision with both
+/// lanes and item threads is honoured or refused before any output write, never
+/// partially applied (see [`BatchDecision`]'s route contract).
 ///
 /// # Errors
 ///
@@ -996,6 +1030,40 @@ mod tests {
                 vendor_batch: false
             }
         );
+    }
+
+    #[test]
+    fn every_decision_fits_the_budget() {
+        // A route that honours a decision runs `lanes` lanes of `item_threads`
+        // item threads (faer does), so the split must never exceed the budget the
+        // route was given: that is what keeps the call inside the host's pool.
+        let budgets = [1usize, 2, 3, 4, 8, 16];
+        let items = [0usize, 1, 2, 3, 7, 8, 16, 64];
+        let policies = [
+            BatchStrategy::Auto,
+            BatchStrategy::Sequential,
+            BatchStrategy::Outer,
+            BatchStrategy::Inner,
+            BatchStrategy::Split { lanes: budget(1) },
+            BatchStrategy::Split { lanes: budget(2) },
+            BatchStrategy::Split { lanes: budget(8) },
+        ];
+        for &b in &budgets {
+            for &n in &items {
+                for strategy in policies {
+                    let d = batch_decision(
+                        &BatchPolicy::new(strategy),
+                        budget(b),
+                        &BatchQuery::new(n, 512.0),
+                    )
+                    .unwrap();
+                    assert!(
+                        d.lanes >= 1 && d.lanes * d.item_threads <= b,
+                        "strategy {strategy:?}, budget {b}, items {n}: {d:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

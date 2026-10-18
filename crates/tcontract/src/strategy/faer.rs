@@ -277,8 +277,17 @@ impl FaerPlan {
             });
         }
         if decision.lanes > 1 {
+            // Each lane runs its items on the granted `item_threads`, taken from
+            // the context and never chosen here (`BatchDecision`'s route contract);
+            // faer nests in the borrowed pool.
+            // INVARIANT: `batch_decision` keeps `lanes * item_threads <= budget`
+            // (`Split` shares what is left, and `Auto` reports item threads only
+            // with one lane), so `item_exec`'s width is the item's own share.
             let lanes = exec.with_budget(decision.lanes).unwrap_or(*exec);
-            lanes.for_each_partition(count, &|i| item(i, faer::Par::Seq));
+            let item_exec = exec.with_budget(decision.item_threads).unwrap_or(*exec);
+            lanes.for_each_partition(count, &|i| {
+                item_exec.install(decision.item_threads, |par| item(i, to_faer(par)));
+            });
         } else {
             // One pool entry for the whole batch.
             exec.install(decision.item_threads, |par: Par| {

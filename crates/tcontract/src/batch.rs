@@ -16,8 +16,13 @@
 //! reproduce the pre-#123 contract: `Outer` (the items fill the budget) or
 //! `Inner` (fewer items than the budget, each item on the whole context). A
 //! forced strategy is honoured as-is, and a forced `WholeBatchVendor` is refused
-//! before any write. The batch axis and the inner axis never nest, and no
-//! threads idle while a large item could use them.
+//! before any write. A forced `Split` that asks for item threads as well is
+//! refused with
+//! [`ExecError::StrategyUnavailable`](tcontract_exec::ExecError::StrategyUnavailable)
+//! before any write rather than silently serializing the items (see
+//! [`BatchDecision`](tcontract_exec::BatchDecision)'s route contract; the faer
+//! strategy is the route that honours both axes), and no threads idle while a
+//! large item could use them.
 //!
 //! # What this does not do
 //!
@@ -170,6 +175,15 @@ pub fn contract_batched<T: Scalar>(items: &mut [BatchItem<'_, T>], exec: &Exec<'
         // the forced strategy, so a vendor decision is unreachable.
         return Err(tcontract_exec::ExecError::StrategyUnavailable {
             strategy: BatchStrategy::WholeBatchVendor,
+        }
+        .into());
+    }
+    // This schedule cannot run an item on threads inside its lane, so a `Split`
+    // that asks for both axes is refused before any write (see `BatchDecision`'s
+    // route contract) instead of silently dropping the item width.
+    if decision.lanes > 1 && decision.item_threads > 1 {
+        return Err(tcontract_exec::ExecError::StrategyUnavailable {
+            strategy: exec.batch_policy().strategy,
         }
         .into());
     }

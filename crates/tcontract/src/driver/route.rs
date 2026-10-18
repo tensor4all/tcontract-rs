@@ -89,8 +89,11 @@ pub(crate) fn execution_geometry<T: Element>(
     let policy = *exec.batch_policy();
     let forced = !matches!(policy.strategy, BatchStrategy::Auto);
     let decision = exec.batch_decision(&batch_query(plan, m, n, k, T::IS_COMPLEX))?;
-    // A split asks for lanes *and* item threads; no route here runs an item on
-    // a sub-team inside an outer lane, so it is refused before any write.
+    // A split asks for lanes *and* item threads, and this driver's inner
+    // parallelism is a co-scheduled team with barriers: a lane worker cannot join
+    // one without blocking on an outer barrier, so the decision is refused before
+    // any write rather than silently run item-serial (the route contract of
+    // `BatchDecision`; the faer strategy is the route that honours both axes).
     if decision.lanes > 1 && decision.item_threads > 1 {
         return Err(ExecError::StrategyUnavailable {
             strategy: policy.strategy,
