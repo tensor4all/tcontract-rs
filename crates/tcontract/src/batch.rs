@@ -15,9 +15,8 @@
 //! The default `Auto` policy maps to the route-specific forced strategies that
 //! reproduce the pre-#123 contract: `Outer` (the items fill the budget) or
 //! `Inner` (fewer items than the budget, each item on the whole context). A
-//! forced strategy is honoured as-is, and a forced `WholeBatchVendor` is refused
-//! before any write. A forced `Split` that asks for item threads as well is
-//! refused with
+//! forced strategy is honoured as-is. A forced `Split` that asks for item
+//! threads as well is refused with
 //! [`ExecError::StrategyUnavailable`](tcontract_exec::ExecError::StrategyUnavailable)
 //! before any write rather than silently serializing the items (see
 //! [`BatchDecision`](tcontract_exec::BatchDecision)'s route contract; the faer
@@ -156,8 +155,7 @@ pub fn contract_batched<T: Scalar>(items: &mut [BatchItem<'_, T>], exec: &Exec<'
     // here -- there is no work threshold -- so the default `Auto` maps to the
     // route-specific forced strategies that reproduce the pre-#123 contract:
     // `Outer` when the items fill the budget, else one lane with each item on
-    // the whole context (`Inner`). A forced caller strategy is honoured as-is
-    // and a forced `WholeBatchVendor` is refused before any write.
+    // the whole context (`Inner`). A forced caller strategy is honoured as-is.
     let query = BatchQuery::new(count, 0.0);
     let decision = match exec.batch_policy().strategy {
         BatchStrategy::Auto => {
@@ -166,18 +164,10 @@ pub fn contract_batched<T: Scalar>(items: &mut [BatchItem<'_, T>], exec: &Exec<'
             } else {
                 BatchStrategy::Inner
             };
-            batch_decision(&exec.batch_policy().with_strategy(strategy), budget, &query)?
+            batch_decision(&exec.batch_policy().with_strategy(strategy), budget, &query)
         }
-        _ => exec.batch_decision(&query)?,
+        _ => exec.batch_decision(&query),
     };
-    if decision.vendor_batch {
-        // tcontract has no vendor batch route; `batch_decision` already refused
-        // the forced strategy, so a vendor decision is unreachable.
-        return Err(tcontract_exec::ExecError::StrategyUnavailable {
-            strategy: BatchStrategy::WholeBatchVendor,
-        }
-        .into());
-    }
     // This schedule cannot run an item on threads inside its lane, so a `Split`
     // that asks for both axes is refused before any write (see `BatchDecision`'s
     // route contract) instead of silently dropping the item width.

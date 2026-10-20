@@ -125,7 +125,7 @@ fn a_forced_split_gives_every_item_its_item_threads() {
     let query = BatchQuery::new(8, 8.0 * 8.0 * 8.0)
         .with_item_parallel(true)
         .with_outer_only_when_item_serial(true);
-    let decision = split.batch_decision(&query).unwrap();
+    let decision = split.batch_decision(&query);
     assert_eq!((decision.lanes, decision.item_threads), (2, 2));
 
     let want = run(&plan, dims, &a, &b, &at(BatchStrategy::Sequential));

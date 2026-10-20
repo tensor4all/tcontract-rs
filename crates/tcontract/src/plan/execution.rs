@@ -163,17 +163,6 @@ impl<T: Scalar> Plan<T> {
         {
             return Err(Unsupported::Reason("fresh output was not prepared; set PlanConfig::fresh_output when constructing the plan").into());
         }
-        // Availability first, before any route can write: tcontract has no vendor
-        // batched call, so a forced whole-batch vendor route is refused here.
-        if matches!(
-            exec.batch_policy().strategy,
-            tcontract_exec::BatchStrategy::WholeBatchVendor
-        ) {
-            return Err(tcontract_exec::ExecError::StrategyUnavailable {
-                strategy: tcontract_exec::BatchStrategy::WholeBatchVendor,
-            }
-            .into());
-        }
         if self.problem.out_empty() {
             return Ok(ExecutionRoute::Empty);
         }

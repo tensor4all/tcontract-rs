@@ -14,9 +14,6 @@
 //! route and never falls back: the route either honors it (clamped to the
 //! items and the budget) or the library reports
 //! [`ExecError::StrategyUnavailable`].
-//! [`BatchStrategy::WholeBatchVendor`] is the one forced route that may be
-//! unavailable, and it is refused from the query's vendor capability alone,
-//! before any output write.
 //!
 //! Forced strategies are evaluated against the **original host budget**. Only
 //! `Auto` narrows, because the packed driver narrows its `Exec` twice (see
@@ -64,27 +61,19 @@
 //! ```
 //! use std::num::NonZeroUsize;
 //! use tcontract_exec::batch::{batch_decision, BatchPolicy, BatchQuery, BatchStrategy};
-//! use tcontract_exec::ExecError;
 //!
 //! let budget = NonZeroUsize::new(8).unwrap();
 //! let query = BatchQuery::new(16, 64.0);
 //!
 //! // A forced route is clamped, never a fallback.
 //! let outer = BatchPolicy::new(BatchStrategy::Outer);
-//! let d = batch_decision(&outer, budget, &query).unwrap();
-//! assert_eq!((d.lanes, d.item_threads, d.vendor_batch), (8, 1, false));
-//!
-//! // The vendor route needs the caller to say it exists.
-//! let vendor = BatchPolicy::new(BatchStrategy::WholeBatchVendor);
-//! assert!(matches!(
-//!     batch_decision(&vendor, budget, &query),
-//!     Err(ExecError::StrategyUnavailable { .. })
-//! ));
+//! let d = batch_decision(&outer, budget, &query);
+//! assert_eq!((d.lanes, d.item_threads), (8, 1));
 //! ```
 
 use core::num::NonZeroUsize;
 
-use crate::{ExecError, WidthPolicy};
+use crate::WidthPolicy;
 
 /// The default policy [`BatchStrategy::Auto`] applies when no explicit policy is
 /// set on an [`Exec`](crate::Exec).
@@ -138,9 +127,6 @@ pub enum BatchStrategy {
         /// Requested lane count.
         lanes: NonZeroUsize,
     },
-    /// One vendor batched call for the whole batch; only where the query says
-    /// a vendor batch route exists.
-    WholeBatchVendor,
 }
 
 /// The cost and fan-out model [`BatchStrategy::Auto`] applies.
@@ -307,7 +293,7 @@ impl BatchPolicy {
 ///
 /// Work is described by an estimate, not by dimensions: each family supplies
 /// the multiply-adds of **one** item (GEMM `mnk`, LU `n^3/3`, solve `n^2 k`,
-/// QR `2mn^2/3`, with complex elements weighing four). The two booleans and
+/// QR `2mn^2/3`, with complex elements weighing four). The booleans and
 /// `balanced_lanes` say what the route permits; they are how the legacy rules
 /// above become inputs instead of hidden constants.
 ///
@@ -316,12 +302,9 @@ impl BatchPolicy {
 /// ```
 /// use tcontract_exec::batch::BatchQuery;
 ///
-/// let query = BatchQuery::new(32, 4096.0)
-///     .with_item_parallel(false)
-///     .with_vendor_batch(true);
+/// let query = BatchQuery::new(32, 4096.0).with_item_parallel(false);
 /// assert_eq!(query.items, 32);
 /// assert!(!query.item_parallel);
-/// assert!(query.vendor_batch);
 /// ```
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -334,9 +317,6 @@ pub struct BatchQuery {
     /// `item_threads > 1` is meaningful. `Auto` keeps item threads one when
     /// this is false.
     pub item_parallel: bool,
-    /// The route has a vendor call for the whole batch at this shape.
-    /// [`BatchStrategy::WholeBatchVendor`] is available only when this is true.
-    pub vendor_batch: bool,
     /// `Auto` may only keep lanes when every lane is non-empty, the split is
     /// near-even and the batch alone fills the narrowed budget: the packed
     /// driver's balanced-lanes rule.
@@ -357,7 +337,6 @@ impl BatchQuery {
             items,
             item_muladds,
             item_parallel: true,
-            vendor_batch: false,
             balanced_lanes: false,
             outer_only_when_item_serial: false,
         }
@@ -367,13 +346,6 @@ impl BatchQuery {
     #[must_use]
     pub fn with_item_parallel(mut self, item_parallel: bool) -> Self {
         self.item_parallel = item_parallel;
-        self
-    }
-
-    /// Return this query with the vendor batch capability set.
-    #[must_use]
-    pub fn with_vendor_batch(mut self, vendor_batch: bool) -> Self {
-        self.vendor_batch = vendor_batch;
         self
     }
 
@@ -424,7 +396,7 @@ impl BatchQuery {
 ///
 /// ```
 /// use tcontract_exec::batch::BatchDecision;
-/// let d = BatchDecision { lanes: 2, item_threads: 1, vendor_batch: false };
+/// let d = BatchDecision { lanes: 2, item_threads: 1 };
 /// assert_eq!(d.lanes * d.item_threads, 2);
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -436,28 +408,19 @@ pub struct BatchDecision {
     /// and a route that cannot run item threads inside lanes refuses it (see the
     /// type's route contract).
     pub item_threads: usize,
-    /// Whether the whole batch goes to one vendor call.
-    pub vendor_batch: bool,
 }
 
 /// Decide the route for one batch on `budget` threads under `policy`.
 ///
 /// Forced strategies are clamped (`lanes <= min(items, budget)`,
-/// `lanes * item_threads <= budget`) but never fall back.
-/// [`BatchStrategy::WholeBatchVendor`] returns
-/// [`ExecError::StrategyUnavailable`] when `query.vendor_batch` is false, before
-/// any output write. `Auto` narrows the budget first (see the module docs) and
-/// uses the original budget only for the forced strategies.
+/// `lanes * item_threads <= budget`) but never fall back. `Auto` narrows the
+/// budget first (see the module docs) and uses the original budget only for the
+/// forced strategies.
 ///
-/// This function itself only refuses `WholeBatchVendor`. Whether a *route* can
-/// run the returned decision is the route's own preflight: a decision with both
-/// lanes and item threads is honoured or refused before any output write, never
-/// partially applied (see [`BatchDecision`]'s route contract).
-///
-/// # Errors
-///
-/// [`ExecError::StrategyUnavailable`] for a forced `WholeBatchVendor` on a
-/// route without a vendor batch call.
+/// Whether a *route* can run the returned decision is the route's own
+/// preflight: a decision with both lanes and item threads is honoured or
+/// refused before any output write, never partially applied (see
+/// [`BatchDecision`]'s route contract).
 ///
 /// # Examples
 ///
@@ -470,7 +433,7 @@ pub struct BatchDecision {
 /// let split = BatchPolicy::new(BatchStrategy::Split {
 ///     lanes: NonZeroUsize::new(8).unwrap(),
 /// });
-/// let d = batch_decision(&split, budget, &query).unwrap();
+/// let d = batch_decision(&split, budget, &query);
 /// // Clamped to the items and the budget.
 /// assert_eq!((d.lanes, d.item_threads), (2, 2));
 /// ```
@@ -478,44 +441,27 @@ pub fn batch_decision(
     policy: &BatchPolicy,
     budget: NonZeroUsize,
     query: &BatchQuery,
-) -> Result<BatchDecision, ExecError> {
+) -> BatchDecision {
     let budget = budget.get();
     match policy.strategy {
-        BatchStrategy::Auto => Ok(auto_decision(&policy.model, budget, query)),
-        BatchStrategy::Sequential => Ok(BatchDecision {
+        BatchStrategy::Auto => auto_decision(&policy.model, budget, query),
+        BatchStrategy::Sequential => BatchDecision {
             lanes: 1,
             item_threads: 1,
-            vendor_batch: false,
-        }),
-        BatchStrategy::Outer => Ok(BatchDecision {
+        },
+        BatchStrategy::Outer => BatchDecision {
             lanes: clamp_lanes(budget, query.items),
             item_threads: 1,
-            vendor_batch: false,
-        }),
-        BatchStrategy::Inner => Ok(BatchDecision {
+        },
+        BatchStrategy::Inner => BatchDecision {
             lanes: 1,
             item_threads: budget.max(1),
-            vendor_batch: false,
-        }),
+        },
         BatchStrategy::Split { lanes } => {
             let lanes = clamp_lanes(budget, query.items).min(lanes.get());
-            Ok(BatchDecision {
+            BatchDecision {
                 lanes,
                 item_threads: budget / lanes,
-                vendor_batch: false,
-            })
-        }
-        BatchStrategy::WholeBatchVendor => {
-            if query.vendor_batch {
-                Ok(BatchDecision {
-                    lanes: 1,
-                    item_threads: 1,
-                    vendor_batch: true,
-                })
-            } else {
-                Err(ExecError::StrategyUnavailable {
-                    strategy: BatchStrategy::WholeBatchVendor,
-                })
             }
         }
     }
@@ -573,7 +519,6 @@ fn faer_auto(
         return BatchDecision {
             lanes,
             item_threads: 1,
-            vendor_batch: false,
         };
     }
     one_lane(1)
@@ -597,7 +542,6 @@ fn generic_auto(
         return BatchDecision {
             lanes,
             item_threads: 1,
-            vendor_batch: false,
         };
     }
     // One lane: the inner route is the width of one item, when the route
@@ -646,7 +590,6 @@ fn packed_auto(
     BatchDecision {
         lanes,
         item_threads: if lanes > 1 { 1 } else { one_lane_threads },
-        vendor_batch: false,
     }
 }
 
@@ -670,7 +613,6 @@ fn one_lane(threads: usize) -> BatchDecision {
     BatchDecision {
         lanes: 1,
         item_threads: threads.max(1),
-        vendor_batch: false,
     }
 }
 
@@ -766,11 +708,11 @@ mod tests {
             for &m in &muladds {
                 for &b in &budgets {
                     let query = BatchQuery::new(h, m).with_balanced_lanes(true);
-                    let got = batch_decision(&policy, budget(b), &query).unwrap();
+                    let got = batch_decision(&policy, budget(b), &query);
                     let want = legacy_packed(h, m, b);
                     assert_eq!(
-                        (got.lanes, got.item_threads, got.vendor_batch),
-                        (want.0, want.1, false),
+                        (got.lanes, got.item_threads),
+                        (want.0, want.1),
                         "items={h} item_muladds={m} budget={b}"
                     );
                 }
@@ -794,7 +736,6 @@ mod tests {
                 budget(threads),
                 &BatchQuery::new(batch, item_muladds),
             )
-            .unwrap()
             .lanes
         };
         // 4^3 = 64 multiply-adds: per-call overhead dominates, so many items
@@ -812,15 +753,11 @@ mod tests {
         let no_work_gate =
             BatchPolicy::new(BatchStrategy::Auto).with_model(model.with_min_work_per_lane_ns(0.0));
         assert_eq!(
-            batch_decision(&no_work_gate, budget(4), &BatchQuery::new(64, 64.0))
-                .unwrap()
-                .lanes,
+            batch_decision(&no_work_gate, budget(4), &BatchQuery::new(64, 64.0)).lanes,
             4
         );
         assert_eq!(
-            batch_decision(&no_work_gate, budget(4), &BatchQuery::new(1, 64.0))
-                .unwrap()
-                .lanes,
+            batch_decision(&no_work_gate, budget(4), &BatchQuery::new(1, 64.0)).lanes,
             1
         );
     }
@@ -869,11 +806,11 @@ mod tests {
             for &m in &muladds {
                 for &b in &budgets {
                     let query = BatchQuery::new(count, m).with_outer_only_when_item_serial(true);
-                    let got = batch_decision(&policy, budget(b), &query).unwrap();
+                    let got = batch_decision(&policy, budget(b), &query);
                     let want = legacy_faer(count, m, b);
                     assert_eq!(
-                        (got.lanes, got.item_threads, got.vendor_batch),
-                        (want.0, want.1, false),
+                        (got.lanes, got.item_threads),
+                        (want.0, want.1),
                         "count={count} item_muladds={m} budget={b}"
                     );
                 }
@@ -885,7 +822,7 @@ mod tests {
     fn faer_auto_keeps_one_item_on_the_team() {
         // A large item: the inner route, with the width of one item.
         let query = BatchQuery::new(4, 1_000_000.0).with_outer_only_when_item_serial(true);
-        let d = batch_decision(&BatchPolicy::default(), budget(8), &query).unwrap();
+        let d = batch_decision(&BatchPolicy::default(), budget(8), &query);
         assert!(d.item_threads > 1, "{d:?}");
         assert_eq!(d.lanes, 1);
     }
@@ -910,40 +847,6 @@ mod tests {
     }
 
     #[test]
-    fn exec_batch_decision_refuses_the_vendor_route() {
-        let policy = BatchPolicy::new(BatchStrategy::WholeBatchVendor);
-        // A serial context preserves the policy: the refusal does not depend on
-        // whether execution has a pool.
-        assert_eq!(
-            crate::Exec::serial()
-                .with_batch_policy(policy)
-                .batch_policy()
-                .strategy,
-            BatchStrategy::WholeBatchVendor
-        );
-        assert_eq!(
-            crate::Exec::serial()
-                .with_batch_policy(policy)
-                .batch_decision(&BatchQuery::new(4, 1000.0)),
-            Err(ExecError::StrategyUnavailable {
-                strategy: BatchStrategy::WholeBatchVendor
-            })
-        );
-        let tp = rayon::ThreadPoolBuilder::new()
-            .num_threads(2)
-            .build()
-            .unwrap();
-        let pool = crate::Pool::borrow(&tp);
-        let exec = crate::Exec::rayon(&pool).with_batch_policy(policy);
-        assert_eq!(
-            exec.batch_decision(&BatchQuery::new(4, 1000.0)),
-            Err(ExecError::StrategyUnavailable {
-                strategy: BatchStrategy::WholeBatchVendor
-            })
-        );
-    }
-
-    #[test]
     fn forced_strategies_are_clamped_not_fallen_back() {
         let query = BatchQuery::new(3, 1_000.0);
         // Sequential ignores the budget and the item count.
@@ -952,30 +855,26 @@ mod tests {
                 &BatchPolicy::new(BatchStrategy::Sequential),
                 budget(8),
                 &query
-            )
-            .unwrap(),
+            ),
             BatchDecision {
                 lanes: 1,
-                item_threads: 1,
-                vendor_batch: false
+                item_threads: 1
             }
         );
         // Outer uses min(items, budget), each item serial.
         assert_eq!(
-            batch_decision(&BatchPolicy::new(BatchStrategy::Outer), budget(8), &query).unwrap(),
+            batch_decision(&BatchPolicy::new(BatchStrategy::Outer), budget(8), &query),
             BatchDecision {
                 lanes: 3,
-                item_threads: 1,
-                vendor_batch: false
+                item_threads: 1
             }
         );
         // Inner is one lane with the whole budget.
         assert_eq!(
-            batch_decision(&BatchPolicy::new(BatchStrategy::Inner), budget(8), &query).unwrap(),
+            batch_decision(&BatchPolicy::new(BatchStrategy::Inner), budget(8), &query),
             BatchDecision {
                 lanes: 1,
-                item_threads: 8,
-                vendor_batch: false
+                item_threads: 8
             }
         );
         // Split is clamped to the items and the budget, then shares the rest.
@@ -984,12 +883,10 @@ mod tests {
                 &BatchPolicy::new(BatchStrategy::Split { lanes: budget(8) }),
                 budget(8),
                 &query
-            )
-            .unwrap(),
+            ),
             BatchDecision {
                 lanes: 3,
-                item_threads: 2,
-                vendor_batch: false
+                item_threads: 2
             }
         );
         // A split wider than the budget clamps to the budget.
@@ -999,22 +896,19 @@ mod tests {
                 &BatchPolicy::new(BatchStrategy::Split { lanes: budget(64) }),
                 budget(4),
                 &many
-            )
-            .unwrap(),
+            ),
             BatchDecision {
                 lanes: 4,
-                item_threads: 1,
-                vendor_batch: false
+                item_threads: 1
             }
         );
         // Empty items clamp to one lane, never zero.
         let empty = BatchQuery::new(0, 1.0);
         assert_eq!(
-            batch_decision(&BatchPolicy::new(BatchStrategy::Outer), budget(4), &empty).unwrap(),
+            batch_decision(&BatchPolicy::new(BatchStrategy::Outer), budget(4), &empty),
             BatchDecision {
                 lanes: 1,
-                item_threads: 1,
-                vendor_batch: false
+                item_threads: 1
             }
         );
         assert_eq!(
@@ -1022,12 +916,10 @@ mod tests {
                 &BatchPolicy::new(BatchStrategy::Split { lanes: budget(2) }),
                 budget(4),
                 &empty
-            )
-            .unwrap(),
+            ),
             BatchDecision {
                 lanes: 1,
-                item_threads: 4,
-                vendor_batch: false
+                item_threads: 4
             }
         );
     }
@@ -1055,8 +947,7 @@ mod tests {
                         &BatchPolicy::new(strategy),
                         budget(b),
                         &BatchQuery::new(n, 512.0),
-                    )
-                    .unwrap();
+                    );
                     assert!(
                         d.lanes >= 1 && d.lanes * d.item_threads <= b,
                         "strategy {strategy:?}, budget {b}, items {n}: {d:?}"
@@ -1071,32 +962,10 @@ mod tests {
         // Auto narrows the whole batch to six lanes, but Outer is evaluated
         // against the original host budget of eight.
         let query = BatchQuery::new(9, 200_000.0).with_balanced_lanes(true);
-        let auto = batch_decision(&BatchPolicy::default(), budget(8), &query).unwrap();
+        let auto = batch_decision(&BatchPolicy::default(), budget(8), &query);
         assert_eq!((auto.lanes, auto.item_threads), (6, 1));
-        let outer =
-            batch_decision(&BatchPolicy::new(BatchStrategy::Outer), budget(8), &query).unwrap();
+        let outer = batch_decision(&BatchPolicy::new(BatchStrategy::Outer), budget(8), &query);
         assert_eq!((outer.lanes, outer.item_threads), (8, 1));
-    }
-
-    #[test]
-    fn whole_batch_vendor_requires_the_route() {
-        let policy = BatchPolicy::new(BatchStrategy::WholeBatchVendor);
-        let without = BatchQuery::new(4, 1_000.0);
-        assert_eq!(
-            batch_decision(&policy, budget(4), &without),
-            Err(ExecError::StrategyUnavailable {
-                strategy: BatchStrategy::WholeBatchVendor
-            })
-        );
-        let with = without.with_vendor_batch(true);
-        assert_eq!(
-            batch_decision(&policy, budget(4), &with).unwrap(),
-            BatchDecision {
-                lanes: 1,
-                item_threads: 1,
-                vendor_batch: true
-            }
-        );
     }
 
     #[test]
@@ -1104,10 +973,10 @@ mod tests {
         // A moderate single item widens the narrow route to the team budget; a
         // route that forbids item parallelism keeps one thread.
         let query = BatchQuery::new(1, 1_000_000.0);
-        let allowed = batch_decision(&BatchPolicy::default(), budget(8), &query).unwrap();
+        let allowed = batch_decision(&BatchPolicy::default(), budget(8), &query);
         assert!(allowed.item_threads > 1, "{allowed:?}");
         let forbidden = query.with_item_parallel(false);
-        let d = batch_decision(&BatchPolicy::default(), budget(8), &forbidden).unwrap();
+        let d = batch_decision(&BatchPolicy::default(), budget(8), &forbidden);
         assert_eq!((d.lanes, d.item_threads), (1, 1));
     }
 
@@ -1120,14 +989,12 @@ mod tests {
             &BatchPolicy::new(BatchStrategy::Auto).with_model(disabled),
             budget(8),
             &query,
-        )
-        .unwrap();
+        );
         let d1 = batch_decision(
             &BatchPolicy::new(BatchStrategy::Auto).with_model(enabled),
             budget(8),
             &query,
-        )
-        .unwrap();
+        );
         assert!(d0.lanes > d1.lanes, "{d0:?} vs {d1:?}");
     }
 
@@ -1140,14 +1007,12 @@ mod tests {
             &BatchPolicy::new(BatchStrategy::Auto).with_model(WorkModel::default()),
             budget(8),
             &query.with_balanced_lanes(true),
-        )
-        .unwrap();
+        );
         let generic = batch_decision(
             &BatchPolicy::new(BatchStrategy::Auto).with_model(WorkModel::default()),
             budget(8),
             &query.with_balanced_lanes(false),
-        )
-        .unwrap();
+        );
         assert_eq!(packed.lanes, 1);
         assert!(generic.lanes > 1, "{generic:?}");
     }

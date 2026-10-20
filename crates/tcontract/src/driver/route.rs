@@ -88,7 +88,7 @@ pub(crate) fn execution_geometry<T: Element>(
     // become inner parallelism.
     let policy = *exec.batch_policy();
     let forced = !matches!(policy.strategy, BatchStrategy::Auto);
-    let decision = exec.batch_decision(&batch_query(plan, m, n, k, T::IS_COMPLEX))?;
+    let decision = exec.batch_decision(&batch_query(plan, m, n, k, T::IS_COMPLEX));
     // A split asks for lanes *and* item threads, and this driver's inner
     // parallelism is a co-scheduled team with barriers: a lane worker cannot join
     // one without blocking on an outer barrier, so the decision is refused before

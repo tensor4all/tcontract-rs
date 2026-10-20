@@ -146,9 +146,8 @@ Implemented in Phase 1a as `crates/tcontract-exec` (`install`, `for_each_partiti
 `Exec::batch_decision(&BatchQuery)` is the one decision function every
 operation that owns batch lanes calls: `Auto` applies the `WorkModel`,
 `Sequential` / `Outer` / `Inner` / `Split` force a route and are clamped to the
-items and the budget, and `WholeBatchVendor` needs a route that has a vendor
-batched call, otherwise it is refused with `StrategyUnavailable` before any
-output write. The packed driver presents a balanced-lanes query
+items and the budget; a forced route the backend cannot serve is refused with
+`StrategyUnavailable` before any output write. The packed driver presents a balanced-lanes query
 (`Auto` reproduces its two-stage narrowing), the faer batched GEMM an
 item-serial-outer query (reproducing its inner/item-width rule), and
 `contract_batched` maps its default `Auto` to `Outer`/`Inner` by item count.
