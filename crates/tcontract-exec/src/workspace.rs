@@ -11,9 +11,10 @@
 //! * **worker buffers** — the packed A block, the accumulator tile and the
 //!   scratch vector of one thread. They are allocated by the thread that will
 //!   write them, which is what makes their first touch local to the node that
-//!   keeps using them; a thread-local handle names its slot in the owner, and a
-//!   handle outlives nothing: the storage is the owner's, the handle is only an
-//!   index, and a slot that has been trimmed is simply re-created.
+//!   keeps using them. The owner maps each thread to its slot, so a lookup is
+//!   O(1) and the mapping dies with the owner: the storage is the owner's, the
+//!   entry is only an index, and a slot that has been trimmed is simply
+//!   re-created.
 //! * **team sets** — the shared packed B panel, the team's scatter vectors and
 //!   its barriers. They are taken exclusively for the duration of a call and
 //!   returned on drop, so two concurrent executes can never share one.
@@ -372,6 +373,9 @@ pub trait WorkspaceProvider: sealed::Sealed + Sync {
 /// counters, so a snapshot and an update share one synchronization boundary.
 #[derive(Debug, Default)]
 struct State {
+    /// The worker slot each thread uses with this owner, created on that
+    /// thread's first call and kept until the owner is dropped.
+    threads: HashMap<std::thread::ThreadId, u64>,
     workers: HashMap<u64, WorkerSlot>,
     teams: Vec<TeamSet>,
     /// Capacity of everything owned, idle or in use.
@@ -390,8 +394,8 @@ struct State {
 /// provider that issued it and no second owner can borrow it.
 #[derive(Debug)]
 pub struct ArenaProvider {
-    /// Process-unique and never recycled, so a thread-local handle can never be
-    /// confused with another provider that happens to share an address.
+    /// Process-unique and never recycled, so a trace or a diagnostic can never
+    /// be confused with another provider that happens to share an address.
     key: u64,
     state: Mutex<State>,
     next_worker: AtomicU64,
@@ -402,14 +406,6 @@ impl Default for ArenaProvider {
     fn default() -> Self {
         Self::new()
     }
-}
-
-thread_local! {
-    /// `(provider key, worker slot)` pairs this thread has used. Thread-local
-    /// by construction, so a slot is never handed to a different thread after
-    /// its owner exits: the handle dies with the thread.
-    static HANDLES: std::cell::RefCell<Vec<(u64, u64)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 static NEXT_PROVIDER: AtomicU64 = AtomicU64::new(1);
@@ -498,28 +494,22 @@ impl ArenaProvider {
     /// Check this thread's slot out of the map, or `None` when the thread
     /// already holds it (a re-entrant call).
     fn checkout(&self) -> Option<(u64, WorkerSlot, usize)> {
-        let known = HANDLES.with(|h| {
-            h.borrow()
-                .iter()
-                .find(|(k, _)| *k == self.key)
-                .map(|(_, i)| *i)
-        });
-        match known {
-            // The handle exists; a missing slot means an outer call holds it.
-            Some(index) => {
-                let mut st = lock(&self.state);
-                let slot = st.workers.remove(&index)?;
-                let billed = slot.bytes();
-                st.leased += billed;
-                Some((index, slot, billed))
-            }
+        let thread = std::thread::current().id();
+        let mut st = lock(&self.state);
+        let index = match st.threads.get(&thread) {
+            Some(&index) => index,
             None => {
                 let index = self.next_worker.fetch_add(1, Ordering::Relaxed);
-                HANDLES.with(|h| h.borrow_mut().push((self.key, index)));
+                st.threads.insert(thread, index);
                 // A fresh slot owns nothing yet, so the counters do not move.
-                Some((index, WorkerSlot::new(self.traced), 0))
+                return Some((index, WorkerSlot::new(self.traced), 0));
             }
-        }
+        };
+        // The handle exists; a missing slot means an outer call holds it.
+        let slot = st.workers.remove(&index)?;
+        let billed = slot.bytes();
+        st.leased += billed;
+        Some((index, slot, billed))
     }
 
     /// Return a checked-out slot, settling both accounting directions.
@@ -531,6 +521,18 @@ impl ArenaProvider {
         st.owned = add_signed(st.owned, delta, "retained bytes");
         st.leased = sub(st.leased, billed, "leased bytes");
         st.workers.insert(index, slot);
+    }
+}
+
+impl Drop for ArenaProvider {
+    fn drop(&mut self) {
+        // Trace records outlive the provider otherwise: `traced()` appends to a
+        // process-global log that only `trace_take()` prunes, so a provider
+        // that is dropped without a `trace_take()` would keep its records for
+        // the life of the process.
+        if self.traced != 0 {
+            lock(&TRACE).retain(|(owner, _, _)| *owner != self.key);
+        }
     }
 }
 
@@ -761,5 +763,75 @@ impl Workspace {
             lease.panel(self.req.b_bytes);
         }
         drop(lease);
+    }
+}
+
+#[cfg(test)]
+mod thread_entries {
+    use super::*;
+
+    fn thread_slots(provider: &ArenaProvider) -> usize {
+        lock(&provider.state).threads.len()
+    }
+
+    fn trace_records(owner: u64) -> usize {
+        lock(&TRACE)
+            .iter()
+            .filter(|(key, _, _)| *key == owner)
+            .count()
+    }
+
+    #[test]
+    fn one_entry_per_thread_and_none_carried_over() {
+        let req = WorkspaceReq::default();
+        let provider = ArenaProvider::default();
+        assert_eq!(thread_slots(&provider), 0);
+        provider.with_worker(&req, &mut |_, _, _| {});
+        assert_eq!(thread_slots(&provider), 1);
+        provider.with_worker(&req, &mut |_, _, _| {});
+        assert_eq!(thread_slots(&provider), 1);
+
+        // The map belongs to the provider, so a new one never inherits an
+        // entry: nothing outlives the owner that created it.
+        let fresh = ArenaProvider::default();
+        assert_eq!(thread_slots(&fresh), 0);
+        fresh.with_worker(&req, &mut |_, _, _| {});
+        assert_eq!(thread_slots(&fresh), 1);
+        assert_eq!(thread_slots(&provider), 1);
+    }
+
+    #[test]
+    fn two_threads_get_two_entries() {
+        let provider = ArenaProvider::default();
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| {
+                    provider.with_worker(&WorkspaceReq::default(), &mut |_, _, _| {});
+                    barrier.wait();
+                });
+            }
+        });
+        assert_eq!(thread_slots(&provider), 2);
+    }
+
+    #[test]
+    fn dropping_a_traced_provider_drops_its_trace_records() {
+        let provider = ArenaProvider::traced();
+        let key = provider.key;
+        provider.with_worker(
+            &WorkspaceReq {
+                a_bytes: 4096,
+                ..Default::default()
+            },
+            &mut |_, _, _| {},
+        );
+        assert!(trace_records(key) > 0);
+        drop(provider);
+        assert_eq!(
+            trace_records(key),
+            0,
+            "a dropped traced provider must not keep records in the process-global log"
+        );
     }
 }

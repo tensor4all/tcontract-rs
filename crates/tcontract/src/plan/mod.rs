@@ -884,18 +884,6 @@ impl<T: Scalar> Plan<T> {
         if p.out_empty() {
             return Ok(());
         }
-        // Availability is resolved here, before the output-only pass below can
-        // write: tcontract has no vendor batched call, so a forced whole-batch
-        // vendor route is refused whatever this plan's strategy is.
-        if matches!(
-            exec.batch_policy().strategy,
-            tcontract_exec::BatchStrategy::WholeBatchVendor
-        ) {
-            return Err(tcontract_exec::ExecError::StrategyUnavailable {
-                strategy: tcontract_exec::BatchStrategy::WholeBatchVendor,
-            }
-            .into());
-        }
         let zero = <T as Element>::zero();
         let (conj_a, conj_b) = (p.a().op().is_conj(), p.b().op().is_conj());
         let (conj_c, conj_d) = (p.op_c().is_conj(), p.d().op().is_conj());

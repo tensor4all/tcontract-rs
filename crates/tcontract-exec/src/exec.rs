@@ -163,9 +163,9 @@ impl<'a> Exec<'a> {
     /// Return this context with a different batch lane policy.
     ///
     /// A serial context has one thread, so the policy cannot change its lane
-    /// count, but it is preserved: a forced
-    /// [`BatchStrategy::WholeBatchVendor`](crate::batch::BatchStrategy::WholeBatchVendor)
-    /// is still refused at one thread instead of silently running `Auto`.
+    /// count, but it is preserved: a forced strategy is still honoured (or
+    /// refused with a typed error) at one thread instead of silently running
+    /// `Auto`.
     ///
     /// # Examples
     ///
@@ -192,23 +192,19 @@ impl<'a> Exec<'a> {
     /// Decide the batch route for `query` on this context's budget and policy.
     ///
     /// This is the one decision function every operation that owns batch lanes
-    /// calls; see [`crate::batch`]. It resolves availability before the caller
-    /// writes anything.
-    ///
-    /// # Errors
-    ///
-    /// [`ExecError::StrategyUnavailable`] for a forced
-    /// [`BatchStrategy::WholeBatchVendor`](crate::batch::BatchStrategy::WholeBatchVendor)
-    /// on a query without a vendor batch route.
+    /// calls; see [`crate::batch`]. Whether a *route* can honour the returned
+    /// decision is the route's own preflight (see
+    /// [`crate::batch::BatchDecision`]'s route contract); the decision itself
+    /// is arithmetic and never fails.
     ///
     /// # Examples
     ///
     /// ```
     /// use tcontract_exec::{BatchQuery, Exec};
-    /// let d = Exec::serial().batch_decision(&BatchQuery::new(4, 1000.0)).unwrap();
+    /// let d = Exec::serial().batch_decision(&BatchQuery::new(4, 1000.0));
     /// assert_eq!((d.lanes, d.item_threads), (1, 1));
     /// ```
-    pub fn batch_decision(&self, query: &BatchQuery) -> Result<BatchDecision, ExecError> {
+    pub fn batch_decision(&self, query: &BatchQuery) -> BatchDecision {
         // INVARIANT: `Exec` budgets are `NonZeroUsize` by construction.
         let budget = NonZeroUsize::new(self.budget()).unwrap_or(NonZeroUsize::MIN);
         crate::batch::batch_decision(self.batch_policy(), budget, query)

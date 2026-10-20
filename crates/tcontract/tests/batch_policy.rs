@@ -2,8 +2,8 @@
 //!
 //! Forcing `Outer`, `Inner` or `Split` must give the bitwise-serial result for
 //! an item-serial kernel (the packed driver guarantees that at any grid), and a
-//! forced `WholeBatchVendor` on a route without a vendor batched call must be
-//! refused before any output is written.
+//! forced strategy the route cannot serve must be refused before any output is
+//! written.
 use std::num::NonZeroUsize;
 
 use strided_view::{StridedView, StridedViewMut};
@@ -81,51 +81,6 @@ fn forced_lanes_are_bitwise_serial_for_the_packed_route() {
         run(&plan, &exec, &a, &b, &mut got, m, n);
         assert_eq!(got, want, "strategy {strategy:?} at budget {budget}");
     }
-}
-
-#[test]
-fn forced_vendor_is_refused_before_any_write() {
-    let (m, n, k) = (4usize, 3usize, 5usize);
-    let a: Vec<f64> = (0..m * k).map(|i| i as f64 + 1.0).collect();
-    let b: Vec<f64> = (0..k * n).map(|i| i as f64 * 0.5 + 1.0).collect();
-    let plan = Plan::<f64>::new(&matmul(m, n, k), &PlanConfig::packed()).unwrap();
-    let tp = pool(4);
-    let p = Pool::borrow(&tp);
-    let exec = Exec::rayon(&p)
-        .with_budget(4)
-        .unwrap()
-        .with_batch_policy(BatchPolicy::new(BatchStrategy::WholeBatchVendor));
-
-    let mut d = vec![17.5f64; m * n];
-    let err = plan
-        .execute_into(
-            &exec,
-            1.0,
-            &StridedView::new(&a, &[m, k], &[1, m as isize], 0).unwrap(),
-            &StridedView::new(&b, &[k, n], &[1, k as isize], 0).unwrap(),
-            &mut StridedViewMut::new(&mut d, &[m, n], &[1, m as isize], 0).unwrap(),
-        )
-        .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            tcontract::Error::Exec(ExecError::StrategyUnavailable { .. })
-        ),
-        "{err}"
-    );
-    assert!(d.iter().all(|&x| x == 17.5), "a refused route wrote to D");
-
-    // `execution_route` reports the same refusal, still without a write.
-    let err = plan
-        .execution_route(&exec, 1.0, tcontract::OutputContract::Initialized)
-        .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            tcontract::Error::Exec(ExecError::StrategyUnavailable { .. })
-        ),
-        "{err}"
-    );
 }
 
 /// `D[i,j,h] = sum_k A[i,k,h] B[k,j,h]`, column-major, `h` outermost.

@@ -250,7 +250,7 @@ impl FaerPlan {
             &BatchQuery::new(count, self.item_muladds::<T>())
                 .with_item_parallel(true)
                 .with_outer_only_when_item_serial(true),
-        )?;
+        );
         let (ap, bp, dp) = (SendConst(a), SendConst(b), SendMut(d));
         let item = |i: usize, par: faer::Par| {
             let i = i as isize;
@@ -269,13 +269,6 @@ impl FaerPlan {
                 )
             }
         };
-        if decision.vendor_batch {
-            // tcontract has no vendor batch call; the central preflight refuses
-            // `WholeBatchVendor` before dispatch, so this is unreachable.
-            return Err(ExecError::StrategyUnavailable {
-                strategy: tcontract_exec::BatchStrategy::WholeBatchVendor,
-            });
-        }
         if decision.lanes > 1 {
             // Each lane runs its items on the granted `item_threads`, taken from
             // the context and never chosen here (`BatchDecision`'s route contract);
