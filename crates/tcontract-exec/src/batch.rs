@@ -13,7 +13,7 @@
 //! [`BatchStrategy::Auto`] is the only heuristic. Every other variant forces a
 //! route and never falls back: the route either honors it (clamped to the
 //! items and the budget) or the library reports
-//! [`ExecError::StrategyUnavailable`].
+//! [`crate::ExecError::StrategyUnavailable`].
 //!
 //! Forced strategies are evaluated against the **original host budget**. Only
 //! `Auto` narrows, because the packed driver narrows its `Exec` twice (see
@@ -121,7 +121,7 @@ pub enum BatchStrategy {
     /// Exactly `lanes` lanes (clamped to the items and the budget), the rest
     /// of the budget split evenly as item threads. A route that cannot run item
     /// threads inside a lane refuses the resulting decision with
-    /// [`ExecError::StrategyUnavailable`] before any write; it never silently
+    /// [`crate::ExecError::StrategyUnavailable`] before any write; it never silently
     /// runs the items serially (see [`BatchDecision`]'s route contract).
     Split {
         /// Requested lane count.
@@ -376,7 +376,7 @@ impl BatchQuery {
 /// sub-team inside a lane either honours both axes or refuses a decision that
 /// asks for both — only a forced [`BatchStrategy::Split`] produces `lanes > 1`
 /// together with `item_threads > 1` — with
-/// [`ExecError::StrategyUnavailable`], before it writes any output. Silently
+/// [`crate::ExecError::StrategyUnavailable`], before it writes any output. Silently
 /// running the items serially inside the lanes is not a route.
 ///
 /// The routes in tcontract, and where each one stands:
