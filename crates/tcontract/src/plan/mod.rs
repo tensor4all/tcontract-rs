@@ -894,35 +894,39 @@ impl<T: Scalar> Plan<T> {
             // `beta == 0` reads no C and faer overwrites D. The batch policy is
             // resolved first so a forced `Sequential` limits this pass too.
             //
-            // A fresh (uninitialized) D is write-only by contract, so it only
-            // reaches the first arms: a separate C initializes it through the
-            // output pass, and with no C term the same pass zero-fills it.
-            // Faer's Replace path may form references over D before it
-            // stores, so that fill is what makes an uninitialized D sound. It
-            // costs one write of D, which the product then overwrites; the
-            // packed driver that served fresh outputs before was measured 4x
-            // slower than faer on a small-M GEMM (tenferro-rs#2233
-            // decode_proj, M=8, K=N=1024: 2.4 ms against 0.57 ms).
+            // A fresh (uninitialized) D is write-only by contract: a separate C
+            // with a nonzero `beta` initializes it through the output pass, and
+            // every other write-only form (no C, or any C at `beta == 0`)
+            // zero-fills it through the same pass. Faer's Replace path may form
+            // references over D before it stores, so that fill is what makes an
+            // uninitialized D sound. It costs one write of D, which the product
+            // then overwrites; the packed driver that served fresh outputs
+            // before was measured 4x slower than faer on a small-M GEMM
+            // (tenferro-rs#2233 decode_proj, M=8, K=N=1024: 2.4 ms against
+            // 0.57 ms).
             let accumulate = match c {
-                CRead::None | CRead::Separate(_)
-                    if fresh && (matches!(c, CRead::None) || beta == zero) =>
-                {
+                CRead::Separate(cp) if beta != zero && !core::ptr::eq(cp, d) => {
+                    // SAFETY: the caller's contract (C disjoint from D).
+                    unsafe { self.output.run(&exec, expr, Inputs::None, c, d) }?;
+                    true
+                }
+                _ if fresh => {
+                    // The fill runs on the calling thread: it is an output-sized
+                    // store, small next to the product, and keeping it out of
+                    // the pool leaves the product as the call's one pool entry
+                    // (the contract `tcontract-capi` observes through its pool
+                    // statistics).
                     let zero_expr = Expr { beta: zero, ..expr };
                     // SAFETY: the caller's write-only contract; the output pass
                     // stores through raw pointers and reads nothing of D.
                     unsafe {
                         self.output
-                            .run(&exec, zero_expr, Inputs::None, CRead::None, d)
+                            .run(&Exec::serial(), zero_expr, Inputs::None, CRead::None, d)
                     }?;
                     false
                 }
                 CRead::None => false,
                 _ if beta == zero => false,
-                CRead::Separate(cp) if !core::ptr::eq(cp, d) => {
-                    // SAFETY: the caller's contract (C disjoint from D).
-                    unsafe { self.output.run(&exec, expr, Inputs::None, c, d) }?;
-                    true
-                }
                 _ => {
                     let identity = beta == <T as Element>::one() && !conj_c && !conj_d;
                     if !identity {
