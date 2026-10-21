@@ -30,6 +30,16 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOC: Counting = Counting;
 
+/// The counter is process-global and the test harness runs tests on parallel
+/// threads, so measured regions run one at a time.
+static MEASURE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn measured() -> std::sync::MutexGuard<'static, ()> {
+    MEASURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 const N: usize = 4;
 
 /// `D[i,j] = sum_k A[i,k] B[k,j] + beta * C[i,j]`, column-major, C separate.
@@ -49,6 +59,7 @@ fn problem() -> Problem {
 
 #[test]
 fn beta_pass_is_allocation_free_and_fresh_d_is_not_read() {
+    let _measured = measured();
     let config = PlanConfig {
         fresh_output: true,
         ..PlanConfig::default()
@@ -106,6 +117,7 @@ fn beta_pass_is_allocation_free_and_fresh_d_is_not_read() {
 /// plan-reuse contract).
 #[test]
 fn fresh_faer_route_is_allocation_free_once_warm() {
+    let _measured = measured();
     let spec = |d: &[usize], s: &[isize]| OperandSpec::new(LayoutSpec::new(d, s, 0).unwrap());
     let (dims, strides) = ([N, N], [1isize, N as isize]);
     let problem = Problem::from_labels(
