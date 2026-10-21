@@ -60,7 +60,7 @@ pub use report::{Algorithm, PackedReport, PlanReport, Reason};
 
 use crate::api::{
     AccumulationSource, AliasError, CSpec, ConfigError, Diagnostics, LayoutError, OperandId,
-    PreparedContraction, Problem, Result, Scalar, Unsupported,
+    PreparedContraction, Problem, Result, Scalar,
 };
 use crate::driver;
 use crate::resolve;
@@ -123,9 +123,6 @@ enum Strategy<T: Scalar> {
 pub struct Plan<T: Scalar> {
     problem: Problem,
     strategy: Strategy<T>,
-    /// Faer's Replace paths may form references before writing; raw/fresh
-    /// execution uses this prepared, reference-free packed alternative.
-    fresh_packed: Option<Box<Packed<T>>>,
     /// The pass over the output's elements: `alpha == 0` and empty `K`.
     output: ElementPlan,
     report: PlanReport,
@@ -266,11 +263,6 @@ impl<T: Scalar> Plan<T> {
             (Reason::Fused, Some(f)) => Strategy::Faer(f),
             _ => Strategy::Packed(Box::new(Self::plan_packed(problem, config, None)?)),
         };
-        let fresh_packed = if config.fresh_output && matches!(strategy, Strategy::Faer(_)) {
-            Some(Box::new(Self::plan_packed(problem, config, None)?))
-        } else {
-            None
-        };
         let (algorithm, packed_report) = match &strategy {
             Strategy::Packed(p) => (Algorithm::Packed, Some(packed_report(p))),
             Strategy::Faer(_) => (Algorithm::Faer, None),
@@ -287,7 +279,6 @@ impl<T: Scalar> Plan<T> {
             diagnostics: Diagnostics::new("tcontract", algorithm.name()),
             problem: owned,
             strategy,
-            fresh_packed,
             _t: PhantomData,
         })
     }
@@ -633,10 +624,10 @@ impl<T: Scalar> Plan<T> {
     /// problem's address range for that operand (see
     /// [`Problem::span`](crate::api::Problem::span), relative to the operand's
     /// logical offset); `d` is valid for writes and nothing else accesses any of
-    /// the memory for the duration of the call. A Faer plan without
-    /// `PlanConfig::fresh_output` requires initialized D even at beta zero:
-    /// Faer may form references before storing. Prepare `fresh_output` when D
-    /// may be uninitialized. A nonzero beta reading D always requires live D.
+    /// the memory for the duration of the call. D may be uninitialized when the
+    /// call is write-only (`beta` zero, or no C read): the Faer route zero-fills
+    /// it in one output pass before it forms references. A nonzero beta reading
+    /// D always requires live D.
     #[allow(clippy::too_many_arguments)] // INVARIANT: the contraction argument set.
     pub unsafe fn execute_raw(
         &self,
@@ -721,14 +712,6 @@ impl<T: Scalar> Plan<T> {
         }
     }
 
-    /// The fresh-route decision for a declared output contract: the
-    /// reference-free packed alternative is used only for a `Fresh` output that
-    /// was prepared.
-    fn fresh_route(&self, output: OutputContract) -> bool {
-        output == OutputContract::Fresh
-            && (!matches!(self.strategy, Strategy::Faer(_)) || self.fresh_packed.is_some())
-    }
-
     /// The raw semantics shared by [`Plan::execute_raw`] and
     /// [`Plan::execute_raw_in`]: the C read, the storage contract, then the one
     /// dispatch. `check_raw` and any workspace-bound check already ran.
@@ -763,7 +746,7 @@ impl<T: Scalar> Plan<T> {
         let fresh = match output {
             // `execute_raw` has no declared contract: keep its write-only
             // optimization (a fresh route is only safe when write-only).
-            None => write_only && self.fresh_route(OutputContract::Fresh),
+            None => write_only,
             // An initialized destination uses the initialized route, which needs
             // no prepared fresh alternative and no workspace.
             Some(OutputContract::Initialized) => false,
@@ -771,12 +754,6 @@ impl<T: Scalar> Plan<T> {
                 if !write_only {
                     // A fresh D would be read as the accumulation source.
                     return Err(LayoutError::CMode.into());
-                }
-                if !self.fresh_route(OutputContract::Fresh) {
-                    return Err(Unsupported::Reason(
-                        "fresh output was not prepared; set PlanConfig::fresh_output when constructing the plan",
-                    )
-                    .into());
                 }
                 true
             }
@@ -907,25 +884,8 @@ impl<T: Scalar> Plan<T> {
             unsafe { self.output.run(exec, expr, Inputs::None, c, d) }?;
             return Ok(());
         }
-        if fresh {
-            if let Some(pk) = &self.fresh_packed {
-                let exec = self.batch_context(exec)?;
-                let cp = match c {
-                    CRead::Separate(c) => c,
-                    _ => d.cast_const(),
-                };
-                // SAFETY: the caller's write-only contract and validated packed
-                // geometry; unlike Faer Replace, packed leaves write through raw
-                // pointers without first forming initialized output references.
-                return unsafe {
-                    driver::execute_packed(
-                        &pk.plan, &pk.rg, &exec, workspace, alpha, a, b, beta, cp, d,
-                    )
-                    .map_err(Into::into)
-                };
-            }
-        }
         if let Strategy::Faer(f) = &self.strategy {
+            let exec = self.batch_context(exec)?;
             // The C term goes into D first, in one parallel output-sized
             // pass (not an operand copy; see `strategy::faer`), and faer
             // accumulates the product. D itself (in place, or a separate C
@@ -933,8 +893,29 @@ impl<T: Scalar> Plan<T> {
             // when `beta` and the conjugations are not the identity;
             // `beta == 0` reads no C and faer overwrites D. The batch policy is
             // resolved first so a forced `Sequential` limits this pass too.
-            let exec = self.batch_context(exec)?;
+            //
+            // A fresh (uninitialized) D is write-only by contract, so it only
+            // reaches the first arms: a separate C initializes it through the
+            // output pass, and with no C term the same pass zero-fills it.
+            // Faer's Replace path may form references over D before it
+            // stores, so that fill is what makes an uninitialized D sound. It
+            // costs one write of D, which the product then overwrites; the
+            // packed driver that served fresh outputs before was measured 4x
+            // slower than faer on a small-M GEMM (tenferro-rs#2233
+            // decode_proj, M=8, K=N=1024: 2.4 ms against 0.57 ms).
             let accumulate = match c {
+                CRead::None | CRead::Separate(_)
+                    if fresh && (matches!(c, CRead::None) || beta == zero) =>
+                {
+                    let zero_expr = Expr { beta: zero, ..expr };
+                    // SAFETY: the caller's write-only contract; the output pass
+                    // stores through raw pointers and reads nothing of D.
+                    unsafe {
+                        self.output
+                            .run(&exec, zero_expr, Inputs::None, CRead::None, d)
+                    }?;
+                    false
+                }
                 CRead::None => false,
                 _ if beta == zero => false,
                 CRead::Separate(cp) if !core::ptr::eq(cp, d) => {
