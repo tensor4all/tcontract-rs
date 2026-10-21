@@ -468,7 +468,11 @@ impl<T: Scalar> Job<'_, T> {
     fn zero(&self, exec: &Exec<'_>) -> Done {
         self.with(exec, |dims, st| unsafe {
             let z = [<T as Element>::zero()];
-            let zeros = vec![0isize; dims.len()];
+            // Inline for every rank the combined layout keeps inline: this pass
+            // serves a fresh output on the faer route, which must stay
+            // allocation-free per call (tenferro's eager plan-reuse contract).
+            let zeros: TinyVec<[isize; COMBINED_RANK]> =
+                core::iter::repeat_n(0isize, dims.len()).collect();
             let zv = StridedView::<T, Identity>::new_unchecked(&z, dims, &zeros, 0);
             map_into(
                 &mut write_view_uninit(self.d.get(), dims, st[3]),

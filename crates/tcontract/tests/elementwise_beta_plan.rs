@@ -99,3 +99,48 @@ fn beta_pass_is_allocation_free_and_fresh_d_is_not_read() {
         assert_eq!(*got, 0.5 * want);
     }
 }
+
+/// A fresh output on the faer route (tcontract 0.4.3) is zero-filled by the
+/// output pass before the product; once warm, that pass allocates nothing, so
+/// a repeated allocating contraction stays allocation-free (tenferro's eager
+/// plan-reuse contract).
+#[test]
+fn fresh_faer_route_is_allocation_free_once_warm() {
+    let spec = |d: &[usize], s: &[isize]| OperandSpec::new(LayoutSpec::new(d, s, 0).unwrap());
+    let (dims, strides) = ([N, N], [1isize, N as isize]);
+    let problem = Problem::from_labels(
+        DType::F64,
+        spec(&dims, &strides),
+        spec(&dims, &strides),
+        CSpec::Absent,
+        spec(&dims, &strides),
+        &Labels::new(&[0, 2], &[2, 1], &[0, 1]),
+    )
+    .unwrap();
+    let plan = Plan::<f64>::new(&problem, &PlanConfig::default()).unwrap();
+    assert_eq!(plan.report().algorithm, tcontract::Algorithm::Faer);
+    let arena = ArenaProvider::new();
+    let exec = Exec::serial_with_workspace(&arena);
+    let a = vec![1.0f64; N * N];
+    let b = vec![1.0f64; N * N];
+    let mut d: [MaybeUninit<f64>; N * N] = [MaybeUninit::uninit(); N * N];
+    let run = |d: &mut [MaybeUninit<f64>; N * N]| {
+        let out = plan
+            .execute_uninit_slices(
+                &exec,
+                1.0,
+                (&a, 0),
+                (&b, 0),
+                0.0,
+                SliceAccumulationSource::Absent,
+                (d, 0),
+            )
+            .unwrap();
+        assert!(out.iter().all(|&x| x == N as f64));
+    };
+    run(&mut d);
+    let before = COUNT.load(Relaxed);
+    run(&mut d);
+    let allocs = COUNT.load(Relaxed) - before;
+    assert_eq!(allocs, 0, "the fresh faer route allocated {allocs} times");
+}
