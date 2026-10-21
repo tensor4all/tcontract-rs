@@ -239,3 +239,77 @@ fn rank_zero_and_empty_output_have_exact_completion_contracts() {
         )
         .is_err());
 }
+
+/// Every write-only C mode serves a fresh output on the Faer route: no C, the
+/// output itself at `beta == 0`, and a separate C at zero and nonzero `beta`.
+/// The 2x2 problem contracts `A` (row-major) with `B`; `D = alpha * A * B`
+/// plus `beta * C` where C is read.
+#[test]
+fn fresh_faer_outputs_cover_every_write_only_c_mode() {
+    use tcontract::api::Op;
+    let a = [1.0f64, 2.0, 3.0, 4.0]; // row-major 2x2: [[1, 2], [3, 4]]
+    let b = [5.0f64, 6.0, 7.0, 8.0]; // column-major 2x2: [[5, 7], [6, 8]]
+    let c = [10.0f64, 20.0, 30.0, 40.0]; // column-major
+                                         // A * B, column-major: [[17, 23], [39, 53]] -> [17, 39, 23, 53]
+    let product = [17.0f64, 39.0, 23.0, 53.0];
+    let build = |c_spec: CSpec| {
+        let labels = Labels::new(&[0, 1], &[1, 2], &[0, 2]);
+        let labels = if matches!(c_spec, CSpec::Separate(_)) {
+            labels.with_c(&[0, 2])
+        } else {
+            labels
+        };
+        Problem::from_labels(
+            DType::F64,
+            operand(&[2, 2], &[2, 1]),
+            operand(&[2, 2], &[1, 2]),
+            c_spec,
+            operand(&[2, 2], &[1, 2]),
+            &labels,
+        )
+        .unwrap()
+    };
+    let cases: [(CSpec, f64, SliceAccumulationSource<'_, f64>, [f64; 4]); 4] = [
+        (CSpec::Absent, 0.0, SliceAccumulationSource::Absent, product),
+        (
+            CSpec::Output(Op::Identity),
+            0.0,
+            SliceAccumulationSource::Output,
+            product,
+        ),
+        (
+            CSpec::Separate(operand(&[2, 2], &[1, 2])),
+            0.0,
+            SliceAccumulationSource::Separate((&c, 0)),
+            product,
+        ),
+        (
+            CSpec::Separate(operand(&[2, 2], &[1, 2])),
+            2.0,
+            SliceAccumulationSource::Separate((&c, 0)),
+            [37.0, 79.0, 83.0, 133.0],
+        ),
+    ];
+    for (c_spec, beta, source, want) in cases {
+        let plan = Plan::<f64>::new(&build(c_spec), &PlanConfig::default()).unwrap();
+        assert_eq!(plan.report().algorithm, Algorithm::Faer);
+        assert_eq!(
+            plan.execution_route(&Exec::serial(), 1.0, OutputContract::Fresh)
+                .unwrap(),
+            ExecutionRoute::Faer
+        );
+        let mut output = [MaybeUninit::uninit(); 4];
+        let d = plan
+            .execute_uninit_slices(
+                &Exec::serial(),
+                1.0,
+                (&a, 0),
+                (&b, 0),
+                beta,
+                source,
+                (&mut output, 0),
+            )
+            .unwrap();
+        assert_eq!(d, &want, "beta {beta}");
+    }
+}
