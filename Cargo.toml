@@ -17,22 +17,26 @@ edition = "2021"
 rust-version = "1.89"
 
 [workspace.dependencies]
-# strided-rs, pinned to published crates.io releases (exact requirements). Keep
-# all strided crates on one source; downstream consumers must coordinate this
-# pin to share `StridedView` types. strided 0.6.0 is one release train across all
-# four crates (basic/view/perm/kernel) and adds the `UpdatePlan` primitives #121
-# compiles at plan time.
-strided-basic = { version = "=0.6.3", default-features = false }
-strided-view = { version = "=0.6.0" }
-strided-perm = { version = "=0.6.0" }
-strided-kernel = { version = "=0.6.0" }
+# strided-rs from published crates.io releases, with compatible (`^`) requirements.
+# Every crate here comes from the registry, so cargo resolves one 0.6.x version
+# and `StridedView` stays a single type; an exact requirement would instead force
+# a coordinated release of tcontract, cpueinsum and tlinalg for every strided
+# patch (tensor4all/tenferro-rs#2214). Exact requirements stay where the source
+# identity is load-bearing: a git revision paired with its release version.
+# strided 0.6.0 is one release train across all four crates
+# (basic/view/perm/kernel) and adds the `UpdatePlan` primitives #121 compiles at
+# plan time.
+strided-basic = { version = "0.6.3", default-features = false }
+strided-view = { version = "0.6.0" }
+strided-perm = { version = "0.6.0" }
+strided-kernel = { version = "0.6.0" }
 tcontract-kernel = { version = "0.3.0", path = "crates/tcontract-kernel", default-features = false }
-tcontract-exec = { version = "0.4.1", path = "crates/tcontract-exec" }
+tcontract-exec = { version = "0.4.2", path = "crates/tcontract-exec" }
 tcontract-capi = { version = "0.1.0", path = "crates/tcontract-capi" }
 # Path-only on purpose: `tcontract` only dev-depends on it, and a version here
 # makes `cargo package` resolve the never-published testkit from crates.io and fail.
 tcontract-testkit = { path = "crates/tcontract-testkit" }
-tcontract = { version = "0.4.1", path = "crates/tcontract" }
+tcontract = { version = "0.4.2", path = "crates/tcontract" }
 
 approx = "0.5"
 criterion = "0.5"
