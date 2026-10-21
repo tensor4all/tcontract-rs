@@ -120,7 +120,6 @@ impl<T: Scalar> Plan<T> {
     pub fn workspace_req(&self, exec: &Exec<'_>, output: OutputContract) -> WorkspaceReq {
         let packed = match (&self.strategy, output) {
             (Strategy::Packed(pk), _) => Some(pk.as_ref()),
-            (Strategy::Faer(_), OutputContract::Fresh) => self.fresh_packed.as_deref(),
             _ => None,
         };
         match packed {
@@ -135,9 +134,8 @@ impl<T: Scalar> Plan<T> {
     /// from the previous destination. Requery if caller/executor changes.
     ///
     /// # Errors
-    /// Returns `Error::Unsupported` for an unprepared fresh Faer route and
-    /// `Error::Exec` when a packed SPMD team is unavailable from a worker of
-    /// the same pool, before any write.
+    /// Returns `Error::Exec` when a packed SPMD team is unavailable from a
+    /// worker of the same pool, before any write.
     ///
     /// # Examples
     /// ```
@@ -157,25 +155,19 @@ impl<T: Scalar> Plan<T> {
         alpha: T,
         output: OutputContract,
     ) -> Result<ExecutionRoute> {
-        if output == OutputContract::Fresh
-            && matches!(self.strategy, Strategy::Faer(_))
-            && self.fresh_packed.is_none()
-        {
-            return Err(Unsupported::Reason("fresh output was not prepared; set PlanConfig::fresh_output when constructing the plan").into());
-        }
         if self.problem.out_empty() {
             return Ok(ExecutionRoute::Empty);
         }
         if self.problem.k_empty() || alpha == <T as Element>::zero() {
             return Ok(ExecutionRoute::OutputOnly);
         }
-        let packed = match (&self.strategy, output) {
-            (Strategy::Packed(pk), _) => Some(pk.as_ref()),
-            (Strategy::Faer(_), OutputContract::Fresh) => self.fresh_packed.as_deref(),
+        // Fresh and initialized outputs take the same route: a fresh Faer
+        // output is zero-filled first, which needs no workspace.
+        let pk = match (&self.strategy, output) {
+            (Strategy::Packed(pk), _) => pk.as_ref(),
             (Strategy::Faer(_), _) => return Ok(ExecutionRoute::Faer),
             (Strategy::Elementwise(_), _) => return Ok(ExecutionRoute::Elementwise),
         };
-        let pk = packed.ok_or(Unsupported::Reason("fresh output was not prepared; set PlanConfig::fresh_output when constructing the plan"))?;
         let exec = self.batch_context(exec)?;
         let geometry = crate::driver::execution_geometry::<T>(&pk.plan, &pk.rg, &exec)?;
         Ok(ExecutionRoute::Packed {

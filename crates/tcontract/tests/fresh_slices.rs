@@ -10,7 +10,7 @@ fn operand(dims: &[usize], strides: &[isize]) -> OperandSpec {
 }
 
 #[test]
-fn faer_matvec_has_a_prepared_reference_free_fresh_route() {
+fn faer_matvec_serves_a_fresh_output_on_the_faer_route() {
     let problem = Problem::from_labels(
         DType::F64,
         operand(&[2, 2], &[2, 1]),
@@ -20,13 +20,21 @@ fn faer_matvec_has_a_prepared_reference_free_fresh_route() {
         &Labels::new(&[0, 1], &[1, 2], &[0, 2]),
     )
     .unwrap();
+    // A plan needs no preparation for a fresh output: `fresh_output` is
+    // accepted but changes nothing.
     let unprepared = Plan::<f64>::new(&problem, &PlanConfig::default()).unwrap();
-    assert!(unprepared
-        .execution_route(&Exec::serial(), 1.0, OutputContract::Fresh)
-        .is_err());
-    assert!(unprepared
-        .execution_route(&Exec::serial(), 0.0, OutputContract::Fresh)
-        .is_err());
+    assert_eq!(
+        unprepared
+            .execution_route(&Exec::serial(), 1.0, OutputContract::Fresh)
+            .unwrap(),
+        ExecutionRoute::Faer
+    );
+    assert_eq!(
+        unprepared
+            .execution_route(&Exec::serial(), 0.0, OutputContract::Fresh)
+            .unwrap(),
+        ExecutionRoute::OutputOnly
+    );
     let config = PlanConfig {
         fresh_output: true,
         ..PlanConfig::default()
@@ -38,11 +46,11 @@ fn faer_matvec_has_a_prepared_reference_free_fresh_route() {
             .unwrap(),
         ExecutionRoute::Faer
     );
-    assert!(matches!(
+    assert_eq!(
         plan.execution_route(&Exec::serial(), 1.0, OutputContract::Fresh)
             .unwrap(),
-        ExecutionRoute::Packed { width: 1, .. }
-    ));
+        ExecutionRoute::Faer
+    );
     let mut output = [MaybeUninit::uninit(); 2];
     let d = plan
         .execute_uninit_slices(

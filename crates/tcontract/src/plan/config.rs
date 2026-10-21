@@ -185,9 +185,9 @@ pub struct PlanConfig {
     /// Refuse a plan that would copy a whole operand ([`Unsupported::WouldMaterialize`](crate::api::Unsupported)).
     /// Bounded packing inside the packed driver is not a materialization.
     pub no_materialize: bool,
-    /// Prepare a reference-free route for fresh, uninitialized output. Faer
-    /// plans prepare a packed alternative; the initialized route is unchanged.
-    /// Default false keeps initialized-only plan construction lightweight.
+    /// Accepted for compatibility; no longer consulted. Every plan serves a
+    /// fresh, uninitialized output: the Faer route zero-fills `D` in one output
+    /// pass before the product, so no packed alternative is prepared.
     pub fresh_output: bool,
     /// Complex scheme. `None` keeps the baseline default; a forced family must
     /// agree. Forces the packed driver when set.
