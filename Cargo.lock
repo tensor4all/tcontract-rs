@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "faer",
  "num-complex",
