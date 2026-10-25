@@ -1,7 +1,5 @@
 //! One geometry decision shared by reporting and execution.
 
-use std::num::NonZeroUsize;
-
 use super::{block, dynamic, pack_b_needed, BLOCK_MC_BUDGET};
 use crate::plan::{PackedPlan, PackedRoute};
 use tcontract_exec::{BatchPolicy, BatchQuery, BatchStrategy, Exec, ExecError, WorkspaceReq};
@@ -62,6 +60,7 @@ fn batch_query(plan: &PackedPlan, m: usize, n: usize, k: usize, complex: bool) -
 pub(crate) fn execution_geometry<T: Element>(
     plan: &PackedPlan,
     rg: &ResolvedGemm<T::Real>,
+    exec: &Exec<'_>,
     budget: usize,
     policy: &BatchPolicy,
     team: bool,
@@ -97,10 +96,10 @@ pub(crate) fn execution_geometry<T: Element>(
     // become inner parallelism.
     let policy = *policy;
     let forced = !matches!(policy.strategy, BatchStrategy::Auto);
-    let decision = tcontract_exec::batch::batch_decision(
+    let decision = tcontract_exec::batch::batch_decision_within(
         &policy,
-        // INVARIANT: the caller's budget is at least one thread.
-        NonZeroUsize::new(budget).unwrap_or(NonZeroUsize::MIN),
+        exec,
+        budget,
         &batch_query(plan, m, n, k, T::IS_COMPLEX),
     );
     // A split asks for lanes *and* item threads, and this driver's inner

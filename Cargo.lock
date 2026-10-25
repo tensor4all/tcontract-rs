@@ -861,7 +861,7 @@ dependencies = [
 [[package]]
 name = "strided-basic"
 version = "0.8.0"
-source = "git+https://github.com/tensor4all/strided-rs?rev=d24474d89dd3c6ca8ebdc16a5638289787376575#d24474d89dd3c6ca8ebdc16a5638289787376575"
+source = "git+https://github.com/tensor4all/strided-rs?rev=6821b53e201a9684520ac8458467656143c934f2#6821b53e201a9684520ac8458467656143c934f2"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -874,7 +874,7 @@ dependencies = [
 [[package]]
 name = "strided-perm"
 version = "0.8.0"
-source = "git+https://github.com/tensor4all/strided-rs?rev=d24474d89dd3c6ca8ebdc16a5638289787376575#d24474d89dd3c6ca8ebdc16a5638289787376575"
+source = "git+https://github.com/tensor4all/strided-rs?rev=6821b53e201a9684520ac8458467656143c934f2#6821b53e201a9684520ac8458467656143c934f2"
 dependencies = [
  "strided-view",
  "thiserror",
@@ -885,7 +885,7 @@ dependencies = [
 [[package]]
 name = "strided-traits"
 version = "0.7.0"
-source = "git+https://github.com/tensor4all/strided-rs?rev=d24474d89dd3c6ca8ebdc16a5638289787376575#d24474d89dd3c6ca8ebdc16a5638289787376575"
+source = "git+https://github.com/tensor4all/strided-rs?rev=6821b53e201a9684520ac8458467656143c934f2#6821b53e201a9684520ac8458467656143c934f2"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -894,7 +894,7 @@ dependencies = [
 [[package]]
 name = "strided-view"
 version = "0.7.0"
-source = "git+https://github.com/tensor4all/strided-rs?rev=d24474d89dd3c6ca8ebdc16a5638289787376575#d24474d89dd3c6ca8ebdc16a5638289787376575"
+source = "git+https://github.com/tensor4all/strided-rs?rev=6821b53e201a9684520ac8458467656143c934f2#6821b53e201a9684520ac8458467656143c934f2"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -953,8 +953,7 @@ dependencies = [
 [[package]]
 name = "t4a-faer"
 version = "0.24.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27493e13b4102a34c25e63775ebdefe44cf3d15476e88371dc46f38c2cae82be"
+source = "git+https://github.com/tensor4all/faer?rev=9cd64f022a275071b64fbd0872e7c1f4d8d51bf9#9cd64f022a275071b64fbd0872e7c1f4d8d51bf9"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -971,13 +970,13 @@ dependencies = [
  "spindle",
  "t4a-faer-traits",
  "t4a-private-gemm-x86",
+ "threadteam",
 ]
 
 [[package]]
 name = "t4a-faer-traits"
 version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b20254002b5028791c3b97cf7baebce6ea5f3541977348da1c109d16c1dc889"
+source = "git+https://github.com/tensor4all/faer?rev=9cd64f022a275071b64fbd0872e7c1f4d8d51bf9#9cd64f022a275071b64fbd0872e7c1f4d8d51bf9"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -1118,8 +1117,10 @@ dependencies = [
 [[package]]
 name = "threadteam"
 version = "0.1.0"
-source = "git+https://github.com/tensor4all/threadteam-rs?rev=97404b580951aa9d89910a739618ce044e988b16#97404b580951aa9d89910a739618ce044e988b16"
+source = "git+https://github.com/tensor4all/threadteam-rs?rev=5afe0b4d2ea604d0d8fe6b563bacf4c80f2d0bc4#5afe0b4d2ea604d0d8fe6b563bacf4c80f2d0bc4"
 dependencies = [
+ "libc",
+ "loom",
  "rayon",
  "thiserror",
 ]

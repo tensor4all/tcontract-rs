@@ -688,6 +688,8 @@ mod tests {
         let seen = seen.into_inner().unwrap();
         assert!(seen.iter().all(|&(_, in_b)| !in_b));
         assert!(seen.iter().any(|&(in_a, _)| in_a));
+        // The token borrows `a`'s pool; end the borrow before `a` is destroyed.
+        drop(exec);
         Executor::destroy(Box::into_raw(a)).unwrap();
         Executor::destroy(Box::into_raw(b)).unwrap();
     }

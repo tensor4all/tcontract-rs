@@ -586,13 +586,14 @@ where
     // are allocation-free, because the partition below depends on them and the
     // team's buffer is only borrowed once the shape is known.
     let mut geometry =
-        execution_geometry::<T>(plan, &rg, exec.budget(), exec.batch_policy(), true)?;
+        execution_geometry::<T>(plan, &rg, exec, exec.budget(), exec.batch_policy(), true)?;
     // A team needs the token narrowed to its width to co-schedule; `fork`
     // children and callers that are workers of the pool cannot. That is known
     // here, before a lease or a scatter is built, so the call takes the
     // barrier-free geometry directly instead of being refused later.
     if geometry.pm > 1 && !team_allowed(exec, geometry.p) {
-        geometry = execution_geometry::<T>(plan, &rg, exec.budget(), exec.batch_policy(), false)?;
+        geometry =
+            execution_geometry::<T>(plan, &rg, exec, exec.budget(), exec.batch_policy(), false)?;
     }
     let call = ResolvedCall {
         pack_b_needed: !geometry.direct_b,

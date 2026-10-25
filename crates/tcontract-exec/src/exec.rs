@@ -192,7 +192,7 @@ impl<'a> Exec<'a> {
     /// assert_eq!((d.lanes, d.item_threads), (1, 1));
     /// ```
     pub fn batch_decision(&self, query: &BatchQuery) -> BatchDecision {
-        crate::batch::batch_decision(&self.policy, self.token.budget(), query)
+        crate::batch::batch_decision(&self.policy, self, query)
     }
 
     /// Most threads an operation may occupy (1 for a serial context).
@@ -209,16 +209,70 @@ impl<'a> Exec<'a> {
         self.workspace
     }
 
-    /// Partition width for work estimated at `serial_ns` on one thread,
-    /// minimizing the [`WidthPolicy`](crate::WidthPolicy) cost model within the budget.
+    /// The placement token, borrowed: for the rules that read its dispatch
+    /// costs without taking authority over it (`pays`, `width_for`, `dispatch_cost`).
+    pub fn token_ref(&self) -> &threadteam::Exec<'a> {
+        &self.token
+    }
+
+    /// Partition width for work estimated at `serial_ns` on one thread that the
+    /// region performs in `sections` dispatches: the width in `1..=budget` at which
+    /// it pays under the dispatch cost of this token (see
+    /// [`threadteam::Exec::width_for`]); `1` when none does.
     ///
     /// # Examples
     ///
     /// ```
-    /// use tcontract_exec::{Exec, WidthPolicy};
-    /// assert_eq!(Exec::serial().width_for(1e9, &WidthPolicy::default()), 1);
+    /// use tcontract_exec::Exec;
+    /// assert_eq!(Exec::serial().width_for(1e9, 1), 1);
     /// ```
-    pub fn width_for(&self, serial_ns: f64, policy: &crate::WidthPolicy) -> usize {
-        crate::width::width_for(serial_ns, policy, self.budget())
+    pub fn width_for(&self, serial_ns: f64, sections: u32) -> usize {
+        self.token.width_for(ns_duration(serial_ns), sections).get()
+    }
+
+    /// [`Exec::width_for`] as if the budget were `budget` (clamped to the real one),
+    /// with the dispatch costs of this token: the rule for a stage that was
+    /// already narrowed to `budget` slots without narrowing the token.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract_exec::Exec;
+    /// assert_eq!(Exec::serial().width_for_within(4, 1e9, 1), 1);
+    /// ```
+    pub fn width_for_within(&self, budget: usize, serial_ns: f64, sections: u32) -> usize {
+        let budget = NonZeroUsize::new(budget.max(1))
+            .unwrap_or(NonZeroUsize::MIN)
+            .min(self.token.budget());
+        threadteam::width_for_by(ns_duration(serial_ns), sections, budget, |k| {
+            self.token.dispatch_cost(k)
+        })
+        .get()
+    }
+
+    /// Whether `serial_ns` of work in `sections` dispatches pays at `width`
+    /// participants (see [`threadteam::Exec::pays`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract_exec::Exec;
+    /// assert!(!Exec::serial().pays(1e9, 1, 2));
+    /// ```
+    pub fn pays(&self, serial_ns: f64, sections: u32, width: usize) -> bool {
+        let width = NonZeroUsize::new(width).unwrap_or(NonZeroUsize::MIN);
+        self.token.pays(ns_duration(serial_ns), sections, width)
+    }
+}
+
+/// A non-negative estimate in nanoseconds as a `Duration`: NaN and negative values
+/// are zero (they stay serial), and an overflowing value saturates.
+fn ns_duration(ns: f64) -> std::time::Duration {
+    if ns.is_nan() || ns <= 0.0 {
+        std::time::Duration::ZERO
+    } else if ns >= 1e18 {
+        std::time::Duration::from_secs(u64::MAX / 4)
+    } else {
+        std::time::Duration::from_secs_f64(ns * 1e-9)
     }
 }

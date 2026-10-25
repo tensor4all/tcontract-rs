@@ -176,6 +176,7 @@ impl<T: Scalar> Plan<T> {
         let geometry = crate::driver::execution_geometry::<T>(
             &pk.plan,
             &pk.rg,
+            exec,
             self.batch_budget(exec),
             exec.batch_policy(),
             true,

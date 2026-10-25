@@ -152,7 +152,6 @@ pub fn contract_batched<T: Scalar>(
         return Ok(());
     }
     let count = items.len();
-    let budget = NonZeroUsize::new(exec.budget()).unwrap_or(NonZeroUsize::MIN);
     // The batch route, before any item writes. The item count is the whole rule
     // here -- there is no work threshold -- so the default `Auto` maps to the
     // route-specific forced strategies that reproduce the pre-#123 contract:
@@ -166,7 +165,7 @@ pub fn contract_batched<T: Scalar>(
             } else {
                 BatchStrategy::Inner
             };
-            batch_decision(&exec.batch_policy().with_strategy(strategy), budget, &query)
+            batch_decision(&exec.batch_policy().with_strategy(strategy), exec, &query)
         }
         _ => exec.batch_decision(&query),
     };

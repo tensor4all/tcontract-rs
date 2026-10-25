@@ -92,6 +92,40 @@ fn one_large_gemm_enters_the_pool_once_and_width_one_never() {
     assert_eq!(installs(single_root), 0);
 }
 
+/// A token that carries a team hands faer a `Par::Team`: the GEMM runs as team
+/// sections on the reserved members, so it makes no entry into the pool (a plain
+/// token enters once, see the test above), and the result agrees with the serial
+/// one numerically.
+#[test]
+fn a_team_token_runs_faer_on_the_team_without_a_pool_entry() {
+    use tcontract_exec::BatchPolicy;
+
+    let dims = [384usize, 384, 384, 1];
+    let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
+    let serial = run(&plan, dims, &a, &b, &mut Exec::serial());
+    let sp = threadteam::Pool::builder()
+        .threads(4)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("pool");
+    let Ok(team) = sp.into_team(4) else {
+        // The host could not reserve the members; the plain route is covered above.
+        return;
+    };
+    let token = team.exec(4);
+    assert!(token.carries_team());
+    let root = token.ledger_root().expect("a team token is a ledger root");
+    let mut exec = Exec::from_token(token, None, BatchPolicy::default());
+    let wide = run(&plan, dims, &a, &b, &mut exec);
+    let err = wide
+        .iter()
+        .zip(&serial)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f64::max);
+    assert!(err < 1e-9, "{err}");
+    assert_eq!(installs(root), 0, "team sections make no pool entry");
+}
+
 /// A forced `Split` is honoured on this route, not silently discarded: at a
 /// budget of four it resolves to two lanes of two item threads, every item runs
 /// on the width it was granted, and the result is the sequential result exactly.
