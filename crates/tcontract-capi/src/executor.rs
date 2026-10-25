@@ -21,10 +21,10 @@
 //! create a second one.
 #![allow(non_camel_case_types)]
 
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::Arc;
 
 use ::tcontract_exec::{ArenaProvider, Exec, Pool};
 
@@ -58,8 +58,9 @@ enum Kind {
         // one keeps its own workspace, so concurrent numerical work belongs on
         // one of them.
         pool: Box<Pool<'static>>,
-        /// Present for an owned pool, whose workers `destroy` waits for.
-        exits: Option<Arc<Exits>>,
+        /// Present for an owned pool, whose workers `destroy` refuses to be
+        /// called from.
+        worker_id: Option<usize>,
         budget: AtomicUsize,
     },
 }
@@ -115,12 +116,12 @@ impl Executor {
 
     /// A pool of `nthreads >= 2` workers that this executor owns.
     fn pooled(nthreads: usize, stack: usize) -> Result<Box<Self>, FfiError> {
-        let (pool, exits) = Workers::start(nthreads, stack)?;
+        let (pool, worker_id) = Workers::start(nthreads, stack)?;
         Ok(Box::new(Self {
             inflight: AtomicUsize::new(0),
             kind: Kind::Pool {
                 pool: Box::new(Pool::shared(pool)),
-                exits: Some(exits),
+                worker_id: Some(worker_id),
                 budget: AtomicUsize::new(nthreads),
             },
         }))
@@ -137,7 +138,7 @@ impl Executor {
             inflight: AtomicUsize::new(0),
             kind: Kind::Pool {
                 pool: Box::new(pool),
-                exits: None,
+                worker_id: None,
                 budget: AtomicUsize::new(budget.min(width)),
             },
         })
@@ -181,7 +182,7 @@ impl Executor {
     fn on_own_worker(&self) -> bool {
         match &self.kind {
             Kind::Serial(_) => false,
-            Kind::Pool { exits, .. } => exits.as_ref().is_some_and(Exits::on_worker),
+            Kind::Pool { worker_id, .. } => worker_id.is_some_and(on_worker_of),
         }
     }
 
@@ -190,7 +191,7 @@ impl Executor {
     fn destroy(this: *mut Executor) -> Result<(), FfiError> {
         // SAFETY: `this` is a live executor handle (caller contract).
         let e = unsafe { &*this };
-        // A worker cannot wait for its own exit.
+        // Dropping the pool joins its workers, which a worker cannot do to itself.
         if e.on_own_worker() {
             return Err(FfiError::new(
                 TCONTRACT_ERR_WOULD_DEADLOCK,
@@ -206,12 +207,9 @@ impl Executor {
         // SAFETY: nothing is in flight and the caller synchronizes new calls
         // with this destruction; the handle was produced by `Box::into_raw`.
         let boxed = unsafe { Box::from_raw(this) };
-        if let Kind::Pool { pool, exits, .. } = boxed.kind {
-            drop(pool); // starts worker shutdown
-            if let Some(exits) = exits {
-                exits.wait();
-            }
-        }
+        // Dropping an owned pool joins its workers, thread-local destructors
+        // included, so none of this library's code runs after `destroy` returns.
+        drop(boxed);
         Ok(())
     }
 }
@@ -222,11 +220,10 @@ impl Executor {
 /// The handle holds the only `Arc<strided_exec::Pool>` of a dedicated pool;
 /// every borrowed executor holds one clone, so `Arc::strong_count` is one plus
 /// the number of live borrowers and [`PoolHandle::destroy`] can refuse while
-/// one is live. `exits` counts the workers' exits: dropping the pool signals
-/// shutdown but waits for nothing.
+/// one is live. `worker_id` names the pool's workers (see [`on_worker_of`]).
 struct PoolHandle {
     pool: Arc<strided_exec::Pool>,
-    exits: Arc<Exits>,
+    worker_id: usize,
 }
 
 impl std::fmt::Debug for PoolHandle {
@@ -243,8 +240,8 @@ impl PoolHandle {
     /// [`tcontract_tapp_executor_create_rayon`], so worker names and `stack`
     /// are identical.
     fn create(nthreads: usize, stack: usize) -> Result<Box<Self>, FfiError> {
-        let (pool, exits) = Workers::start(nthreads, stack)?;
-        Ok(Box::new(Self { pool, exits }))
+        let (pool, worker_id) = Workers::start(nthreads, stack)?;
+        Ok(Box::new(Self { pool, worker_id }))
     }
 
     /// Stop the pool, wait for its workers and free the handle. Consumes the
@@ -255,8 +252,8 @@ impl PoolHandle {
         }
         // SAFETY: `handle` is a live pool handle (caller contract).
         let h = unsafe { &*(handle as *const Self) };
-        // A worker cannot wait for its own exit.
-        if Exits::on_worker(&h.exits) {
+        // Dropping the pool joins its workers, which a worker cannot do to itself.
+        if on_worker_of(h.worker_id) {
             return Err(FfiError::new(
                 TCONTRACT_ERR_WOULD_DEADLOCK,
                 "pool destroyed from one of its own workers",
@@ -275,85 +272,45 @@ impl PoolHandle {
         // destruction with new borrows; the handle was produced by
         // `Box::into_raw`.
         let boxed = unsafe { Box::from_raw(handle as *mut Self) };
-        let Self { pool, exits } = *boxed;
-        drop(pool); // the last Arc: starts worker shutdown
-        exits.wait();
+        // The last `Arc`: dropping the pool joins its workers, thread-local
+        // destructors included.
+        drop(boxed);
         Ok(())
     }
 }
 
-/// How many workers of one pool have exited, so that a destroy can return only
-/// when none of tcontract's worker code is left to run (a C host may unload the
-/// library right after). The count is driven by a thread-local guard each
-/// worker installs when it starts, which drops when the thread exits.
-struct Exits {
-    expected: usize,
-    exited: Mutex<usize>,
-    changed: Condvar,
-}
-
-/// A worker's membership in a pool; dropped by the thread's TLS teardown.
-struct Member(Arc<Exits>);
+/// Identity of the pool whose worker the current thread is (zero: none),
+/// installed by each worker when it starts. It exists only so that `destroy`
+/// can refuse to run on one of the pool's own workers.
+static NEXT_POOL: AtomicUsize = AtomicUsize::new(1);
 
 thread_local! {
-    static MEMBER: RefCell<Option<Member>> = const { RefCell::new(None) };
+    static WORKER_OF: Cell<usize> = const { Cell::new(0) };
 }
 
-impl Drop for Member {
-    fn drop(&mut self) {
-        *self.0.exited.lock().unwrap_or_else(PoisonError::into_inner) += 1;
-        self.0.changed.notify_all();
-    }
-}
-
-impl Exits {
-    /// Whether the calling thread is a worker of the pool counted by `this`.
-    fn on_worker(this: &Arc<Self>) -> bool {
-        MEMBER
-            .try_with(|m| m.borrow().as_ref().is_some_and(|m| Arc::ptr_eq(&m.0, this)))
-            .unwrap_or(false)
-    }
-
-    /// Block until every expected worker has exited.
-    fn wait(&self) {
-        let mut exited = self.exited.lock().unwrap_or_else(PoisonError::into_inner);
-        while *exited < self.expected {
-            exited = self
-                .changed
-                .wait(exited)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-    }
+/// Whether the calling thread is a worker of the pool named `id`.
+fn on_worker_of(id: usize) -> bool {
+    WORKER_OF.try_with(Cell::get).is_ok_and(|w| w == id)
 }
 
 /// Starts a pool of workers named `tcontract-worker-<i>` on `stack`-sized threads.
 struct Workers;
 
 impl Workers {
-    /// Build the pool and the exit counter its workers report to.
-    fn start(
-        nthreads: usize,
-        stack: usize,
-    ) -> Result<(Arc<strided_exec::Pool>, Arc<Exits>), FfiError> {
-        let exits = Arc::new(Exits {
-            expected: nthreads,
-            exited: Mutex::new(0),
-            changed: Condvar::new(),
-        });
-        let on_start = exits.clone();
+    /// Build the pool; the second value names its workers for [`on_worker_of`].
+    fn start(nthreads: usize, stack: usize) -> Result<(Arc<strided_exec::Pool>, usize), FfiError> {
+        let id = NEXT_POOL.fetch_add(1, Ordering::Relaxed);
         let pool = strided_exec::Pool::builder()
             .threads(nthreads)
             .stack_size(stack)
             .thread_name(|i| format!("tcontract-worker-{i}"))
             .on_start(move |_| {
-                let member = Member(on_start.clone());
-                // INVARIANT: the hook runs once per worker, on its own thread,
-                // and nothing else borrows the cell.
-                let _ = MEMBER.try_with(|m| *m.borrow_mut() = Some(member));
+                // INVARIANT: the hook runs once per worker, on its own thread.
+                let _ = WORKER_OF.try_with(|w| w.set(id));
             })
             .build()
             .map_err(|e| FfiError::new(TCONTRACT_ERR_INTERNAL, e.to_string()))?;
-        Ok((Arc::new(pool), exits))
+        Ok((Arc::new(pool), id))
     }
 }
 
@@ -675,17 +632,38 @@ mod tests {
     use super::*;
 
     /// `destroy` returns only after every worker of an owned pool has exited,
-    /// thread-exit work included.
+    /// thread-exit work included: a thread-local destructor registered at
+    /// worker start has run by then.
     #[test]
     fn destroy_waits_for_every_worker_to_exit() {
-        let e = Executor::pooled(3, 1 << 20).unwrap();
-        assert_eq!(e.threads(), (3, 3));
-        let exits = match &e.kind {
-            Kind::Pool { exits, .. } => exits.clone().expect("an owned pool counts exits"),
-            Kind::Serial(_) => unreachable!("pooled executor"),
-        };
+        use std::sync::atomic::AtomicUsize as Count;
+        thread_local! { static GUARD: std::cell::RefCell<Option<Guard>> = const { std::cell::RefCell::new(None) }; }
+        static FINISHED: Count = Count::new(0);
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                // Slow enough that an early return would be seen.
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                FINISHED.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let pool = strided_exec::Pool::builder()
+            .threads(3)
+            .on_start(|_| {
+                let _ = GUARD.try_with(|g| *g.borrow_mut() = Some(Guard));
+            })
+            .build()
+            .unwrap();
+        let e = Box::new(Executor {
+            inflight: AtomicUsize::new(0),
+            kind: Kind::Pool {
+                pool: Box::new(Pool::shared(Arc::new(pool))),
+                worker_id: None,
+                budget: AtomicUsize::new(3),
+            },
+        });
         Executor::destroy(Box::into_raw(e)).unwrap();
-        assert_eq!(*exits.exited.lock().unwrap(), 3, "destroy returned early");
+        assert_eq!(FINISHED.load(Ordering::SeqCst), 3, "destroy returned early");
     }
 
     /// A worker is recognised as a member of its own pool and of no other.
