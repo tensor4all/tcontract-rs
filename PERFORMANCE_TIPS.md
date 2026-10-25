@@ -183,7 +183,7 @@ Audit hints:
   performance warnings must be justified or converted deliberately at an
   explicit boundary.
 - Take faer parallelism from the `tcontract-exec` context passed to the
-  operation only; never choose `Par::rayon` or thread counts inside operation
+  operation only; never choose `faer::Par::rayon` or thread counts inside operation
   helpers.
 - Scratch and batching follow the batched-matrix rule in Dense Layout And
   Linear Algebra.
@@ -191,7 +191,7 @@ Audit hints:
 Audit hints:
 
 - Detect: packing into temporary dense matrices before a faer call;
-  `Par::rayon(...)`/`Par::Seq` chosen inside an op helper; `MemBuffer`
+  `faer::Par::rayon(...)`/`Par::Seq` chosen inside an op helper; `MemBuffer`
   scratch allocated per decomposition, solve, or batch iteration.
 - Fix: zero-copy `MatRef`/`MatMut` after validation, parallelism from `Exec`,
   scratch sized once per operation.
@@ -399,34 +399,41 @@ Audit hints:
 
 ## CPU Threading Contract
 
-- There is no ambient pool. Every operation that may run in parallel takes a
-  `tcontract_exec::Exec` argument: `Serial`, a Rayon pool borrowed from the host,
-  or a host broadcast executor. The global Rayon pool is never used
-  implicitly, and no tcontract code calls `rayon::current_num_threads()` or
-  builds a `ThreadPoolBuilder` to decide policy. (Imported strided code keeps
-  its `AmbientRayon` mode for its existing callers; tcontract never selects it.)
+- There is no ambient pool and tcontract starts no task of its own. Placement
+  belongs to `strided-exec`: a host owns a `strided_exec::Pool`, and every
+  operation that may run in parallel takes a `tcontract_exec::Exec`, the bundle
+  of one `strided_exec::Exec` token (a pool reference plus a budget, neither
+  `Clone` nor `Copy`), an optional workspace and the batch policy. `Exec::new`
+  is the only place a budget is clamped. The global Rayon pool is never used
+  implicitly (`strided_exec::ledger::global_pool_unstarted()` is asserted in a
+  test binary of its own), and no tcontract code calls
+  `rayon::current_num_threads()`, builds a `ThreadPoolBuilder`, or names a Rayon
+  type: `cargo deny check bans` and `cargo public-api -p tcontract-exec` check it.
 - Serial work runs on the calling thread and never enters a pool. A kernel
   picks its width from its own work; only when that width is greater than one
-  does it enter the pool, and it does not enter if the calling thread is
-  already a worker of that pool. The calling thread drives everything else,
-  so host thread-local state needs no propagation.
+  does it start tasks, and the token's entries run in place when the calling
+  thread is already a worker of the pool. The calling thread drives everything
+  else, so host thread-local state needs no propagation.
 - Keep three widths distinct: the budget set by the host, the active width
-  chosen from the work, and the dispatch width actually woken. SPMD kernels
-  with barriers use a full-pool broadcast only; medium widths use
-  barrier-free partitions; a partition larger than the budget is
-  repartitioned, never served by extra threads. No production path creates
-  threads beyond the pool (no scoped-thread fallback, no crate-private pool).
-- An SPMD kernel called from inside a region of the same pool runs its
-  barrier-free variant; a plan that can only run co-scheduled reports a typed
-  unavailable route before any write instead of being silently serialized.
-  Concurrent SPMD kernels on one pool are serialized by the context.
-- faer parallelism is derived from `Exec`: `Par::Seq` for width one,
-  `Par::rayon(k)` inside the borrowed pool's `install` otherwise. Never pick
-  `Par` inside a helper.
+  chosen from the work, and the dispatch width actually woken. A team with
+  barriers is `token.limit(p).broadcast(..)` (the barrier counts are the grid, `p
+  <= budget` is asserted); medium widths use barrier-free `fork`s; a partition
+  larger than the budget is repartitioned, never served by extra threads. No
+  production path creates threads beyond the pool (no scoped-thread fallback, no
+  crate-private pool).
+- A token that cannot co-schedule (one produced by `fork`, or a caller that is a
+  worker of the pool) is refused by `broadcast` before anything runs. The packed
+  driver then plans the call again as barrier-free cells, so the result is
+  the team's and the work still stays within the budget; nothing is
+  silently serialized and nothing is an error. Concurrent teams on one pool queue
+  in the same order and do not interleave.
+- faer parallelism is derived from the token: `Exec::external` hands the budget
+  as a plain width, and the adapter turns it into `faer::Par` (`Seq` for one,
+  `Par::rayon(w)` otherwise). Never pick `Par` inside a helper.
 - One budget governs batch-level and inner parallelism: `lanes * item_threads`
   from the shared batch decision never exceeds it (`tcontract_exec::batch`). A
   route that can nest runs each item with the `item_threads` it was granted
-  inside its lane (faer nests in the borrowed pool); a route whose kernel cannot
+  inside its lane (a lane's fork share is handed to faer through `external`); a route whose kernel cannot
   refuses that decision typed before any write (the packed driver's co-scheduled
   teams, `contract_batched`). No route silently discards the item width — see
   the route contract on `BatchDecision`.
@@ -441,7 +448,8 @@ Audit hints:
 
 - Detect: `rayon::current_num_threads`, `par_iter`/`rayon::join`/`scope`
   outside an `Exec`-entered region, `ThreadPoolBuilder` in library code,
-  `std::thread::scope`/`spawn` in a production path, `Par::rayon` chosen in a
-  helper, a pool entered for work below the kernel's threshold.
+  `std::thread::scope`/`spawn` in a production path, `faer::Par::rayon` chosen in a
+  helper, a pool entered for work below the kernel's threshold, a `Rayon` or
+  `rayon::` word in a public signature.
 - Fix: thread `Exec` through, enter only in the parallel branch, derive
   widths from the work and the budget.

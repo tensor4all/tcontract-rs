@@ -32,10 +32,13 @@ This is a research repository, not a production tensor-algebra library. Read `RE
   in `.claude/skills/`, with OpenCode commands in `.opencode/commands/`;
   `python3 scripts/check-agent-skills.py` checks the mirrors. Run benchmarks
   with the `tcontract-benchmark` skill.
-- strided-rs is an external git dependency pinned to a published release with
-  all four crates at one rev (`Cargo.toml` carries the exact requirement);
-  consumers coordinate that source to share view types. strided changes and
-  strided benchmarks go to tensor4all/strided-rs and
+- strided-rs is an external dependency from crates.io, one release train across
+  its crates (`Cargo.toml` carries the requirement); consumers resolve the same
+  release to share view types and the `strided_exec::Exec` token. Only
+  `strided-exec` starts tasks on a thread pool (`deny.toml`, the `placement` CI
+  job): parallelism here is split with `Exec::fork` / `for_ranges` on the
+  token, never with a direct `rayon` dependency. strided changes and strided
+  benchmarks go to tensor4all/strided-rs and
   tensor4all/strided-rs-benchmark-suite.
 
 ## Build
@@ -44,8 +47,8 @@ This is a research repository, not a production tensor-algebra library. Read `RE
   shared 64-core EPYC workstation); scripts and CI do not hardcode `-j`.
 - Local gate before a PR: `cargo fmt --all -- --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`,
-  `cargo test --workspace`, `cargo test -p tcontract-exec` (without the `strided`
-  feature the workspace unifies on), `cargo test -p tcontract --release`,
+  `cargo test --workspace`, `cargo test -p tcontract --release`,
+  `cargo deny check bans`, `scripts/check-no-public-rayon.sh`,
   `cargo check --workspace --all-targets --target aarch64-apple-darwin` and a
   build on the MSRV (`cargo +1.89.0 build --workspace --all-targets`). Build
   `cargo build -p tcontract-capi` before the workspace tests (the C ABI test links

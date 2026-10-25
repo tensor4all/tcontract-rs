@@ -22,16 +22,18 @@ AI-assisted contributions are welcome; see [AGENTS.md](AGENTS.md) and
 
 | Crate | Owns |
 | --- | --- |
-| `tcontract-exec` | Execution context: serial, or the host's borrowed/owned/shared-`Arc` Rayon pool (or created and joined through the C API); width chosen from work; reusable, wrapper-owned scratch. |
+| `tcontract-exec` | Execution resources over `strided-exec`: the per-call `Exec` bundle (placement token, optional workspace, batch policy), the `Pool` wrapper (a `strided_exec::Pool` plus reusable scratch), width chosen from work. Starts no task. |
 | `tcontract-kernel` | The kernel layer: packed formats, kernel-family descriptors and their registry, resolution with frozen blocking, packing and write-back, cache blocking, and every microkernel family (scalar, AVX2, AVX-512 and NEON register-tile kernels, portable reference kernels, native complex kernels). |
 | `tcontract` | Binary contraction over one validated `Problem` (from `DotGeneral` or from labels): `Plan<T>`, `PlanConfig`, the packed, faer and elementwise strategies chosen by the planner, `contract_batched`, the labels-based unary update (`unary`), shared errors, and the backend trait. |
 | `tcontract-capi` | `libtcontract_capi` (cdylib, staticlib, rlib): the TAPP C ABI over `tcontract`, DLPack operands, executors. The only crate that produces a library for C. |
 | `tcontract-testkit` | Test support: an independent label oracle, seeded fixtures, a naive second backend, downstream-kernel fixtures. Not a production fallback. |
 | `tcontract-bench` (`benchmarks/`) | Benchmark harness (`tcbench`, C and Rust ABI rows); not part of the library. |
 
-strided-rs is an external dependency pinned to a published release; `Cargo.toml`
-carries the exact requirement, so this document does not repeat the number.
-Consumers must use the same source revision to share `StridedView` types.
+strided-rs is an external dependency from crates.io; `Cargo.toml` carries the
+requirement, so this document does not repeat the number. Consumers must
+resolve the same strided release to share `StridedView` and
+`strided_exec::Exec`. Only `strided-exec` starts tasks on a thread pool:
+`cargo deny check bans` rejects a direct `rayon` dependency anywhere else here.
 
 Arrows mean "depends on" and are drawn from `cargo tree` (normal and build
 dependencies; `tcontract-testkit` is a dev-dependency of `tcontract` and
@@ -103,7 +105,7 @@ fn main() -> Result<()> {
     let bv = StridedView::new(&b, &[2, 2], &[1, 2], 0).map_err(tcontract::Error::backend)?;
     let mut dv =
         StridedViewMut::new(&mut d, &[2, 2], &[1, 2], 0).map_err(tcontract::Error::backend)?;
-    plan.execute_into(&Exec::serial(), 1.0, &av, &bv, &mut dv)?;
+    plan.execute_into(&mut Exec::serial(), 1.0, &av, &bv, &mut dv)?;
 
     assert_eq!(d, [3.0, 4.0, 1.0, 2.0]);
     println!("D = {d:?}");
@@ -182,7 +184,7 @@ Build the library with `cargo build --release -p tcontract-capi`, install it wit
 and see [`examples/c-consumer`](examples/c-consumer/README.md) for a CMake
 project that consumes it three ways. The extension headers are
 `<tcontract/tcontract.h>` (DLPack operands, status codes, `tcontract_abi_version`) and
-`<tcontract/tapp_ext.h>` (Rayon executors: one tcontract creates and joins for a
+`<tcontract/tapp_ext.h>` (worker-pool executors: one tcontract creates and stops for a
 host without a pool, or a `tcontract_pool` the C host owns and lends to an
 executor). Executor handles are valid for every plan of the library; handles of
 another TAPP provider cannot be mixed in.
