@@ -25,7 +25,7 @@ rust-version = "1.89"
 # strided 0.7.0 is one release train across all workspace crates and moves
 # placement into `strided-exec`: every fan-out entry takes an `Exec` token.
 strided-basic = { version = "0.7.0", default-features = false }
-strided-exec = { version = "0.7.0" }
+strided-exec = { version = "0.7.1" }
 strided-view = { version = "0.7.0" }
 strided-perm = { version = "0.7.0" }
 strided-kernel = { version = "0.7.0" }

@@ -28,6 +28,8 @@ const WORKER_PREFIX: &str = "dyn-team-";
 struct Team {
     width: usize,
     refuse: bool,
+    /// Run on a token produced by `fork`, which cannot co-schedule either.
+    fork: bool,
     ws: Option<ArenaProvider>,
     pool: Pool<'static>,
     /// Ledger root of the token the last execution ran on (0 before any).
@@ -43,6 +45,7 @@ impl Team {
         Self {
             width,
             refuse: false,
+            fork: false,
             ws: None,
             pool: Pool::owned(tp),
             root: AtomicU64::new(0),
@@ -169,7 +172,14 @@ fn try_run<T>(
 where
     T: Scalar,
 {
-    if team.refuse {
+    if team.fork {
+        let out = std::sync::Mutex::new(None);
+        team.exec().into_token().fork(1, |_, child| {
+            let exec = Exec::from_token(child, None, tcontract_exec::BatchPolicy::default());
+            *out.lock().unwrap() = Some(run_with_exec::<T>(id, s, policy, team, stats, exec));
+        });
+        out.into_inner().unwrap().expect("the fork ran its job")
+    } else if team.refuse {
         team.exec()
             .into_token()
             .external(|_| run_on_team::<T>(id, s, policy, team, stats))
@@ -195,6 +205,20 @@ where
             .expect("a pooled token is a root"),
         Ordering::Relaxed,
     );
+    run_with_exec::<T>(id, s, policy, team, stats, exec)
+}
+
+fn run_with_exec<T>(
+    id: &str,
+    s: &Spec,
+    policy: Option<PartitionPolicy>,
+    team: &Team,
+    stats: Option<&DynStats>,
+    mut exec: Exec<'_>,
+) -> crate::api::Result<Vec<T>>
+where
+    T: Scalar,
+{
     let workspace = team.ws.as_ref().map(|w| w as &dyn WorkspaceProvider);
     let b = layouts(s);
     let a: Vec<T> = (0..b.la.storage_len() as usize).map(value).collect();
@@ -584,6 +608,25 @@ fn width_one_runs_on_the_caller_without_claims_and_a_refusal_falls_back() {
         "one counted call: the refused plan is not one"
     );
     assert_eq!(refuse.installs(), 0, "the cells ran in place on the worker");
+    assert_eq!(
+        snap.team_setups, 0,
+        "a refusing token is known before the team is set up"
+    );
+
+    // A token produced by `fork` is refused as well, and known to be.
+    let stats = DynStats::new(4);
+    let mut forked = Team::new(4);
+    forked.fork = true;
+    let got = run::<f64>(F64, &s, dynamic(8, 8), &forked, Some(&stats));
+    assert!(got == serial, "the fork child changed the result");
+    assert_eq!(stats.snapshot().team_setups, 0);
+
+    // An accepting token sets the team up once.
+    let stats = DynStats::new(4);
+    let accept = Team::new(4);
+    let got = run::<f64>(F64, &s, dynamic(8, 8), &accept, Some(&stats));
+    assert!(got == serial, "the team changed the result");
+    assert_eq!(stats.snapshot().team_setups, 1);
 }
 
 #[test]

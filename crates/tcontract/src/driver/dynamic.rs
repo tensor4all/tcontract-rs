@@ -119,6 +119,7 @@ pub(crate) fn dynamic_report<R: tcontract_kernel::Real>(
 #[derive(Debug)]
 pub struct DynStats {
     calls: AtomicUsize,
+    team_setups: AtomicUsize,
     width: AtomicUsize,
     b_bytes: AtomicUsize,
     epochs: AtomicUsize,
@@ -137,6 +138,8 @@ pub struct DynStats {
 pub struct DynSnapshot {
     /// Dynamic executions that ran with more than one worker.
     pub calls: usize,
+    /// Executions that leased and filled the barrier-bearing team set.
+    pub team_setups: usize,
     /// Width of the most recent such execution.
     pub width: usize,
     /// Bytes of shared `B` panel the most recent execution requested.
@@ -171,6 +174,7 @@ impl DynStats {
         let z = || AtomicUsize::new(0);
         Self {
             calls: z(),
+            team_setups: z(),
             width: z(),
             b_bytes: z(),
             epochs: z(),
@@ -189,6 +193,7 @@ impl DynStats {
     pub fn snapshot(&self) -> DynSnapshot {
         DynSnapshot {
             calls: self.calls.load(Relaxed),
+            team_setups: self.team_setups.load(Relaxed),
             width: self.width.load(Relaxed),
             b_bytes_requested: self.b_bytes.load(Relaxed),
             epochs: self.epochs.load(Relaxed),
@@ -210,6 +215,7 @@ impl DynStats {
     pub fn reset(&self) {
         for c in [
             &self.calls,
+            &self.team_setups,
             &self.width,
             &self.b_bytes,
             &self.epochs,
@@ -223,6 +229,10 @@ impl DynStats {
         }
         self.jobs.iter().for_each(|j| j.store(0, Relaxed));
         self.visits.iter().for_each(|v| v.store(0, Relaxed));
+    }
+
+    pub(super) fn note_team_setup(&self) {
+        self.team_setups.fetch_add(1, Relaxed);
     }
 
     pub(super) fn note_call(&self, width: usize, b_bytes: usize) {

@@ -874,9 +874,9 @@ dependencies = [
 
 [[package]]
 name = "strided-exec"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e4911f8222f04faf402a27bdf316637704a83e46c36b69592858c2987362c8d"
+checksum = "e145f876a1c149ec4fe0021ba00ede877c875ac61f36f82ddc2f0a7709b9cf82"
 dependencies = [
  "rayon",
  "thiserror",

@@ -53,9 +53,9 @@ fn batch_query(plan: &PackedPlan, m: usize, n: usize, k: usize, complex: bool) -
         .with_item_parallel(true)
 }
 
-/// `team` says whether a barrier-bearing team may be used. A token that cannot
-/// co-schedule (see `Exec::broadcast` in `strided-exec`) is refused at the
-/// broadcast, and the driver then asks again with `team == false`: the grid
+/// `team` says whether a barrier-bearing team may be used. For a token that
+/// cannot co-schedule (see `Exec::can_broadcast` in `strided-exec`) the driver
+/// asks with `team == false`: the grid
 /// collapses to one row strip per column group (`pm == 1`), which needs no
 /// barrier, and dynamic tiles, which are barrier-bearing too, give way to that
 /// static column grid.
