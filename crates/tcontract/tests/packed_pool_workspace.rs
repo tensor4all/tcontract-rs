@@ -35,7 +35,7 @@ fn run(exec: &mut Exec<'_>, width: usize) {
 
 #[test]
 fn one_pool_lends_one_workspace_and_two_pools_never_share() {
-    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
+    let tp = threadteam::Pool::builder().threads(4).build().unwrap();
     let pool_a = Pool::borrow(&tp);
     let pool_b = Pool::borrow(&tp);
     let mut exec = Exec::new(&pool_a, pool_a.size()).unwrap();

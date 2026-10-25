@@ -13,7 +13,7 @@ bench = false
 
 [dependencies]
 tcontract-exec = { workspace = true }
-strided-exec = { workspace = true }
+threadteam = { workspace = true }
 tcontract-kernel = { workspace = true }
 tcontract = { workspace = true }
 tcontract-capi = { workspace = true }
@@ -27,9 +27,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [features]
-# Count pool entries per case in `exec_entry` through the strided-exec ledger.
+# Count pool entries per case in `exec_entry` through the threadteam ledger.
 # Off for timing runs: the ledger adds counters to the hot path.
-ledger = ["strided-exec/ledger"]
+ledger = ["threadteam/ledger"]
 # Re-export the packed driver's per-phase timing so a harness can report which phase
 # an anomalous case spends its time in.
 phase-timing = ["tcontract/phase-timing"]

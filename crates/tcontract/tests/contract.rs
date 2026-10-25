@@ -217,7 +217,7 @@ fn corpus_matches_the_reference() {
 
 #[test]
 fn larger_contractions_on_a_pool_match() {
-    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
+    let tp = threadteam::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
     let mut exec = Exec::new(&pool, pool.size()).unwrap();
     let big = Case {

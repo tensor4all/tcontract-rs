@@ -32,7 +32,7 @@ fn permute_copies_with_an_axis_permutation() {
 
 #[test]
 fn add_scales_and_accumulates_including_beta_zero() {
-    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
+    let tp = threadteam::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
     for mut exec in [Exec::serial(), Exec::new(&pool, pool.size()).unwrap()] {
         let a = T::<f64>::new(&[300, 200], 1).restride(&[1, 0]);

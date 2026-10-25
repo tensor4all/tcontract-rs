@@ -50,12 +50,12 @@ pub fn parse_threads(args: &[String]) -> Result<usize, String> {
 }
 
 /// A benchmark's thread configuration: a serial `Exec` that lends the
-/// caller-owned arena for one thread, a `strided_exec::Pool` borrowed through
+/// caller-owned arena for one thread, a `threadteam::Pool` borrowed through
 /// `Exec` otherwise.
 pub struct BenchThreads {
     /// Requested thread count.
     pub requested: usize,
-    pool: Option<strided_exec::Pool>,
+    pool: Option<threadteam::Pool>,
     /// The plan owns no scratch any more, so the 1T rows own exactly the
     /// steady-state storage they measure and no other row can see it.
     arena: ArenaProvider,
@@ -79,7 +79,7 @@ impl BenchThreads {
         }
         // tcontract paths run on this pool and start no ambient one.
         let pool = (requested > 1).then(|| {
-            strided_exec::Pool::builder()
+            threadteam::Pool::builder()
                 .threads(requested)
                 .build()
                 .unwrap_or_else(|e| fail(&format!("pool: {e}")))

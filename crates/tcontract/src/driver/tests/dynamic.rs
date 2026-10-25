@@ -37,7 +37,7 @@ struct Team {
 }
 impl Team {
     fn new(width: usize) -> Self {
-        let tp = strided_exec::Pool::builder()
+        let tp = threadteam::Pool::builder()
             .threads(width.max(2))
             .thread_name(|i| format!("{WORKER_PREFIX}{i}"))
             .build()
@@ -56,7 +56,7 @@ impl Team {
     }
     /// Times the last execution's work entered the pool from outside it.
     fn installs(&self) -> usize {
-        strided_exec::ledger::installs(self.root.load(Ordering::Relaxed))
+        threadteam::ledger::installs(self.root.load(Ordering::Relaxed))
     }
 }
 

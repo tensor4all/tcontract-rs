@@ -457,7 +457,7 @@ fn one_thread_exec_enters_no_pool_and_a_four_thread_exec_stays_in_budget() {
     let (cfg, a, b, c) = matmul_problem(96, 80, 72);
     let p = problem(&cfg, &a, &b, &c, (false, false));
     let want = reference(&cfg, 1.0, &a, false, &b, false, 0.5, &c);
-    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
+    let tp = threadteam::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
     for be in backends::<f64>() {
         let plan = be
@@ -469,7 +469,7 @@ fn one_thread_exec_enters_no_pool_and_a_four_thread_exec_stays_in_budget() {
         let mut out = c.clone();
         accum(&plan, &mut exec, 1.0, &a, &b, 0.5, &mut out).unwrap();
         assert!(rel_err(&out, &want) < 1e-12, "{}", be.id());
-        assert_eq!(strided_exec::ledger::installs(one_t), 0, "{}", be.id());
+        assert_eq!(threadteam::ledger::installs(one_t), 0, "{}", be.id());
         // The same plan at 4T.
         let mut exec = Exec::new(&pool, pool.size()).unwrap();
         assert_eq!(exec.budget(), 4);
@@ -477,7 +477,7 @@ fn one_thread_exec_enters_no_pool_and_a_four_thread_exec_stays_in_budget() {
         let mut out = c.clone();
         accum(&plan, &mut exec, 1.0, &a, &b, 0.5, &mut out).unwrap();
         assert!(rel_err(&out, &want) < 1e-12, "{}", be.id());
-        assert!(strided_exec::ledger::max_live(four_t) <= 4, "{}", be.id());
+        assert!(threadteam::ledger::max_live(four_t) <= 4, "{}", be.id());
         // Nested entry from inside the pool: a plan that needs a barrier-bearing
         // team takes its barrier-free route, so every backend completes and
         // agrees instead of deadlocking or running serially.
@@ -498,7 +498,7 @@ fn a_shared_plan_runs_concurrently_on_independent_outputs() {
     let (cfg, a, b, c) = matmul_problem(64, 48, 40);
     let p = problem(&cfg, &a, &b, &c, (false, false));
     let want = reference(&cfg, 1.0, &a, false, &b, false, 0.0, &c);
-    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
+    let tp = threadteam::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
     for be in backends::<f64>() {
         let plan = be

@@ -1,13 +1,13 @@
-//! Placement helpers: pools from `strided-exec`, a worker-thread runner and
+//! Placement helpers: pools from `threadteam`, a worker-thread runner and
 //! ledger readers, so tests state placement claims through one mechanism.
 #![allow(dead_code)]
 
-use strided_exec::ledger;
 use tcontract_exec::{Exec, Pool};
+use threadteam::ledger;
 
 /// A pool of `n` workers.
-pub fn pool(n: usize) -> strided_exec::Pool {
-    strided_exec::Pool::builder()
+pub fn pool(n: usize) -> threadteam::Pool {
+    threadteam::Pool::builder()
         .threads(n)
         .build()
         .expect("pool")

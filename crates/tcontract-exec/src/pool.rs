@@ -2,10 +2,10 @@ use crate::ArenaProvider;
 use std::sync::Arc;
 
 /// The CPU resources one owner lends to every operation: a
-/// [`strided_exec::Pool`] (where tasks run) and an [`ArenaProvider`] (where
+/// [`threadteam::Pool`] (where tasks run) and an [`ArenaProvider`] (where
 /// scratch lives).
 ///
-/// The wrapper never starts threads itself; [`strided_exec::PoolBuilder`] is
+/// The wrapper never starts threads itself; [`threadteam::PoolBuilder`] is
 /// the only place a pool is made. Retain the wrapper across calls so its arena
 /// is reused; [`Exec::new`](crate::Exec::new) mints the per-call resource
 /// bundle from it, and that constructor is the only place a thread budget is
@@ -14,7 +14,7 @@ use std::sync::Arc;
 /// # Examples
 ///
 /// ```
-/// let sp = strided_exec::Pool::builder().threads(3).build().unwrap();
+/// let sp = threadteam::Pool::builder().threads(3).build().unwrap();
 /// let pool = tcontract_exec::Pool::borrow(&sp);
 /// assert_eq!(pool.size(), sp.width().get());
 /// ```
@@ -26,14 +26,14 @@ pub struct Pool<'p> {
 }
 
 enum PoolRef<'p> {
-    Borrowed(&'p strided_exec::Pool),
-    Shared(Arc<strided_exec::Pool>),
+    Borrowed(&'p threadteam::Pool),
+    Shared(Arc<threadteam::Pool>),
 }
 
 impl<'p> Pool<'p> {
     /// Borrow a pool the host owns (an engine that keeps its own
-    /// [`strided_exec::Pool`]).
-    pub fn borrow(pool: &'p strided_exec::Pool) -> Self {
+    /// [`threadteam::Pool`]).
+    pub fn borrow(pool: &'p threadteam::Pool) -> Self {
         Self::with(PoolRef::Borrowed(pool))
     }
 
@@ -66,7 +66,7 @@ impl<'p> Pool<'p> {
         self.inner().width().get()
     }
 
-    pub(crate) fn inner(&self) -> &strided_exec::Pool {
+    pub(crate) fn inner(&self) -> &threadteam::Pool {
         match &self.pool {
             PoolRef::Borrowed(p) => p,
             PoolRef::Shared(p) => p,
@@ -81,15 +81,15 @@ impl Pool<'static> {
     /// # Examples
     ///
     /// ```
-    /// let sp = strided_exec::Pool::builder().threads(2).build().unwrap();
+    /// let sp = threadteam::Pool::builder().threads(2).build().unwrap();
     /// let pool = tcontract_exec::Pool::owned(sp);
     /// assert!(pool.size() >= 1);
     /// ```
-    pub fn owned(pool: strided_exec::Pool) -> Self {
+    pub fn owned(pool: threadteam::Pool) -> Self {
         Self::shared(Arc::new(pool))
     }
 
-    /// Share one [`strided_exec::Pool`] between several wrappers, each with its
+    /// Share one [`threadteam::Pool`] between several wrappers, each with its
     /// own workspace (the C ABI lends one pool handle to several executors). The
     /// workers stop when the last wrapper is dropped.
     ///
@@ -97,12 +97,12 @@ impl Pool<'static> {
     ///
     /// ```
     /// use std::sync::Arc;
-    /// let sp = Arc::new(strided_exec::Pool::builder().threads(2).build().unwrap());
+    /// let sp = Arc::new(threadteam::Pool::builder().threads(2).build().unwrap());
     /// let a = tcontract_exec::Pool::shared(Arc::clone(&sp));
     /// let b = tcontract_exec::Pool::shared(sp);
     /// assert_eq!(a.size(), b.size());
     /// ```
-    pub fn shared(pool: Arc<strided_exec::Pool>) -> Self {
+    pub fn shared(pool: Arc<threadteam::Pool>) -> Self {
         Self::with(PoolRef::Shared(pool))
     }
 }

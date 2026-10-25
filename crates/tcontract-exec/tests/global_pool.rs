@@ -13,7 +13,7 @@ fn serial_and_pooled_exec_leave_the_global_pool_unstarted() {
     serial.token().broadcast(|_| {}).unwrap();
     assert_eq!(serial.token().external(|w| w.get()), 1);
 
-    let sp = strided_exec::Pool::builder().threads(3).build().unwrap();
+    let sp = threadteam::Pool::builder().threads(3).build().unwrap();
     let pool = Pool::borrow(&sp);
     let mut exec = Exec::new(&pool, 3).unwrap();
     exec.token().fork(4, |_, _| {});
@@ -22,7 +22,7 @@ fn serial_and_pooled_exec_leave_the_global_pool_unstarted() {
     assert_eq!(exec.token().external(|w| w.get()), 3);
 
     assert!(
-        strided_exec::ledger::global_pool_unstarted(),
+        threadteam::ledger::global_pool_unstarted(),
         "something started the process-global Rayon pool"
     );
 }

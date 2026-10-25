@@ -5,7 +5,7 @@ use crate::{BatchDecision, BatchPolicy, BatchQuery, ExecError, Pool, WorkspacePr
 /// The resources one operation runs with: a placement token, optional reusable
 /// scratch, and the batch lane policy.
 ///
-/// The [`strided_exec::Exec`] token decides where the work runs and how many
+/// The [`threadteam::Exec`] token decides where the work runs and how many
 /// tasks may run at once. This type adds what is specific to contraction: the
 /// workspace the call may reuse and the [`BatchPolicy`]. It owns no placement
 /// code. To start parallel work take the token with [`Exec::token`] (a reborrow,
@@ -25,7 +25,7 @@ use crate::{BatchDecision, BatchPolicy, BatchQuery, ExecError, Pool, WorkspacePr
 /// assert!(exec.token().is_serial());
 /// ```
 pub struct Exec<'a> {
-    token: strided_exec::Exec<'a>,
+    token: threadteam::Exec<'a>,
     workspace: Option<&'a dyn WorkspaceProvider>,
     policy: BatchPolicy,
 }
@@ -47,7 +47,7 @@ impl<'a> Exec<'a> {
     /// The serial context: the calling thread only, call-local scratch.
     pub const fn serial() -> Exec<'static> {
         Exec {
-            token: strided_exec::Exec::serial(),
+            token: threadteam::Exec::serial(),
             workspace: None,
             policy: crate::batch::DEFAULT_BATCH_POLICY,
         }
@@ -56,7 +56,7 @@ impl<'a> Exec<'a> {
     /// Serial execution with caller-owned reusable storage.
     pub fn serial_with_workspace(workspace: &'a dyn WorkspaceProvider) -> Self {
         Exec {
-            token: strided_exec::Exec::serial(),
+            token: threadteam::Exec::serial(),
             workspace: Some(workspace),
             policy: crate::batch::DEFAULT_BATCH_POLICY,
         }
@@ -74,14 +74,14 @@ impl<'a> Exec<'a> {
     ///
     /// ```
     /// use tcontract_exec::{Exec, Pool};
-    /// let sp = strided_exec::Pool::builder().threads(2).build().unwrap();
+    /// let sp = threadteam::Pool::builder().threads(2).build().unwrap();
     /// let pool = Pool::borrow(&sp);
     /// assert_eq!(Exec::new(&pool, 64).unwrap().budget(), pool.size());
     /// assert!(Exec::new(&pool, 0).is_err());
     /// ```
     pub fn new(pool: &'a Pool<'_>, budget: usize) -> Result<Self, ExecError> {
         Ok(Exec {
-            token: strided_exec::Exec::new(pool.inner(), budget)?,
+            token: threadteam::Exec::new(pool.inner(), budget)?,
             workspace: Some(pool.workspace()),
             policy: BatchPolicy::default(),
         })
@@ -94,11 +94,11 @@ impl<'a> Exec<'a> {
     ///
     /// ```
     /// use tcontract_exec::{BatchPolicy, Exec};
-    /// let exec = Exec::from_token(strided_exec::Exec::serial(), None, BatchPolicy::default());
+    /// let exec = Exec::from_token(threadteam::Exec::serial(), None, BatchPolicy::default());
     /// assert_eq!(exec.budget(), 1);
     /// ```
     pub fn from_token(
-        token: strided_exec::Exec<'a>,
+        token: threadteam::Exec<'a>,
         workspace: Option<&'a dyn WorkspaceProvider>,
         policy: BatchPolicy,
     ) -> Self {
@@ -111,13 +111,13 @@ impl<'a> Exec<'a> {
 
     /// The placement token, lent for one call. The bundle keeps its budget, so
     /// several calls can follow one another.
-    pub fn token(&mut self) -> strided_exec::Exec<'_> {
+    pub fn token(&mut self) -> threadteam::Exec<'_> {
         self.token.reborrow()
     }
 
     /// The placement token, consuming the bundle (for `fork`, `broadcast`, or
     /// any entry that takes the token by value and outlives this borrow).
-    pub fn into_token(self) -> strided_exec::Exec<'a> {
+    pub fn into_token(self) -> threadteam::Exec<'a> {
         self.token
     }
 

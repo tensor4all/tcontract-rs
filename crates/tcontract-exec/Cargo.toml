@@ -1,19 +1,19 @@
 [package]
 name = "tcontract-exec"
-version = "0.5.0"
+version = "0.6.0"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 publish = true
-description = "Execution resources for the tcontract stack: the per-call Exec bundle (strided-exec token, workspace, batch policy) and the Pool wrapper with its scratch arena"
+description = "Execution resources for the tcontract stack: the per-call Exec bundle (threadteam token, workspace, batch policy) and the Pool wrapper with its scratch arena"
 readme = "README.md"
 
 [dependencies]
-strided-exec = { workspace = true }
+threadteam = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-strided-exec = { workspace = true, features = ["ledger"] }
+threadteam = { workspace = true, features = ["ledger"] }
 
 [lints]
 workspace = true

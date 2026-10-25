@@ -15,9 +15,9 @@
 //! runs on it instead of creating a second pool. The host keeps the pool alive
 //! for every executor built from it and every call through one.
 //!
-//! The pools are [`strided_exec::Pool`]s: the C ABI never takes a pool made
+//! The pools are [`threadteam::Pool`]s: the C ABI never takes a pool made
 //! elsewhere. Rust hosts do not use this module: they own a
-//! [`strided_exec::Pool`], lend it to [`tcontract_exec::Pool::borrow`] and never
+//! [`threadteam::Pool`], lend it to [`tcontract_exec::Pool::borrow`] and never
 //! create a second one.
 #![allow(non_camel_case_types)]
 
@@ -131,7 +131,7 @@ impl Executor {
     /// clamped to its width. It keeps one `Pool` wrapper of that pool, so the
     /// workspace belongs to this executor; the host creates one borrowed
     /// executor and shares it across plans.
-    fn borrowing(pool: Arc<strided_exec::Pool>, budget: usize) -> Box<Self> {
+    fn borrowing(pool: Arc<threadteam::Pool>, budget: usize) -> Box<Self> {
         let pool = Pool::shared(pool);
         let width = pool.size().max(1);
         Box::new(Self {
@@ -217,12 +217,12 @@ impl Executor {
 /// A host-owned worker pool behind a `tcontract_pool` (opaque in C), built by
 /// [`tcontract_pool_create_rayon`].
 ///
-/// The handle holds the only `Arc<strided_exec::Pool>` of a dedicated pool;
+/// The handle holds the only `Arc<threadteam::Pool>` of a dedicated pool;
 /// every borrowed executor holds one clone, so `Arc::strong_count` is one plus
 /// the number of live borrowers and [`PoolHandle::destroy`] can refuse while
 /// one is live. `worker_id` names the pool's workers (see [`on_worker_of`]).
 struct PoolHandle {
-    pool: Arc<strided_exec::Pool>,
+    pool: Arc<threadteam::Pool>,
     worker_id: usize,
 }
 
@@ -298,9 +298,9 @@ struct Workers;
 
 impl Workers {
     /// Build the pool; the second value names its workers for [`on_worker_of`].
-    fn start(nthreads: usize, stack: usize) -> Result<(Arc<strided_exec::Pool>, usize), FfiError> {
+    fn start(nthreads: usize, stack: usize) -> Result<(Arc<threadteam::Pool>, usize), FfiError> {
         let id = NEXT_POOL.fetch_add(1, Ordering::Relaxed);
-        let pool = strided_exec::Pool::builder()
+        let pool = threadteam::Pool::builder()
             .threads(nthreads)
             .stack_size(stack)
             .thread_name(|i| format!("tcontract-worker-{i}"))
@@ -647,7 +647,7 @@ mod tests {
                 FINISHED.fetch_add(1, Ordering::SeqCst);
             }
         }
-        let pool = strided_exec::Pool::builder()
+        let pool = threadteam::Pool::builder()
             .threads(3)
             .on_start(|_| {
                 let _ = GUARD.try_with(|g| *g.borrow_mut() = Some(Guard));

@@ -387,7 +387,7 @@ fn reserve_keeps_component_wise_maxima() {
 /// `prepare_for` warms one worker slot per worker the executor may use.
 #[test]
 fn prepare_for_warms_every_worker_slot() {
-    let sp = strided_exec::Pool::builder().threads(2).build().unwrap();
+    let sp = threadteam::Pool::builder().threads(2).build().unwrap();
     let pool = Pool::borrow(&sp);
     let mut exec = Exec::new(&pool, 2).unwrap();
     let req = WorkspaceReq {

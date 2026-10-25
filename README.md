@@ -22,7 +22,7 @@ AI-assisted contributions are welcome; see [AGENTS.md](AGENTS.md) and
 
 | Crate | Owns |
 | --- | --- |
-| `tcontract-exec` | Execution resources over `strided-exec`: the per-call `Exec` bundle (placement token, optional workspace, batch policy), the `Pool` wrapper (a `strided_exec::Pool` plus reusable scratch), width chosen from work. Starts no task. |
+| `tcontract-exec` | Execution resources over `threadteam`: the per-call `Exec` bundle (placement token, optional workspace, batch policy), the `Pool` wrapper (a `threadteam::Pool` plus reusable scratch), width chosen from work. Starts no task. |
 | `tcontract-kernel` | The kernel layer: packed formats, kernel-family descriptors and their registry, resolution with frozen blocking, packing and write-back, cache blocking, and every microkernel family (scalar, AVX2, AVX-512 and NEON register-tile kernels, portable reference kernels, native complex kernels). |
 | `tcontract` | Binary contraction over one validated `Problem` (from `DotGeneral` or from labels): `Plan<T>`, `PlanConfig`, the packed, faer and elementwise strategies chosen by the planner, `contract_batched`, the labels-based unary update (`unary`), shared errors, and the backend trait. |
 | `tcontract-capi` | `libtcontract_capi` (cdylib, staticlib, rlib): the TAPP C ABI over `tcontract`, DLPack operands, executors. The only crate that produces a library for C. |
@@ -32,7 +32,7 @@ AI-assisted contributions are welcome; see [AGENTS.md](AGENTS.md) and
 strided-rs is an external dependency from crates.io; `Cargo.toml` carries the
 requirement, so this document does not repeat the number. Consumers must
 resolve the same strided release to share `StridedView` and
-`strided_exec::Exec`. Only `strided-exec` starts tasks on a thread pool:
+`threadteam::Exec`. Only `threadteam` starts tasks on a thread pool:
 `cargo deny check bans` rejects a direct `rayon` dependency anywhere else here.
 
 Arrows mean "depends on" and are drawn from `cargo tree` (normal and build

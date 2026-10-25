@@ -63,7 +63,7 @@ fn bits<T: Scalar>(v: &[T]) -> Vec<u64> {
         .collect()
 }
 
-fn pool8() -> strided_exec::Pool {
+fn pool8() -> threadteam::Pool {
     pool(8)
 }
 
@@ -147,6 +147,18 @@ fn f64_matches_a_naive_contraction() {
     }
 }
 
+/// A team's participants all wait on its barriers, so they are live together:
+/// more than one and never more than the route's width. The team's actual size
+/// is its row/column grid, which the blocking (cache sizes of the host) may
+/// keep below the width, so the count is bounded, not compared for equality.
+fn team_ran_at_once(root: u64, width: usize, what: &str) {
+    let live = max_live(root);
+    assert!(
+        (2..=width).contains(&live),
+        "{what}: {live} live, width {width}"
+    );
+}
+
 #[test]
 fn the_mode_follows_the_width_rule() {
     let sp = pool8();
@@ -166,7 +178,7 @@ fn the_mode_follows_the_width_rule() {
     // A big item with fewer entries than workers keeps the team.
     let (kind, width, root) = one([BIG[0], BIG[1], BIG[2], 3]);
     assert_eq!(kind, PackedRoute::Spmd, "a big item lost its team");
-    assert_eq!(max_live(root), width, "the team did not run at once");
+    team_ran_at_once(root, width, "the team did not run at once");
     // As many entries as workers: batch lanes again.
     let (kind, _, _) = one([BIG[0], BIG[1], BIG[2], 8]);
     assert_eq!(
@@ -177,7 +189,7 @@ fn the_mode_follows_the_width_rule() {
     // 9 large entries on 8 lanes would leave one lane with two: keep the team.
     let (kind, width, root) = one([BIG[0], BIG[1], BIG[2], 9]);
     assert_eq!(kind, PackedRoute::Spmd, "an uneven split lost its team");
-    assert_eq!(max_live(root), width);
+    team_ran_at_once(root, width, "an uneven split lost its team");
 }
 
 #[test]

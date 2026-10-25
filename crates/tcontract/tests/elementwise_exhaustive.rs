@@ -255,7 +255,7 @@ fn a_threaded_pass_matches_the_formula_and_the_serial_pass() {
         out
     };
     let serial = go(&mut Exec::serial());
-    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
+    let tp = threadteam::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
     let par = go(&mut Exec::new(&pool, pool.size()).unwrap());
     assert_eq!(par, serial);

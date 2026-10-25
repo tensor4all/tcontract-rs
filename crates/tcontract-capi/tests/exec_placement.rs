@@ -1,4 +1,4 @@
-//! Where a call through an executor runs, read from the `strided-exec` ledger:
+//! Where a call through an executor runs, read from the `threadteam` ledger:
 //! a pooled executor enters its pool once per large call and never for a small
 //! one, a budget of one or a serial executor never enters a pool, and the
 //! environment does not choose the width. The calls go through the Rust seam
@@ -6,11 +6,11 @@
 //! C call would get.
 use std::ffi::c_void;
 
-use strided_exec::ledger;
 use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
 use tcontract::{Plan, PlanConfig};
 use tcontract_capi::executor::{executor_ref, Executor};
 use tcontract_capi::*;
+use threadteam::ledger;
 
 fn plan(m: usize, n: usize, k: usize) -> Plan<f64> {
     let spec = |d: &[usize], s: &[isize]| OperandSpec::new(LayoutSpec::new(d, s, 0).unwrap());

@@ -147,7 +147,7 @@ cargo build --offline --release -p tcontract-capi
 
 Ship `vendor/` alongside the source and the build needs no network: the crates
 are `publish = false`, and the tree depends only on crates.io packages
-(`num-complex`, `strided-exec` and the other strided-rs crates, `t4a-faer`,
+(`num-complex`, `threadteam` and the other strided-rs crates, `t4a-faer`,
 `thiserror`, ...), all of which `cargo vendor` covers. There is no dedicated CI
 offline lane.
 

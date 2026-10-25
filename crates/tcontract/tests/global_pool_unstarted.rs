@@ -97,7 +97,7 @@ fn no_route_starts_the_global_pool() {
     assert_eq!(nested, want);
 
     assert!(
-        strided_exec::ledger::global_pool_unstarted(),
+        threadteam::ledger::global_pool_unstarted(),
         "something started the process-global Rayon pool"
     );
 }

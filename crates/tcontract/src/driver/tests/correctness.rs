@@ -27,10 +27,10 @@ use tcontract_kernel::{Element, Real};
 /// One pool for every thread-count sweep, wide enough for the widest of them,
 /// so each run takes a budget of it instead of building threads.
 fn sweep_pool() -> &'static Pool<'static> {
-    static TP: std::sync::OnceLock<strided_exec::Pool> = std::sync::OnceLock::new();
+    static TP: std::sync::OnceLock<threadteam::Pool> = std::sync::OnceLock::new();
     static POOL: std::sync::OnceLock<Pool<'static>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
-        let tp = TP.get_or_init(|| strided_exec::Pool::builder().threads(64).build().unwrap());
+        let tp = TP.get_or_init(|| threadteam::Pool::builder().threads(64).build().unwrap());
         Pool::borrow(tp)
     })
 }
