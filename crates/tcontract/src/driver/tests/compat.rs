@@ -347,7 +347,7 @@ impl Plan {
         d: *mut T,
     ) {
         // SAFETY: forwarded.
-        unsafe { self.run_raw_with(&Exec::serial(), None, alpha, a, b, beta, c, d) }
+        unsafe { self.run_raw_with(&mut Exec::serial(), None, alpha, a, b, beta, c, d) }
             .expect("a serial route is always available")
     }
 
@@ -359,7 +359,7 @@ impl Plan {
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn run_raw_with<T: Scalar>(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         workspace: Option<&dyn WorkspaceProvider>,
         alpha: T,
         a: *const T,
@@ -503,7 +503,7 @@ impl Plan {
 pub unsafe fn execute_resolved<T: Scalar>(
     plan: &Plan,
     rg: &ResolvedGemm<<T as Scalar>::Re>,
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     workspace: Option<&dyn WorkspaceProvider>,
     alpha: T,
     a: *const T,
@@ -538,7 +538,7 @@ pub unsafe fn execute_resolved<T: Scalar>(
 pub unsafe fn execute_resolved_instrumented<T: Scalar>(
     plan: &Plan,
     rg: &ResolvedGemm<<T as Scalar>::Re>,
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     workspace: Option<&dyn WorkspaceProvider>,
     stats: &driver::DynStats,
     alpha: T,

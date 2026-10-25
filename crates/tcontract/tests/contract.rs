@@ -120,7 +120,7 @@ fn out_dims(cfg: &DotGeneral, a: &[usize], b: &[usize]) -> Vec<usize> {
 
 #[allow(clippy::too_many_arguments)]
 fn run<S: Scalar>(
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     config: &PlanConfig,
     case: &Case,
     layout: u8,
@@ -183,9 +183,17 @@ fn corpus_matches_the_reference() {
     for config in configs() {
         for case in corpus() {
             for layout in 0..3u8 {
-                run::<f64>(&Exec::serial(), &config, &case, layout, false, false, 1.5);
+                run::<f64>(
+                    &mut Exec::serial(),
+                    &config,
+                    &case,
+                    layout,
+                    false,
+                    false,
+                    1.5,
+                );
                 run::<Complex64>(
-                    &Exec::serial(),
+                    &mut Exec::serial(),
                     &config,
                     &case,
                     layout,
@@ -194,7 +202,7 @@ fn corpus_matches_the_reference() {
                     Complex64::new(0.0, 0.0),
                 );
                 run::<Complex64>(
-                    &Exec::serial(),
+                    &mut Exec::serial(),
                     &config,
                     &case,
                     layout,
@@ -209,12 +217,9 @@ fn corpus_matches_the_reference() {
 
 #[test]
 fn larger_contractions_on_a_pool_match() {
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
+    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool);
+    let mut exec = Exec::new(&pool, pool.size()).unwrap();
     let big = Case {
         name: "big batched",
         a: vec![8, 40, 30],
@@ -229,8 +234,8 @@ fn larger_contractions_on_a_pool_match() {
     };
     for config in configs() {
         for layout in 0..3u8 {
-            run::<f64>(&exec, &config, &big, layout, false, false, 0.5);
-            run::<f64>(&exec, &config, &net, layout, false, false, 0.0);
+            run::<f64>(&mut exec, &config, &big, layout, false, false, 0.5);
+            run::<f64>(&mut exec, &config, &net, layout, false, false, 0.0);
         }
     }
 }
@@ -326,7 +331,7 @@ fn validation_errors_are_typed_and_nothing_is_written() {
             Plan::<f64>::new(&problem(&cfg, &a, false, &b, false, &planned), &config).unwrap();
         let mut c = c;
         let e = plan.execute_into(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             &a.view(),
             &b.view(),
@@ -355,7 +360,7 @@ fn overwrite_reads_no_previous_output() {
             let plan =
                 Plan::<f64>::new(&problem(&case.cfg, &a, false, &b, false, &c), &config).unwrap();
             plan.execute_into(
-                &Exec::serial(),
+                &mut Exec::serial(),
                 2.0,
                 &a.view(),
                 &b.view(),

@@ -78,12 +78,12 @@ impl Fixture {
 
     /// One raw execute with a nonzero beta, returning the error if any.
     fn run(&mut self, beta: f64) -> tcontract::Result<()> {
-        let exec = Exec::serial();
+        let mut exec = Exec::serial();
         // SAFETY: the pointers cover the plan's validated ranges; D is exclusive.
         unsafe {
             self.plan.execute_raw_in(
                 &mut self.ws,
-                &exec,
+                &mut exec,
                 1.0,
                 self.a.as_ptr(),
                 self.b.as_ptr(),
@@ -102,7 +102,7 @@ impl Fixture {
 fn a_total_only_bound_cannot_hide_a_missing_panel() {
     let problem = matmul(8, 8, 8);
     let plan = Plan::<f64>::new(&problem, &PlanConfig::packed()).unwrap();
-    let exec = Exec::serial();
+    let mut exec = Exec::serial();
     let req = plan.workspace_req(&exec, OutputContract::Initialized);
     assert!(req.b_bytes > 0, "the packed route needs a B panel");
     let mut ws = Workspace::with_req(&WorkspaceReq {
@@ -116,7 +116,7 @@ fn a_total_only_bound_cannot_hide_a_missing_panel() {
     let err = unsafe {
         plan.execute_raw_in(
             &mut ws,
-            &exec,
+            &mut exec,
             1.0,
             a.as_ptr(),
             b.as_ptr(),
@@ -141,7 +141,7 @@ fn initialized_faer_with_fresh_prepared_does_not_grow() {
     let problem = matmul_output_c(8, 8, 8);
     let plan = Plan::<f64>::new(&problem, &config).unwrap();
     assert_eq!(plan.report().algorithm, tcontract::Algorithm::Faer);
-    let exec = Exec::serial();
+    let mut exec = Exec::serial();
     assert_eq!(
         plan.workspace_req(&exec, OutputContract::Initialized)
             .bytes(),
@@ -159,7 +159,7 @@ fn initialized_faer_with_fresh_prepared_does_not_grow() {
     unsafe {
         plan.execute_raw_in(
             &mut ws,
-            &exec,
+            &mut exec,
             1.0,
             a.as_ptr(),
             b.as_ptr(),
@@ -181,7 +181,7 @@ fn initialized_faer_with_fresh_prepared_does_not_grow() {
     unsafe {
         plan.execute_raw_in(
             &mut ws,
-            &exec,
+            &mut exec,
             1.0,
             a.as_ptr(),
             b.as_ptr(),
@@ -248,19 +248,19 @@ fn the_bound_covers_the_reviewed_shapes() {
     )
     .unwrap();
     let plan = Plan::<f64>::new(&batched, &PlanConfig::packed()).unwrap();
-    let exec = Exec::serial();
+    let mut exec = Exec::serial();
     let mut ws = Workspace::with_req(&plan.workspace_req(&exec, OutputContract::Initialized));
     let (len, dims) = (512usize, [8usize, 8, 8]);
     let a: Vec<f64> = (0..len).map(|i| i as f64 * 0.1).collect();
     let b: Vec<f64> = (0..len).map(|i| i as f64 * 0.1).collect();
     let c: Vec<f64> = (0..len).map(|i| i as f64 * 0.1).collect();
     let mut d = vec![0.0f64; len];
-    let run = |ws: &mut Workspace, d: &mut [f64]| {
+    let mut run = |ws: &mut Workspace, d: &mut [f64]| {
         // SAFETY: the pointers cover the plan's validated ranges; D is exclusive.
         unsafe {
             plan.execute_raw_in(
                 ws,
-                &exec,
+                &mut exec,
                 1.0,
                 a.as_ptr(),
                 b.as_ptr(),
@@ -293,12 +293,9 @@ fn a_workspace_not_prepared_for_the_executor_is_refused() {
     // needed and `with_req` warms only one.
     let m = 128;
     let plan = Plan::<f64>::new(&matmul(m, m, m), &PlanConfig::packed()).unwrap();
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(2)
-        .build()
-        .unwrap();
+    let tp = strided_exec::Pool::builder().threads(2).build().unwrap();
     let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool).with_budget(2).unwrap();
+    let mut exec = Exec::new(&pool, 2).unwrap();
     let mut ws = Workspace::with_req(&plan.workspace_req(&exec, OutputContract::Initialized));
     assert_eq!(ws.slots(), 1);
 
@@ -309,7 +306,7 @@ fn a_workspace_not_prepared_for_the_executor_is_refused() {
     let err = unsafe {
         plan.execute_raw_in(
             &mut ws,
-            &exec,
+            &mut exec,
             1.0,
             a.as_ptr(),
             b.as_ptr(),
@@ -323,13 +320,13 @@ fn a_workspace_not_prepared_for_the_executor_is_refused() {
     assert!(matches!(err, Error::Workspace { .. }), "{err}");
 
     // After warming both slots it runs.
-    ws.prepare_for(&exec);
+    ws.prepare_for(&mut exec);
     assert_eq!(ws.slots(), 2);
     // SAFETY: as above.
     unsafe {
         plan.execute_raw_in(
             &mut ws,
-            &exec,
+            &mut exec,
             1.0,
             a.as_ptr(),
             b.as_ptr(),

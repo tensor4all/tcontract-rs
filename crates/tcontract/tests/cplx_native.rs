@@ -59,7 +59,7 @@ fn a_packed_contraction_runs_the_native_family_and_matches_the_reference() {
     let (alpha, beta) = (Complex64::new(0.8, -0.3), Complex64::new(0.4, 0.2));
     let mut c = c0.clone();
     plan.execute_into_accum(
-        &Exec::serial(),
+        &mut Exec::serial(),
         alpha,
         &a.view(),
         &b.view(),

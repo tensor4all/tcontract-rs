@@ -32,7 +32,8 @@
 //!   all false. With `beta == 0` C is not read. A separate C that is D itself
 //!   (same mapping, same origin) is the in-place case above.
 
-use tcontract_exec::{BatchQuery, Exec, ExecError, Par};
+use std::num::NonZeroUsize;
+use tcontract_exec::{BatchQuery, Exec, ExecError};
 use tcontract_kernel::Element;
 
 use crate::api::{CSpec, OperandId, Problem, RoleAxis, Scalar};
@@ -225,7 +226,7 @@ impl FaerPlan {
     /// overwritten.
     pub(crate) unsafe fn run<T: Scalar>(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: *const T,
         b: *const T,
@@ -269,23 +270,33 @@ impl FaerPlan {
                 )
             }
         };
+        // INVARIANT: a decision never has zero lanes or zero item threads.
+        let nz = |n: usize| NonZeroUsize::new(n).unwrap_or(NonZeroUsize::MIN);
         if decision.lanes > 1 {
             // Each lane runs its items on the granted `item_threads`, taken from
-            // the context and never chosen here (`BatchDecision`'s route contract);
-            // faer nests in the borrowed pool.
+            // the context and never chosen here (`BatchDecision`'s route contract).
             // INVARIANT: `batch_decision` keeps `lanes * item_threads <= budget`
             // (`Split` shares what is left, and `Auto` reports item threads only
-            // with one lane), so `item_exec`'s width is the item's own share.
-            let lanes = exec.with_budget(decision.lanes).unwrap_or(*exec);
-            let item_exec = exec.with_budget(decision.item_threads).unwrap_or(*exec);
-            lanes.for_each_partition(count, &|i| {
-                item_exec.install(decision.item_threads, |par| item(i, to_faer(par)));
-            });
+            // with one lane), so splitting a token of `lanes * item_threads`
+            // slots into `lanes` jobs gives every lane exactly its share, and
+            // the library receives that share as a plain width through
+            // `external`.
+            let total = nz(decision.lanes.saturating_mul(decision.item_threads));
+            let lanes = decision.lanes;
+            exec.reborrow()
+                .limit(total)
+                .into_token()
+                .fork(lanes, |lane, mut child| {
+                    // Contiguous items per lane, as the batch partition always was.
+                    for i in lane * count / lanes..(lane + 1) * count / lanes {
+                        child.reborrow().external(|w| item(i, to_faer(w)));
+                    }
+                });
         } else {
             // One pool entry for the whole batch.
-            exec.install(decision.item_threads, |par: Par| {
+            exec.token().limit(nz(decision.item_threads)).external(|w| {
                 for i in 0..count {
-                    item(i, to_faer(par));
+                    item(i, to_faer(w));
                 }
             });
         }
@@ -330,10 +341,11 @@ impl FaerPlan {
     }
 }
 
-fn to_faer(par: Par) -> faer::Par {
-    match par {
-        Par::Seq => faer::Par::Seq,
-        Par::Threads(n) => faer::Par::rayon(n.get()),
+/// The width `Exec::external` hands over, as faer's own parallelism type.
+fn to_faer(width: NonZeroUsize) -> faer::Par {
+    match width.get() {
+        1 => faer::Par::Seq,
+        w => faer::Par::rayon(w),
     }
 }
 

@@ -27,15 +27,10 @@ use tcontract_kernel::{Element, Real};
 /// One pool for every thread-count sweep, wide enough for the widest of them,
 /// so each run takes a budget of it instead of building threads.
 fn sweep_pool() -> &'static Pool<'static> {
-    static TP: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    static TP: std::sync::OnceLock<strided_exec::Pool> = std::sync::OnceLock::new();
     static POOL: std::sync::OnceLock<Pool<'static>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
-        let tp = TP.get_or_init(|| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(64)
-                .build()
-                .unwrap()
-        });
+        let tp = TP.get_or_init(|| strided_exec::Pool::builder().threads(64).build().unwrap());
         Pool::borrow(tp)
     })
 }
@@ -967,12 +962,10 @@ fn threaded_case<T>(
             }
         }
         let mut d = start.clone();
-        let exec = Exec::rayon(sweep_pool())
-            .with_budget(nthreads.max(1))
-            .unwrap();
+        let mut exec = Exec::new(sweep_pool(), nthreads.max(1)).unwrap();
         unsafe {
             plan.run_raw_with::<T>(
-                &exec,
+                &mut exec,
                 None,
                 alpha,
                 a.as_ptr(),
@@ -1315,8 +1308,14 @@ fn conjugation_belongs_to_the_plan() {
         let av = StridedView::new(&a, &[2, 2], &[1, 2], 0).unwrap();
         let bv = StridedView::new(&identity, &[2, 2], &[1, 2], 0).unwrap();
         let mut dv = StridedViewMut::new(&mut d, &[2, 2], &[1, 2], 0).unwrap();
-        plan.execute_into(&Exec::serial(), Complex::new(1.0, 0.0), &av, &bv, &mut dv)
-            .unwrap();
+        plan.execute_into(
+            &mut Exec::serial(),
+            Complex::new(1.0, 0.0),
+            &av,
+            &bv,
+            &mut dv,
+        )
+        .unwrap();
         d
     };
     assert_eq!(run(&make(false)), a);

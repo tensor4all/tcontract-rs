@@ -4,7 +4,7 @@
 //! Blocking is frozen with `Plan::with_blocking` wherever bitwise equality is
 //! claimed, so only the scheduling differs between the runs compared.
 #![allow(clippy::too_many_arguments)]
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, Ordering::SeqCst};
 
 use super::compat::{contract_reference, RefOperand};
 use super::compat::{
@@ -18,20 +18,26 @@ use tcontract_kernel::{
 };
 use tcontract_kernel::{Element, Real};
 
+/// Workers of a [`Team`]'s pool are named `NAME0`, `NAME1`, ...
+const WORKER_PREFIX: &str = "dyn-team-";
+
 /// A team of `width` workers on a pool of its own, and optionally a lent
 /// workspace. A refusing team runs the whole execution on one of its own
 /// workers, where a barrier-bearing team cannot be co-scheduled, so the driver
-/// reports the unavailable route.
+/// plans the call again without a team.
 struct Team {
     width: usize,
     refuse: bool,
     ws: Option<ArenaProvider>,
     pool: Pool<'static>,
+    /// Ledger root of the token the last execution ran on (0 before any).
+    root: AtomicU64,
 }
 impl Team {
     fn new(width: usize) -> Self {
-        let tp = rayon::ThreadPoolBuilder::new()
-            .num_threads(width.max(2))
+        let tp = strided_exec::Pool::builder()
+            .threads(width.max(2))
+            .thread_name(|i| format!("{WORKER_PREFIX}{i}"))
             .build()
             .unwrap();
         Self {
@@ -39,13 +45,15 @@ impl Team {
             refuse: false,
             ws: None,
             pool: Pool::owned(tp),
+            root: AtomicU64::new(0),
         }
     }
     fn exec(&self) -> Exec<'_> {
-        Exec::rayon(&self.pool).with_budget(self.width).unwrap()
+        Exec::new(&self.pool, self.width).unwrap()
     }
-    fn broadcasts(&self) -> u64 {
-        self.pool.stats().broadcasts
+    /// Times the last execution's work entered the pool from outside it.
+    fn installs(&self) -> usize {
+        strided_exec::ledger::installs(self.root.load(Ordering::Relaxed))
     }
 }
 
@@ -163,7 +171,8 @@ where
 {
     if team.refuse {
         team.exec()
-            .install(2, |_| run_on_team::<T>(id, s, policy, team, stats))
+            .into_token()
+            .external(|_| run_on_team::<T>(id, s, policy, team, stats))
     } else {
         run_on_team::<T>(id, s, policy, team, stats)
     }
@@ -179,7 +188,13 @@ fn run_on_team<T>(
 where
     T: Scalar,
 {
-    let exec = team.exec();
+    let mut exec = team.exec();
+    team.root.store(
+        exec.token()
+            .ledger_root()
+            .expect("a pooled token is a root"),
+        Ordering::Relaxed,
+    );
     let workspace = team.ws.as_ref().map(|w| w as &dyn WorkspaceProvider);
     let b = layouts(s);
     let a: Vec<T> = (0..b.la.storage_len() as usize).map(value).collect();
@@ -215,7 +230,7 @@ where
             Some(st) => execute_resolved_instrumented(
                 &plan,
                 &rg,
-                &exec,
+                &mut exec,
                 workspace,
                 st,
                 alpha,
@@ -228,7 +243,7 @@ where
             None => execute_resolved(
                 &plan,
                 &rg,
-                &exec,
+                &mut exec,
                 workspace,
                 alpha,
                 a.as_ptr(),
@@ -542,31 +557,33 @@ fn the_report_names_the_policy_width_and_mode() {
 }
 
 #[test]
-fn width_one_runs_on_the_caller_without_claims_and_a_refusal_reports_no_route() {
+fn width_one_runs_on_the_caller_without_claims_and_a_refusal_falls_back() {
     let s = Spec::new(32, 70, 45);
     let serial = run::<f64>(F64, &s, None, &Team::new(1), None);
     let stats = DynStats::new(4);
     let one = Team::new(1);
     let got = run::<f64>(F64, &s, dynamic(8, 8), &one, Some(&stats));
     assert!(got == serial);
-    assert_eq!(one.broadcasts(), 0, "width 1 never broadcasts");
+    assert_eq!(one.installs(), 0, "width 1 never enters the pool");
     assert_eq!(stats.snapshot().claims, 0, "no atomic claims at width 1");
 
-    // A same-pool worker cannot be co-scheduled at a barrier, so a
-    // barrier-bearing team is refused rather than silently run serially: the
-    // error comes back with nothing claimed and nothing run.
+    // A same-pool worker cannot be co-scheduled at a barrier, so the dynamic
+    // team is refused before anything runs and the call is planned again as
+    // barrier-free cells of the same blocking: the numbers are the serial ones,
+    // no epoch or claim of the dynamic protocol ran, and the cells entered no
+    // pool (they ran in place on the worker).
     let stats = DynStats::new(4);
-    let before = stats.snapshot();
     let mut refuse = Team::new(4);
     refuse.refuse = true;
-    let err = try_run::<f64>(F64, &s, dynamic(8, 8), &refuse, Some(&stats)).unwrap_err();
-    assert!(matches!(err, crate::api::Error::Exec(_)), "{err}");
-    assert_eq!(refuse.broadcasts(), 0, "a refused team runs nothing");
-    // The refusal is ordered before the call is counted, the workspace is taken
-    // and any epoch claims work, so every counter is exactly what it was before
-    // the call: no part of the driver ran. The packed tests check the sentinel
-    // output directly; here the counters are the observation.
-    assert_eq!(stats.snapshot(), before, "the refusal touched DynStats");
+    let got = run::<f64>(F64, &s, dynamic(8, 8), &refuse, Some(&stats));
+    assert!(got == serial, "the fallback changed the result");
+    let snap = stats.snapshot();
+    assert_eq!((snap.epochs, snap.claims), (0, 0), "the dynamic team ran");
+    assert_eq!(
+        snap.calls, 1,
+        "one counted call: the refused plan is not one"
+    );
+    assert_eq!(refuse.installs(), 0, "the cells ran in place on the worker");
 }
 
 #[test]
@@ -706,7 +723,7 @@ mod skew {
 
     /// Worker 0 of the team's pool is the slow one.
     fn slow() -> bool {
-        rayon::current_thread_index() == Some(0)
+        std::thread::current().name() == Some(&format!("{WORKER_PREFIX}0")[..])
     }
     static ENTERED: AtomicBool = AtomicBool::new(false);
     static OTHER_CALLS: AtomicUsize = AtomicUsize::new(0);

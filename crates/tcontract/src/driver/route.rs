@@ -1,8 +1,10 @@
 //! One geometry decision shared by reporting and execution.
 
+use std::num::NonZeroUsize;
+
 use super::{block, dynamic, pack_b_needed, BLOCK_MC_BUDGET};
 use crate::plan::{PackedPlan, PackedRoute};
-use tcontract_exec::{BatchQuery, BatchStrategy, Exec, ExecError, WorkspaceReq};
+use tcontract_exec::{BatchPolicy, BatchQuery, BatchStrategy, Exec, ExecError, WorkspaceReq};
 use tcontract_kernel::pack::panel_len;
 use tcontract_kernel::{Element, PartitionPolicy, ResolvedGemm};
 
@@ -51,10 +53,18 @@ fn batch_query(plan: &PackedPlan, m: usize, n: usize, k: usize, complex: bool) -
         .with_item_parallel(true)
 }
 
+/// `team` says whether a barrier-bearing team may be used. A token that cannot
+/// co-schedule (see `Exec::broadcast` in `strided-exec`) is refused at the
+/// broadcast, and the driver then asks again with `team == false`: the grid
+/// collapses to one row strip per column group (`pm == 1`), which needs no
+/// barrier, and dynamic tiles, which are barrier-bearing too, give way to that
+/// static column grid.
 pub(crate) fn execution_geometry<T: Element>(
     plan: &PackedPlan,
     rg: &ResolvedGemm<T::Real>,
-    exec: &Exec<'_>,
+    budget: usize,
+    policy: &BatchPolicy,
+    team: bool,
 ) -> Result<Geometry, ExecError> {
     let fam = rg.family();
     let (mr, nr) = (fam.mr, fam.nr);
@@ -66,7 +76,6 @@ pub(crate) fn execution_geometry<T: Element>(
     };
     let (m, n, k) = (am.len(), bn.len(), ak.len());
     let direct_b = !pack_b_needed(fam.b_access, bk, bn, nr);
-    let budget = exec.budget();
     let explicit_grid = match rg.partition {
         PartitionPolicy::StaticGrid { pm, pn } if pm != 0 => Some((pm, pn)),
         _ => None,
@@ -86,9 +95,14 @@ pub(crate) fn execution_geometry<T: Element>(
     // strategy is resolved before a pinned grid or dynamic tiles, so a forced
     // `Sequential` cannot launch a team and a forced `Outer` cannot silently
     // become inner parallelism.
-    let policy = *exec.batch_policy();
+    let policy = *policy;
     let forced = !matches!(policy.strategy, BatchStrategy::Auto);
-    let decision = exec.batch_decision(&batch_query(plan, m, n, k, T::IS_COMPLEX));
+    let decision = tcontract_exec::batch::batch_decision(
+        &policy,
+        // INVARIANT: the caller's budget is at least one thread.
+        NonZeroUsize::new(budget).unwrap_or(NonZeroUsize::MIN),
+        &batch_query(plan, m, n, k, T::IS_COMPLEX),
+    );
     // A split asks for lanes *and* item threads, and this driver's inner
     // parallelism is a co-scheduled team with barriers: a lane worker cannot join
     // one without blocking on an outer barrier, so the decision is refused before
@@ -137,13 +151,19 @@ pub(crate) fn execution_geometry<T: Element>(
             }
         }
     }
-    let p = pm * pn;
-    if direct_b && dyn_jobs.is_none() {
+    let mut dyn_jobs = dyn_jobs;
+    let mut p = pm * pn;
+    if !team && lanes == 1 {
+        // Barrier-free: one row strip per column group, at most one group per
+        // `NR` sliver of `N`. The arithmetic of each output element is the
+        // team's (the strips and groups only decide who computes it).
+        dyn_jobs = None;
+        pm = 1;
+        pn = p.min(n.div_ceil(nr).max(1));
+        p = pn;
+    } else if direct_b && dyn_jobs.is_none() {
         pm = 1;
         pn = p;
-    }
-    if pm > 1 && exec.is_worker() {
-        return Err(ExecError::Unavailable);
     }
     Ok(Geometry {
         lanes,

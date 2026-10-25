@@ -43,7 +43,7 @@ fn plan(cfg: &PlanConfig) -> Result<Plan<f64>, Error> {
     )
 }
 
-fn run(plan: &Plan<f64>, exec: &Exec<'_>) -> Vec<f64> {
+fn run(plan: &Plan<f64>, exec: &mut Exec<'_>) -> Vec<f64> {
     let (dg, ad, bd) = copying_case();
     let (a, b) = (T::<f64>::new(&ad, 1), T::<f64>::new(&bd, 2));
     let mut c = T::<f64>::new(&out_dims(&dg, &a.dims, &b.dims), 3);
@@ -62,12 +62,9 @@ fn run(plan: &Plan<f64>, exec: &Exec<'_>) -> Vec<f64> {
 
 #[test]
 fn a_non_fusable_contraction_runs_dynamically_and_reports_the_policy() {
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
+    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool);
+    let exec = Exec::new(&pool, pool.size()).unwrap();
     let stat = plan(&PlanConfig {
         kernel: KernelChoice::Id("ref.f64.real.4x4".into()),
         ..PlanConfig::default()
@@ -83,8 +80,8 @@ fn a_non_fusable_contraction_runs_dynamically_and_reports_the_policy() {
     let d = report.dynamic.expect("assignment is reported");
     assert_eq!((d.job_m, d.job_n, d.row_bands), (8, 8, 3));
     assert!(stat.report().packed.as_ref().unwrap().dynamic.is_none());
-    for e in [Exec::serial(), exec] {
-        assert_eq!(run(&dynp, &e), run(&stat, &Exec::serial()));
+    for mut e in [Exec::serial(), exec] {
+        assert_eq!(run(&dynp, &mut e), run(&stat, &mut Exec::serial()));
     }
 }
 
@@ -170,15 +167,12 @@ fn an_explicit_partition_on_an_all_batch_problem_runs_packed() {
             Problem::from_dot_general(DType::F64, spec(&a), spec(&b), spec(&c0), &dg).unwrap();
         let plan = Plan::<f64>::new(&problem, &config).unwrap();
         assert_eq!(plan.report().algorithm, Algorithm::Packed, "{partition:?}");
-        let tp = rayon::ThreadPoolBuilder::new()
-            .num_threads(4)
-            .build()
-            .unwrap();
+        let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
         let pool = Pool::borrow(&tp);
-        for exec in [Exec::serial(), Exec::rayon(&pool)] {
+        for mut exec in [Exec::serial(), Exec::new(&pool, pool.size()).unwrap()] {
             let mut c = c0.clone();
             plan.execute_into_accum(
-                &exec,
+                &mut exec,
                 1.5,
                 &a.view(),
                 &b.view(),

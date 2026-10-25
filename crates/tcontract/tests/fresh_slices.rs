@@ -54,7 +54,7 @@ fn faer_matvec_serves_a_fresh_output_on_the_faer_route() {
     let mut output = [MaybeUninit::uninit(); 2];
     let d = plan
         .execute_uninit_slices(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             (&[1., 2., 3., 4.], 0),
             (&[5., 6.], 0),
@@ -81,7 +81,7 @@ fn alpha_zero_does_not_read_nan_inputs_and_initializes_the_entire_output() {
     let mut output = [MaybeUninit::uninit(); 3];
     let d = plan
         .execute_uninit_slices(
-            &Exec::serial(),
+            &mut Exec::serial(),
             0.0,
             (&[f64::NAN; 3], 0),
             (&[f64::NAN; 3], 0),
@@ -108,7 +108,7 @@ fn reduced_diagonal_output_cannot_claim_initialization_of_holes() {
     let mut output = [MaybeUninit::new(123.); 4];
     assert!(plan
         .execute_uninit_slices(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             (&[2., 3.], 0),
             (&[4., 5.], 0),
@@ -138,7 +138,7 @@ fn absent_nonzero_or_nan_beta_and_fresh_output_accumulation_are_rejected() {
         let mut d = [777.];
         assert!(plan
             .execute_slices_accum(
-                &Exec::serial(),
+                &mut Exec::serial(),
                 1.0,
                 (&[2.], 0),
                 (&[3.], 0),
@@ -162,7 +162,7 @@ fn absent_nonzero_or_nan_beta_and_fresh_output_accumulation_are_rejected() {
     let mut d = [MaybeUninit::new(777.)];
     assert!(output_plan
         .execute_uninit_slices(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             (&[2.], 0),
             (&[3.], 0),
@@ -191,7 +191,7 @@ fn rank_zero_and_empty_output_have_exact_completion_contracts() {
     let mut d = [MaybeUninit::uninit()];
     assert_eq!(
         plan.execute_uninit_slices(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             (&[2.], 0),
             (&[3.], 0),
@@ -216,7 +216,7 @@ fn rank_zero_and_empty_output_have_exact_completion_contracts() {
     let mut empty = [];
     assert!(plan
         .execute_uninit_slices(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             (&[], 0),
             (&[], 0),
@@ -229,7 +229,7 @@ fn rank_zero_and_empty_output_have_exact_completion_contracts() {
     let mut extra = [MaybeUninit::uninit()];
     assert!(plan
         .execute_uninit_slices(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             (&[], 0),
             (&[], 0),
@@ -301,7 +301,7 @@ fn fresh_faer_outputs_cover_every_write_only_c_mode() {
         let mut output = [MaybeUninit::uninit(); 4];
         let d = plan
             .execute_uninit_slices(
-                &Exec::serial(),
+                &mut Exec::serial(),
                 1.0,
                 (&a, 0),
                 (&b, 0),

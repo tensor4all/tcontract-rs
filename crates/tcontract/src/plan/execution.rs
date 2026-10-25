@@ -113,7 +113,7 @@ impl<T: Scalar> Plan<T> {
     /// // The packed driver owns a workspace; a fusable plan runs on faer and
     /// // needs none.
     /// let plan = Plan::<f64>::new(&p, &PlanConfig::packed())?;
-    /// let req = plan.workspace_req(&Exec::serial(), OutputContract::Initialized);
+    /// let req = plan.workspace_req(&mut Exec::serial(), OutputContract::Initialized);
     /// assert!(req.a_bytes > 0);
     /// # Ok::<(), tcontract::Error>(())
     /// ```
@@ -133,9 +133,14 @@ impl<T: Scalar> Plan<T> {
     /// C-mode validation belongs to execution; fresh storage cannot accumulate
     /// from the previous destination. Requery if caller/executor changes.
     ///
+    /// The route is the one a root token gets: when the token cannot
+    /// co-schedule a barrier team (it was produced by `fork`, or the caller is
+    /// a worker of the pool), execution takes the barrier-free cells route
+    /// instead; see [`PackedRoute`].
+    ///
     /// # Errors
-    /// Returns `Error::Exec` when a packed SPMD team is unavailable from a
-    /// worker of the same pool, before any write.
+    /// Returns `Error::Exec` when a forced batch strategy cannot be honoured by
+    /// the packed route, before any write.
     ///
     /// # Examples
     /// ```
@@ -146,7 +151,7 @@ impl<T: Scalar> Plan<T> {
     /// let p = Problem::from_labels(DType::F64, l.clone(), l.clone(), CSpec::Absent,
     ///     l, &Labels::new(&[0], &[0], &[0]))?;
     /// let plan = Plan::<f64>::new(&p, &PlanConfig::default())?;
-    /// assert_eq!(plan.execution_route(&Exec::serial(), 0.0, OutputContract::Fresh)?, ExecutionRoute::OutputOnly);
+    /// assert_eq!(plan.execution_route(&mut Exec::serial(), 0.0, OutputContract::Fresh)?, ExecutionRoute::OutputOnly);
     /// # Ok::<(), tcontract::Error>(())
     /// ```
     pub fn execution_route(
@@ -168,8 +173,13 @@ impl<T: Scalar> Plan<T> {
             (Strategy::Faer(_), _) => return Ok(ExecutionRoute::Faer),
             (Strategy::Elementwise(_), _) => return Ok(ExecutionRoute::Elementwise),
         };
-        let exec = self.batch_context(exec)?;
-        let geometry = crate::driver::execution_geometry::<T>(&pk.plan, &pk.rg, &exec)?;
+        let geometry = crate::driver::execution_geometry::<T>(
+            &pk.plan,
+            &pk.rg,
+            self.batch_budget(exec),
+            exec.batch_policy(),
+            true,
+        )?;
         Ok(ExecutionRoute::Packed {
             kind: geometry.kind(),
             width: geometry.width(),
@@ -216,14 +226,14 @@ impl<T: Scalar> Plan<T> {
     ///     l, &Labels::new(&[0], &[0], &[0]))?;
     /// let plan = Plan::<f64>::new(&p, &PlanConfig::default())?;
     /// let mut d = [0.0];
-    /// plan.execute_slices_accum(&Exec::serial(), 2.0, (&[3.0], 0), (&[4.0], 0),
+    /// plan.execute_slices_accum(&mut Exec::serial(), 2.0, (&[3.0], 0), (&[4.0], 0),
     ///     0.0, SliceAccumulationSource::Absent, (&mut d, 0))?;
     /// assert_eq!(d, [24.0]);
     /// # Ok::<(), tcontract::Error>(())
     /// ```
     pub fn execute_slices_accum(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         (a, ao): (&[T], isize),
         (b, bo): (&[T], isize),
@@ -264,7 +274,7 @@ impl<T: Scalar> Plan<T> {
     ///     l, &Labels::new(&[0], &[0], &[0]))?;
     /// let plan = Plan::<f64>::new(&p, &PlanConfig::default())?;
     /// let mut d = [MaybeUninit::uninit()];
-    /// let initialized = plan.execute_uninit_slices(&Exec::serial(), 1.0,
+    /// let initialized = plan.execute_uninit_slices(&mut Exec::serial(), 1.0,
     ///     (&[3.0], 0), (&[4.0], 0), 0.0, SliceAccumulationSource::Absent,
     ///     (&mut d, 0))?;
     /// assert_eq!(initialized, &[12.0]);
@@ -272,7 +282,7 @@ impl<T: Scalar> Plan<T> {
     /// ```
     pub fn execute_uninit_slices<'d>(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         (a, ao): (&[T], isize),
         (b, bo): (&[T], isize),

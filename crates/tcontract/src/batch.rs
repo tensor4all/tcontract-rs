@@ -76,7 +76,7 @@ pub struct BatchItem<'a, T: Scalar> {
 }
 
 /// Run every item, parallelising over the batch on at most `exec.budget()`
-/// threads of `exec` (serially on [`Exec::Serial`]).
+/// threads of `exec` (serially on [`Exec::serial`]).
 ///
 /// # Ordering and results
 ///
@@ -96,8 +96,7 @@ pub struct BatchItem<'a, T: Scalar> {
 ///
 /// The guarantee covers that layout preflight only. An item can still fail
 /// while executing, after earlier items have written -- for example when the
-/// batch loop was entered from inside a pool worker and an item's plan needs a
-/// barrier-bearing team ([`Error::Exec`](crate::api::Error::Exec)). There is no
+/// backend fails ([`Error::Backend`](crate::api::Error::Backend)). There is no
 /// whole-batch rollback.
 ///
 /// # Examples
@@ -132,13 +131,16 @@ pub struct BatchItem<'a, T: Scalar> {
 ///     BatchItem { plan: &plan, alpha: 1.0, a: view(&a1), b: view(&identity), beta: 0.0,
 ///         source: None, d: StridedViewMut::new(&mut d1, &[2, 2], &[1, 2], 0).unwrap() },
 /// ];
-/// contract_batched(&mut items, &Exec::serial()).unwrap();
+/// contract_batched(&mut items, &mut Exec::serial()).unwrap();
 /// drop(items); // release the borrows on d0 / d1
 ///
 /// assert_eq!(d0, a0); // multiplying by the identity
 /// assert_eq!(d1, a1);
 /// ```
-pub fn contract_batched<T: Scalar>(items: &mut [BatchItem<'_, T>], exec: &Exec<'_>) -> Result<()> {
+pub fn contract_batched<T: Scalar>(
+    items: &mut [BatchItem<'_, T>],
+    exec: &mut Exec<'_>,
+) -> Result<()> {
     // Validate everything first, so a failure means no output is written.
     let mut reads = Vec::with_capacity(items.len());
     for it in items.iter() {
@@ -182,34 +184,39 @@ pub fn contract_batched<T: Scalar>(items: &mut [BatchItem<'_, T>], exec: &Exec<'
     // budget. The default `Inner` uses the whole context, matching the legacy
     // `count < width` path.
     if decision.lanes <= 1 {
-        let item_exec = exec.with_budget(decision.item_threads)?;
+        // INVARIANT: a decision never has zero item threads.
+        let width = NonZeroUsize::new(decision.item_threads).unwrap_or(NonZeroUsize::MIN);
+        let mut item_exec = exec.reborrow().limit(width);
         for (it, c) in items.iter_mut().zip(reads) {
-            run_item(it, c, &item_exec)?;
+            run_item(it, c, &mut item_exec)?;
         }
         return Ok(());
     }
 
-    // `for_each_partition` takes `Fn`, so each item sits behind its own mutex,
+    // `fork` takes `Fn`, so each item sits behind its own mutex,
     // locked exactly once and never contended: the `&mut` outputs already prove
     // the items disjoint. Each item runs serially on its lane, reusing the
     // outer context's workspace so a pooled batch allocates nothing per item.
     let cells: Vec<Mutex<(&mut BatchItem<'_, T>, CRead<T>)>> =
         items.iter_mut().zip(reads).map(Mutex::new).collect();
     let first_error: Mutex<Option<crate::api::Error>> = Mutex::new(None);
-    let item_exec = exec
-        .workspace()
-        .map_or(Exec::serial(), Exec::serial_with_workspace);
-    let lanes = exec.with_budget(decision.lanes)?;
-    lanes.for_each_partition(cells.len(), &|i| {
-        let mut cell = cells[i].lock().unwrap_or_else(|e| e.into_inner());
-        let (it, c) = &mut *cell;
-        if let Err(e) = run_item(it, *c, &item_exec) {
-            first_error
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get_or_insert(e);
-        }
-    });
+    let workspace = exec.workspace();
+    // INVARIANT: a decision never has zero lanes.
+    let lanes = NonZeroUsize::new(decision.lanes).unwrap_or(NonZeroUsize::MIN);
+    exec.reborrow()
+        .limit(lanes)
+        .into_token()
+        .fork(cells.len(), |i, _| {
+            let mut item_exec = workspace.map_or(Exec::serial(), Exec::serial_with_workspace);
+            let mut cell = cells[i].lock().unwrap_or_else(|e| e.into_inner());
+            let (it, c) = &mut *cell;
+            if let Err(e) = run_item(it, *c, &mut item_exec) {
+                first_error
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_or_insert(e);
+            }
+        });
     match first_error.into_inner().unwrap_or_else(|e| e.into_inner()) {
         Some(e) => Err(e),
         None => Ok(()),
@@ -217,7 +224,7 @@ pub fn contract_batched<T: Scalar>(items: &mut [BatchItem<'_, T>], exec: &Exec<'
 }
 
 /// One item on `exec`. The views were validated by the caller.
-fn run_item<T: Scalar>(it: &mut BatchItem<'_, T>, c: CRead<T>, exec: &Exec<'_>) -> Result<()> {
+fn run_item<T: Scalar>(it: &mut BatchItem<'_, T>, c: CRead<T>, exec: &mut Exec<'_>) -> Result<()> {
     // SAFETY: the views were validated for every item before any of them ran;
     // `d` is an exclusive borrow, so it cannot alias `a`, `b` or a separate C.
     unsafe {

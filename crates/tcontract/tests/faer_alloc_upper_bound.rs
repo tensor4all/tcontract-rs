@@ -50,7 +50,7 @@ fn faer_execute_stays_within_the_pinned_allocation_bound() {
     assert_eq!(plan.report().algorithm, tcontract::Algorithm::Faer);
 
     let arena = ArenaProvider::new();
-    let exec = Exec::serial_with_workspace(&arena);
+    let mut exec = Exec::serial_with_workspace(&arena);
     let data = |len: usize, seed: f64| {
         (0..len)
             .map(|i| ((i as f64 * 0.13 + seed) % 4.0) - 1.5)
@@ -60,11 +60,12 @@ fn faer_execute_stays_within_the_pinned_allocation_bound() {
     let b = data(k * n, 1.0);
     let mut d = vec![0.0f64; m * n];
 
-    let run = |d: &mut [f64]| {
+    let mut run = |d: &mut [f64]| {
         let av = StridedView::new(&a, &[m, k], &[1, m as isize], 0).unwrap();
         let bv = StridedView::new(&b, &[k, n], &[1, k as isize], 0).unwrap();
         let mut dv = StridedViewMut::new(d, &[m, n], &[1, m as isize], 0).unwrap();
-        plan.execute_into(&exec, 1.0, &av, &bv, &mut dv).unwrap();
+        plan.execute_into(&mut exec, 1.0, &av, &bv, &mut dv)
+            .unwrap();
     };
 
     // Warm any one-time state outside the counted window.

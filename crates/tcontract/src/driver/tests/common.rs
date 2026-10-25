@@ -264,15 +264,10 @@ pub struct Shape {
 /// A pool of eight workers shared by every width-sweep run. Each run takes a
 /// budget of it, so the pool is built once instead of once per call.
 fn sweep_pool() -> &'static tcontract_exec::Pool<'static> {
-    static TP: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    static TP: std::sync::OnceLock<strided_exec::Pool> = std::sync::OnceLock::new();
     static POOL: std::sync::OnceLock<tcontract_exec::Pool<'static>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
-        let tp = TP.get_or_init(|| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(8)
-                .build()
-                .unwrap()
-        });
+        let tp = TP.get_or_init(|| strided_exec::Pool::builder().threads(8).build().unwrap());
         tcontract_exec::Pool::borrow(tp)
     })
 }
@@ -318,16 +313,14 @@ where
     } else {
         plan.resolved::<T>().unwrap()
     };
-    let exec = tcontract_exec::Exec::rayon(sweep_pool())
-        .with_budget(width)
-        .unwrap();
+    let mut exec = tcontract_exec::Exec::new(sweep_pool(), width).unwrap();
     // SAFETY: every buffer is sized by its layout, `beta` is zero so `C` is
     // never read, and `D` is exclusively borrowed here.
     unsafe {
         super::compat::execute_resolved(
             &plan,
             &rg,
-            &exec,
+            &mut exec,
             None,
             <T as Element>::one(),
             a.as_ptr(),

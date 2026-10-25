@@ -81,7 +81,7 @@ fn check(c: &Case, config: &PlanConfig, expect: Algorithm) {
     let plan = plan(c, config);
     assert_eq!(plan.report().algorithm, expect);
     let (a, b) = (values(c.a.len, 1), values(c.b.len, 2));
-    let exec = Exec::serial();
+    let mut exec = Exec::serial();
 
     let mut by_view = vec![99.0; c.d.len];
     {
@@ -89,11 +89,12 @@ fn check(c: &Case, config: &PlanConfig, expect: Algorithm) {
         let bv = StridedView::new(&b, &c.b.dims, &c.b.strides, c.b.offset).unwrap();
         let mut dv =
             StridedViewMut::new(&mut by_view, &c.d.dims, &c.d.strides, c.d.offset).unwrap();
-        plan.execute_into(&exec, 2.0, &av, &bv, &mut dv).unwrap();
+        plan.execute_into(&mut exec, 2.0, &av, &bv, &mut dv)
+            .unwrap();
     }
     let mut by_slice = vec![99.0; c.d.len];
     plan.execute_slices(
-        &exec,
+        &mut exec,
         2.0,
         (&a, c.a.offset),
         (&b, c.b.offset),
@@ -148,7 +149,7 @@ fn ignores_elements_outside_the_addressed_range() {
     a.push(f64::NAN);
     let b = values(6, 2);
     let mut d = vec![7.0; c.d.len];
-    plan.execute_slices(&Exec::serial(), 1.0, (&a, 0), (&b, 0), (&mut d, 0))
+    plan.execute_slices(&mut Exec::serial(), 1.0, (&a, 0), (&b, 0), (&mut d, 0))
         .unwrap();
     assert!(d[..9].iter().all(|x| x.is_finite()));
     assert_eq!(&d[9..], &[7.0; 4]);
@@ -159,7 +160,7 @@ fn refuses_a_short_slice_for_each_operand_and_writes_nothing() {
     let c = matmul(reversed(&[5, 4], 3), cm(&[4, 3]), reversed(&[5, 3], 2));
     let plan = plan(&c, &PlanConfig::default());
     let (a, b) = (values(c.a.len, 1), values(c.b.len, 2));
-    let exec = Exec::serial();
+    let mut exec = Exec::serial();
     let bounds = |r: Result<(), Error>| match r {
         Err(Error::Layout(LayoutError::Bounds { operand })) => operand,
         other => panic!("expected a bounds error, got {other:?}"),
@@ -169,16 +170,16 @@ fn refuses_a_short_slice_for_each_operand_and_writes_nothing() {
     let mut d = vec![7.0; c.d.len];
     let short = |v: &[f64]| v[..v.len() - 1].to_vec();
     assert_eq!(
-        bounds(plan.execute_slices(&exec, 1.0, (&short(&a), ao), (&b, 0), (&mut d, d_o))),
+        bounds(plan.execute_slices(&mut exec, 1.0, (&short(&a), ao), (&b, 0), (&mut d, d_o))),
         OperandId::A
     );
     assert_eq!(
-        bounds(plan.execute_slices(&exec, 1.0, (&a, ao), (&short(&b), 0), (&mut d, d_o))),
+        bounds(plan.execute_slices(&mut exec, 1.0, (&a, ao), (&short(&b), 0), (&mut d, d_o))),
         OperandId::B
     );
     let mut short_d = vec![7.0; c.d.len - 1];
     assert_eq!(
-        bounds(plan.execute_slices(&exec, 1.0, (&a, ao), (&b, 0), (&mut short_d, d_o))),
+        bounds(plan.execute_slices(&mut exec, 1.0, (&a, ao), (&b, 0), (&mut short_d, d_o))),
         OperandId::D
     );
     assert!(d.iter().chain(&short_d).all(|&x| x == 7.0));
@@ -194,7 +195,13 @@ fn refuses_an_offset_that_reaches_before_the_slice() {
     let plan = plan(&c, &PlanConfig::default());
     let mut d = vec![0.0; 15];
     let b = values(12, 2);
-    let r = plan.execute_slices(&Exec::serial(), 1.0, (&[0.0; 64], 3), (&b, 0), (&mut d, 0));
+    let r = plan.execute_slices(
+        &mut Exec::serial(),
+        1.0,
+        (&[0.0; 64], 3),
+        (&b, 0),
+        (&mut d, 0),
+    );
     assert!(matches!(
         r,
         Err(Error::Layout(LayoutError::Bounds {
@@ -209,7 +216,7 @@ fn empty_operands_need_no_storage() {
     let c = matmul(cm(&[0, 4]), cm(&[4, 3]), cm(&[0, 3]));
     let p = plan(&c, &PlanConfig::default());
     p.execute_slices(
-        &Exec::serial(),
+        &mut Exec::serial(),
         1.0,
         (&[], 0),
         (&values(12, 2), 0),
@@ -220,7 +227,7 @@ fn empty_operands_need_no_storage() {
     let c = matmul(cm(&[3, 0]), cm(&[0, 2]), cm(&[3, 2]));
     let p = plan(&c, &PlanConfig::default());
     let mut d = vec![7.0; 6];
-    p.execute_slices(&Exec::serial(), 1.0, (&[], 0), (&[], 0), (&mut d, 0))
+    p.execute_slices(&mut Exec::serial(), 1.0, (&[], 0), (&[], 0), (&mut d, 0))
         .unwrap();
     assert_eq!(d, vec![0.0; 6]);
 }

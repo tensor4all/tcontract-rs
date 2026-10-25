@@ -44,7 +44,7 @@ fn d_overlapping_an_input_is_refused_before_any_write() {
     // preflight refuses before any access.
     let e = unsafe {
         p.execute_raw(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             a,
             B.as_ptr(),
@@ -72,7 +72,7 @@ fn a_disjoint_call_runs_and_a_zero_alpha_call_ignores_the_inputs() {
     // SAFETY: valid, disjoint buffers sized by the layouts.
     unsafe {
         p.execute_raw(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             A.as_ptr(),
             B.as_ptr(),
@@ -88,7 +88,7 @@ fn a_disjoint_call_runs_and_a_zero_alpha_call_ignores_the_inputs() {
     // SAFETY: only `d` is accessed.
     unsafe {
         p.execute_raw(
-            &Exec::serial(),
+            &mut Exec::serial(),
             0.0,
             std::ptr::null(),
             std::ptr::null(),
@@ -110,7 +110,7 @@ fn a_separate_c_is_the_same_mapping_in_place_or_disjoint_but_never_partially_ove
     // SAFETY: C and D are the same buffer at the same origin; A and B are disjoint.
     unsafe {
         p.execute_raw(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             A.as_ptr(),
             B.as_ptr(),
@@ -129,7 +129,7 @@ fn a_separate_c_is_the_same_mapping_in_place_or_disjoint_but_never_partially_ove
     // SAFETY: both pointers are inside `buf`; the preflight refuses first.
     let e = unsafe {
         p.execute_raw(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             A.as_ptr(),
             B.as_ptr(),
@@ -150,7 +150,7 @@ fn a_separate_c_is_the_same_mapping_in_place_or_disjoint_but_never_partially_ove
     // SAFETY: disjoint valid buffers.
     unsafe {
         p.execute_raw(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             A.as_ptr(),
             B.as_ptr(),
@@ -170,7 +170,7 @@ fn an_output_mode_plan_reads_the_previous_d_through_d() {
     // SAFETY: valid buffers; `c` is ignored for an in-place C.
     unsafe {
         p.execute_raw(
-            &Exec::serial(),
+            &mut Exec::serial(),
             1.0,
             A.as_ptr(),
             B.as_ptr(),

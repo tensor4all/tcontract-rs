@@ -24,7 +24,7 @@ fn extent_one_axes_with_huge_strides_do_not_overflow() {
         strides: vec![1, isize::MAX, 2],
         offset: 0,
     };
-    add(&Exec::serial(), 2.0, &a.view(), 3.0, &mut c.view_mut()).unwrap();
+    add(&mut Exec::serial(), 2.0, &a.view(), 3.0, &mut c.view_mut()).unwrap();
     for_each_index(&[2, 1, 3], |i| assert_eq!(c.get(i), 2.0 * a.get(i) + 3.0));
     // alpha == 0 through a plan scales C, same layout, under every strategy.
     let cfg = DotGeneral::new(&[], &[], &[], &[]);
@@ -47,7 +47,7 @@ fn extent_one_axes_with_huge_strides_do_not_overflow() {
         .unwrap();
         let plan = Plan::<f64>::new(&problem, &config).unwrap();
         plan.execute_into_accum(
-            &Exec::serial(),
+            &mut Exec::serial(),
             0.0,
             &x.view(),
             &y.view(),
@@ -91,7 +91,7 @@ fn all_batch_contractions_run_elementwise() {
     let plan = Plan::<f64>::new(&problem, &PlanConfig::default()).unwrap();
     assert_eq!(plan.report().algorithm, Algorithm::Elementwise);
     plan.execute_into_accum(
-        &Exec::serial(),
+        &mut Exec::serial(),
         1.5,
         &a.view(),
         &b.view(),

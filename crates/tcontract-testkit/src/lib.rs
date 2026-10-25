@@ -122,7 +122,7 @@ impl NaivePlan {
     #[allow(clippy::too_many_arguments)]
     fn run<T: Scalar>(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: &StridedView<'_, T>,
         b: &StridedView<'_, T>,
@@ -207,7 +207,7 @@ impl NaivePlan {
                 }
             }
         };
-        exec.for_each_partition(lanes, &body);
+        exec.token().fork(lanes, |lane, _| body(lane));
         Ok(())
     }
 }
@@ -215,7 +215,7 @@ impl NaivePlan {
 impl<T: Scalar> PreparedContraction<T> for NaivePlan {
     fn execute_into(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: &StridedView<'_, T>,
         b: &StridedView<'_, T>,
@@ -226,7 +226,7 @@ impl<T: Scalar> PreparedContraction<T> for NaivePlan {
 
     fn execute_into_accum(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: &StridedView<'_, T>,
         b: &StridedView<'_, T>,

@@ -26,7 +26,7 @@ pub(crate) mod sealed {
         /// As [`ElementPlan::run`].
         unsafe fn elementwise(
             plan: &ElementPlan,
-            exec: &Exec<'_>,
+            exec: &mut Exec<'_>,
             e: Expr<Self>,
             inputs: Inputs<Self>,
             c: CRead<Self>,
@@ -41,7 +41,7 @@ pub(crate) mod sealed {
                 #[inline(never)]
                 unsafe fn elementwise(
                     plan: &ElementPlan,
-                    exec: &Exec<'_>,
+                    exec: &mut Exec<'_>,
                     e: Expr<Self>,
                     inputs: Inputs<Self>,
                     c: CRead<Self>,

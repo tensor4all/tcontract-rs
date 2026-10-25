@@ -7,6 +7,8 @@ use tcontract_exec::{Exec, Pool};
 use tcontract_kernel::KernelCatalog;
 use tcontract_testkit::custom_kernels as own;
 
+mod common;
+
 const M: usize = 150;
 const N: usize = 130;
 const K: usize = 90;
@@ -42,14 +44,14 @@ fn plan_for(cat: &KernelCatalog<f64>, id: &'static str) -> Plan<f64> {
     .unwrap()
 }
 
-fn run(plan: &Plan<f64>, exec: &Exec<'_>) -> Vec<f64> {
+fn run(plan: &Plan<f64>, exec: &mut Exec<'_>) -> Vec<f64> {
     let mut c = vec![0.0; M * N];
     fill(plan, exec, &mut c).unwrap();
     c
 }
 
 /// One contraction into `c`.
-fn fill(plan: &Plan<f64>, exec: &Exec<'_>, c: &mut [f64]) -> Result<(), tcontract::api::Error> {
+fn fill(plan: &Plan<f64>, exec: &mut Exec<'_>, c: &mut [f64]) -> Result<(), tcontract::api::Error> {
     let (a, b) = (data(M * K, 1), data(K * N, 2));
     let av = StridedView::new(&a, &[M, K], &[1, M as isize], 0).unwrap();
     let bv = StridedView::new(&b, &[K, N], &[1, K as isize], 0).unwrap();
@@ -59,7 +61,7 @@ fn fill(plan: &Plan<f64>, exec: &Exec<'_>, c: &mut [f64]) -> Result<(), tcontrac
 
 /// `reps` contractions on a plan choosing `id` from a private catalog; returns
 /// the product and the family the plan reports.
-fn worker(exec: &Exec<'_>, id: &'static str, reps: usize) -> (Vec<f64>, &'static str) {
+fn worker(exec: &mut Exec<'_>, id: &'static str, reps: usize) -> (Vec<f64>, &'static str) {
     let cat = catalog();
     let plan = plan_for(&cat, id);
     let mut c = vec![];
@@ -81,17 +83,26 @@ fn catalogs_run_concurrently_on_one_pool_and_on_separate_pools() {
         .id
     };
     let before = default_id();
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
-    let reference = worker(&Exec::serial(), "custom.f64.2x2", 1).0;
+    let tp = common::placement::pool(4);
+    let reference = worker(&mut Exec::serial(), "custom.f64.2x2", 1).0;
 
     // Same pool, two threads, two different custom kernels.
     let shared = Pool::borrow(&tp);
     let (x, y) = std::thread::scope(|s| {
-        let x = s.spawn(|| worker(&Exec::rayon(&shared), "custom.f64.2x2", 6));
-        let y = s.spawn(|| worker(&Exec::rayon(&shared), "custom.f64.3x4", 6));
+        let x = s.spawn(|| {
+            worker(
+                &mut Exec::new(&shared, shared.size()).unwrap(),
+                "custom.f64.2x2",
+                6,
+            )
+        });
+        let y = s.spawn(|| {
+            worker(
+                &mut Exec::new(&shared, shared.size()).unwrap(),
+                "custom.f64.3x4",
+                6,
+            )
+        });
         (x.join().unwrap(), y.join().unwrap())
     });
     assert_eq!((x.1, y.1), ("custom.f64.2x2", "custom.f64.3x4"));
@@ -101,8 +112,8 @@ fn catalogs_run_concurrently_on_one_pool_and_on_separate_pools() {
     // Separate pools (each with its own workspace) on the same worker threads.
     let (pa, pb) = (Pool::borrow(&tp), Pool::borrow(&tp));
     let (x, y) = std::thread::scope(|s| {
-        let x = s.spawn(|| worker(&Exec::rayon(&pa), "custom.f64.3x4", 4));
-        let y = s.spawn(|| worker(&Exec::rayon(&pb), "custom.f64.2x2", 4));
+        let x = s.spawn(|| worker(&mut Exec::new(&pa, pa.size()).unwrap(), "custom.f64.3x4", 4));
+        let y = s.spawn(|| worker(&mut Exec::new(&pb, pb.size()).unwrap(), "custom.f64.2x2", 4));
         (x.join().unwrap(), y.join().unwrap())
     });
     assert_eq!(x.0, reference);
@@ -117,26 +128,26 @@ fn catalogs_run_concurrently_on_one_pool_and_on_separate_pools() {
 }
 
 #[test]
-fn a_call_from_a_worker_is_refused_without_a_write_on_the_same_family() {
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
+fn a_call_from_a_worker_falls_back_on_the_same_family() {
+    let tp = common::placement::pool(4);
     let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool);
+    let mut exec = Exec::new(&pool, pool.size()).unwrap();
     let cat = catalog();
     let plan = plan_for(&cat, "custom.f64.3x4");
     drop(cat);
-    let reference = worker(&Exec::serial(), "custom.f64.2x2", 1).0;
-    let outside = run(&plan, &exec);
+    let reference = worker(&mut Exec::serial(), "custom.f64.2x2", 1).0;
+    let outside = run(&plan, &mut exec);
     assert_eq!(outside, reference);
     // Inside a worker of the very pool the plan runs on, a barrier-bearing team
-    // cannot be co-scheduled: the call reports the refused route with no write
-    // and never switches to another family.
-    let mut c = vec![-7.0; M * N];
-    let err = tp.install(|| fill(&plan, &exec, &mut c)).unwrap_err();
-    assert!(matches!(err, tcontract::api::Error::Exec(_)), "{err}");
-    assert!(c.iter().all(|&v| v == -7.0), "a refused route wrote");
+    // cannot be co-scheduled: the call runs barrier-free cells of the same
+    // family and never switches to another one.
+    let c = common::placement::on_worker(&pool, || {
+        let mut inner = Exec::new(&pool, pool.size()).unwrap();
+        let mut c = vec![-7.0; M * N];
+        fill(&plan, &mut inner, &mut c).expect("the refused team falls back");
+        c
+    });
+    assert_eq!(c, reference);
     assert_eq!(
         plan.report().packed.as_ref().unwrap().family_id,
         "custom.f64.3x4"

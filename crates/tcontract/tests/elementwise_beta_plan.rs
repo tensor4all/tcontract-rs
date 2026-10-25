@@ -66,7 +66,7 @@ fn beta_pass_is_allocation_free_and_fresh_d_is_not_read() {
     };
     let plan = Plan::<f64>::new(&problem(), &config).unwrap();
     let arena = ArenaProvider::new();
-    let exec = Exec::serial_with_workspace(&arena);
+    let mut exec = Exec::serial_with_workspace(&arena);
 
     let a = vec![1.0f64; N * N];
     let b = vec![1.0f64; N * N];
@@ -74,9 +74,9 @@ fn beta_pass_is_allocation_free_and_fresh_d_is_not_read() {
     let mut d = vec![0.0f64; N * N];
 
     // alpha = 0 takes the output-only pass: D = beta * C. Warm the arena.
-    let run = |d: &mut [f64]| {
+    let mut run = |d: &mut [f64]| {
         plan.execute_slices_accum(
-            &exec,
+            &mut exec,
             0.0,
             (&a, 0),
             (&b, 0),
@@ -96,7 +96,7 @@ fn beta_pass_is_allocation_free_and_fresh_d_is_not_read() {
     let mut poison: [MaybeUninit<f64>; N * N] = [MaybeUninit::new(f64::NAN); N * N];
     let initialized = plan
         .execute_uninit_slices(
-            &exec,
+            &mut exec,
             0.0,
             (&a, 0),
             (&b, 0),
@@ -132,14 +132,14 @@ fn fresh_faer_route_is_allocation_free_once_warm() {
     let plan = Plan::<f64>::new(&problem, &PlanConfig::default()).unwrap();
     assert_eq!(plan.report().algorithm, tcontract::Algorithm::Faer);
     let arena = ArenaProvider::new();
-    let exec = Exec::serial_with_workspace(&arena);
+    let mut exec = Exec::serial_with_workspace(&arena);
     let a = vec![1.0f64; N * N];
     let b = vec![1.0f64; N * N];
     let mut d: [MaybeUninit<f64>; N * N] = [MaybeUninit::uninit(); N * N];
-    let run = |d: &mut [MaybeUninit<f64>; N * N]| {
+    let mut run = |d: &mut [MaybeUninit<f64>; N * N]| {
         let out = plan
             .execute_uninit_slices(
-                &exec,
+                &mut exec,
                 1.0,
                 (&a, 0),
                 (&b, 0),

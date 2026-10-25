@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     let bv = StridedView::new(&b, &[2, 2], &[1, 2], 0).map_err(tcontract::Error::backend)?;
     let mut dv =
         StridedViewMut::new(&mut d, &[2, 2], &[1, 2], 0).map_err(tcontract::Error::backend)?;
-    plan.execute_into(&Exec::serial(), 1.0, &av, &bv, &mut dv)?;
+    plan.execute_into(&mut Exec::serial(), 1.0, &av, &bv, &mut dv)?;
 
     assert_eq!(d, [3.0, 4.0, 1.0, 2.0]);
     println!("D = {d:?}");

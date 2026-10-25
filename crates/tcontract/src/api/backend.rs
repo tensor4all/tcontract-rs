@@ -144,7 +144,7 @@ pub trait PreparedContraction<T: Scalar> {
     /// failure, after which D may be partially written.
     fn execute_into(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: &StridedView<'_, T>,
         b: &StridedView<'_, T>,
@@ -166,7 +166,7 @@ pub trait PreparedContraction<T: Scalar> {
     #[allow(clippy::too_many_arguments)] // INVARIANT: the contraction argument set.
     fn execute_into_accum(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: &StridedView<'_, T>,
         b: &StridedView<'_, T>,
