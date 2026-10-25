@@ -83,7 +83,7 @@ fn run<S: Scalar>(
     };
     assert_eq!(<S as Scalar>::STORAGE, dtype);
     add(
-        &Exec::serial(),
+        &mut Exec::serial(),
         &spec,
         alpha,
         &a.view(),
@@ -229,11 +229,11 @@ fn the_same_plan_runs_on_different_buffers() {
     let plan = Plan::<f64>::new(&p, &PlanConfig::default()).unwrap();
     let b = [1.0f64];
     let bv = StridedView::new(&b[..], &[], &[], 0).unwrap();
-    let exec = Exec::serial();
+    let mut exec = Exec::serial();
     for seed in 0..3 {
         let a = T::<f64>::new(&[3, 4], 17 + seed);
         let mut d = T::<f64>::new(&[4, 3], 20 + seed);
-        plan.execute_into(&exec, 1.0, &a.view(), &bv, &mut d.view_mut())
+        plan.execute_into(&mut exec, 1.0, &a.view(), &bv, &mut d.view_mut())
             .unwrap();
         for_each_index(&[3, 4], |i| assert_eq!(d.get(&[i[1], i[0]]), a.get(i)));
     }

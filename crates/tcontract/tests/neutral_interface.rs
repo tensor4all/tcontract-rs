@@ -159,7 +159,7 @@ fn check_all<S: Scalar>(tol: f64) {
                             .unwrap_or_else(|e| panic!("{} {}: {e}", case.name, be.id()));
                         let mut got = lc.clone();
                         plan.execute_into_accum(
-                            &Exec::serial(),
+                            &mut Exec::serial(),
                             alpha,
                             &la.view(),
                             &lb.view(),
@@ -205,7 +205,7 @@ fn matmul_problem(m: usize, k: usize, n: usize) -> (DotGeneral, T<f64>, T<f64>, 
 
 fn accum(
     plan: &BoxedPlan<f64>,
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     alpha: f64,
     a: &T<f64>,
     b: &T<f64>,
@@ -235,20 +235,20 @@ fn beta_zero_reads_no_output_and_zero_alpha_or_empty_k_reads_no_inputs() {
         let plan = be
             .prepare(&p, &Requirements::new(), &PlanningBudget::serial())
             .unwrap();
-        let exec = Exec::serial();
+        let mut exec = Exec::serial();
         // beta == 0: previous C values (NaN) must not leak.
         let mut out = nan(&c);
-        accum(&plan, &exec, 1.0, &a, &b, 0.0, &mut out).unwrap();
+        accum(&plan, &mut exec, 1.0, &a, &b, 0.0, &mut out).unwrap();
         let want = reference(&cfg, 1.0, &a, false, &b, false, 0.0, &c);
         assert!(rel_err(&out, &want) < 1e-12, "{}", be.id());
         // The overwrite form reads no previous output either.
         let mut out = nan(&c);
-        plan.execute_into(&exec, 1.0, &a.view(), &b.view(), &mut out.view_mut())
+        plan.execute_into(&mut exec, 1.0, &a.view(), &b.view(), &mut out.view_mut())
             .unwrap();
         assert!(rel_err(&out, &want) < 1e-12, "{} overwrite", be.id());
         // alpha == 0: A and B (NaN) must not be read.
         let mut out = c.clone();
-        accum(&plan, &exec, 0.0, &nan(&a), &nan(&b), 2.0, &mut out).unwrap();
+        accum(&plan, &mut exec, 0.0, &nan(&a), &nan(&b), 2.0, &mut out).unwrap();
         for_each_index(&c.dims, |i| {
             assert_eq!(out.get(i), 2.0 * c.get(i), "{}", be.id())
         });
@@ -261,7 +261,7 @@ fn beta_zero_reads_no_output_and_zero_alpha_or_empty_k_reads_no_inputs() {
             .prepare(&p, &Requirements::new(), &PlanningBudget::serial())
             .unwrap();
         let mut out = c.clone();
-        accum(&plan, &Exec::serial(), 1.0, &a, &b, 3.0, &mut out).unwrap();
+        accum(&plan, &mut Exec::serial(), 1.0, &a, &b, 3.0, &mut out).unwrap();
         for_each_index(&c.dims, |i| {
             assert_eq!(out.get(i), 3.0 * c.get(i), "{}", be.id())
         });
@@ -322,7 +322,7 @@ fn plans_outlive_problem_and_backend_and_reject_other_layouts_before_writing() {
             let a2 = T::<f64>::new(&a.dims, seed);
             let b2 = T::<f64>::new(&b.dims, seed + 10);
             let mut out = c.clone();
-            accum(plan, &Exec::serial(), 1.0, &a2, &b2, 0.5, &mut out).unwrap();
+            accum(plan, &mut Exec::serial(), 1.0, &a2, &b2, 0.5, &mut out).unwrap();
             let want = reference(&cfg, 1.0, &a2, false, &b2, false, 0.5, &c);
             assert!(
                 rel_err(&out, &want) < 1e-12,
@@ -333,7 +333,7 @@ fn plans_outlive_problem_and_backend_and_reject_other_layouts_before_writing() {
         // A transposed C layout is another problem: rejected, C untouched.
         let wrong = c.restride(&[1, 0]);
         let mut out = wrong.clone();
-        let e = accum(plan, &Exec::serial(), 1.0, &a, &b, 0.0, &mut out).unwrap_err();
+        let e = accum(plan, &mut Exec::serial(), 1.0, &a, &b, 0.0, &mut out).unwrap_err();
         assert!(
             matches!(e, Error::Layout(LayoutError::Mismatch { .. })),
             "{e}"
@@ -343,7 +343,7 @@ fn plans_outlive_problem_and_backend_and_reject_other_layouts_before_writing() {
         let mut out = c.clone();
         let e = plan
             .execute_into_accum(
-                &Exec::serial(),
+                &mut Exec::serial(),
                 1.0,
                 &a.view(),
                 &b.view(),
@@ -457,45 +457,39 @@ fn one_thread_exec_enters_no_pool_and_a_four_thread_exec_stays_in_budget() {
     let (cfg, a, b, c) = matmul_problem(96, 80, 72);
     let p = problem(&cfg, &a, &b, &c, (false, false));
     let want = reference(&cfg, 1.0, &a, false, &b, false, 0.5, &c);
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
+    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
     for be in backends::<f64>() {
         let plan = be
             .prepare(&p, &Requirements::new(), &PlanningBudget::new(4))
             .unwrap();
-        // 1T on a pool-backed context: no entry, no broadcast.
-        let before = pool.stats();
-        let exec = Exec::rayon(&pool).with_budget(1).unwrap();
+        // 1T on a pool-backed context: no pool entry.
+        let mut exec = Exec::new(&pool, 1).unwrap();
+        let one_t = exec.token().ledger_root().unwrap();
         let mut out = c.clone();
-        accum(&plan, &exec, 1.0, &a, &b, 0.5, &mut out).unwrap();
+        accum(&plan, &mut exec, 1.0, &a, &b, 0.5, &mut out).unwrap();
         assert!(rel_err(&out, &want) < 1e-12, "{}", be.id());
-        let after = pool.stats();
-        assert_eq!(
-            (after.entries, after.broadcasts),
-            (before.entries, before.broadcasts),
-            "{}",
-            be.id()
-        );
+        assert_eq!(strided_exec::ledger::installs(one_t), 0, "{}", be.id());
         // The same plan at 4T.
-        let exec = Exec::rayon(&pool);
+        let mut exec = Exec::new(&pool, pool.size()).unwrap();
         assert_eq!(exec.budget(), 4);
+        let four_t = exec.token().ledger_root().unwrap();
         let mut out = c.clone();
-        accum(&plan, &exec, 1.0, &a, &b, 0.5, &mut out).unwrap();
+        accum(&plan, &mut exec, 1.0, &a, &b, 0.5, &mut out).unwrap();
         assert!(rel_err(&out, &want) < 1e-12, "{}", be.id());
-        // Nested entry from inside the pool: a barrier-free route completes and
-        // agrees, and a plan that needs a barrier-bearing team reports the
-        // refused route instead of deadlocking or silently running serially.
+        assert!(strided_exec::ledger::max_live(four_t) <= 4, "{}", be.id());
+        // Nested entry from inside the pool: a plan that needs a barrier-bearing
+        // team takes its barrier-free route, so every backend completes and
+        // agrees instead of deadlocking or running serially.
         let mut out = c.clone();
-        match tp.install(|| accum(&plan, &exec, 1.0, &a, &b, 0.5, &mut out)) {
-            Ok(()) => assert!(rel_err(&out, &want) < 1e-12, "{} nested", be.id()),
-            Err(e) => {
-                assert!(matches!(e, Error::Exec(_)), "{}: {e}", be.id());
-                assert_eq!(rel_err(&out, &c), 0.0, "{}: a refused route wrote", be.id());
-            }
-        }
+        exec.reborrow()
+            .into_token()
+            .external(|_| {
+                let mut inner = Exec::new(&pool, 4).unwrap();
+                accum(&plan, &mut inner, 1.0, &a, &b, 0.5, &mut out)
+            })
+            .unwrap();
+        assert!(rel_err(&out, &want) < 1e-12, "{} nested", be.id());
     }
 }
 
@@ -504,10 +498,7 @@ fn a_shared_plan_runs_concurrently_on_independent_outputs() {
     let (cfg, a, b, c) = matmul_problem(64, 48, 40);
     let p = problem(&cfg, &a, &b, &c, (false, false));
     let want = reference(&cfg, 1.0, &a, false, &b, false, 0.0, &c);
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
+    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
     for be in backends::<f64>() {
         let plan = be
@@ -518,14 +509,14 @@ fn a_shared_plan_runs_concurrently_on_independent_outputs() {
                 let (plan, a, b, c, want, pool) = (&plan, &a, &b, &c, &want, &pool);
                 s.spawn(move || {
                     // Half the callers use the shared pool, half run serially.
-                    let exec = if t % 2 == 0 {
-                        Exec::rayon(pool)
+                    let mut exec = if t % 2 == 0 {
+                        Exec::new(pool, pool.size()).unwrap()
                     } else {
                         Exec::serial()
                     };
                     for _ in 0..3 {
                         let mut out = c.clone();
-                        accum(plan, &exec, 1.0, a, b, 0.0, &mut out).unwrap();
+                        accum(plan, &mut exec, 1.0, a, b, 0.0, &mut out).unwrap();
                         assert!(rel_err(&out, want) < 1e-12);
                     }
                 });

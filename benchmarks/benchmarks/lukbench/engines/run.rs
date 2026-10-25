@@ -30,7 +30,7 @@ pub const ENGINE_ORDER: &[&str] = &[
     "tblis",
 ];
 
-pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
+pub fn run(opts: &Options, exec: &mut Exec<'_>) -> ExitCode {
     if opts.reps == 0 {
         eprintln!(
             "lukbench: --reps 0 leaves nothing to time and skips priming for every arm; \
@@ -117,7 +117,7 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
 fn run_case<T: BenchElem>(
     p: &Program,
     opts: &Options,
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     results: &mut Results,
     mut census: Option<&mut Census>,
 ) {
@@ -142,6 +142,9 @@ fn run_case<T: BenchElem>(
         format!("{flag}rel_err={err:.2e}")
     };
 
+    // The budget is fixed for the run; read it once so the row closure below
+    // does not hold the (mutably lent) context.
+    let threads = exec.budget();
     let push = |engine: &str,
                 samples: Vec<f64>,
                 spread: f64,
@@ -156,7 +159,7 @@ fn run_case<T: BenchElem>(
             case: p.name.clone(),
             dtype: T::NAME.to_string(),
             engine: engine.to_string(),
-            threads: exec.budget(),
+            threads,
             m,
             n,
             k,
@@ -253,7 +256,7 @@ pub fn run_plans<T: BenchElem>(
     config: &PlanConfig,
     inputs: &[Vec<T>],
     slots: &mut [Vec<T>],
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     reps: usize,
     prime_ms: u64,
 ) -> Result<(Vec<f64>, f64, f64, String), tcontract::Error> {

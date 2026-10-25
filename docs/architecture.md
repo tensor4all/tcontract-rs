@@ -29,7 +29,7 @@ Dependencies are those of `cargo tree` (normal and build edges):
 
 | Crate | Responsibility | Depends on |
 | --- | --- | --- |
-| `tcontract-exec` | Execution context: serial, a host's Rayon pool through a borrowed, owned or shared-`Arc` wrapper, width chosen from work, kernel-level entry, SPMD `broadcast`, and the workspace provider (`ArenaProvider`, `WorkspaceReq`, `TeamLease`: pool-owned, reusable scratch); `strided::run_with_exec` bridges strided-rs kernels (feature `strided`). | rayon, thiserror; strided-basic (optional) |
+| `tcontract-exec` | Execution resources: the per-call `Exec` bundle (a `strided_exec::Exec` placement token, an optional workspace and the batch policy), the `Pool` wrapper (a `strided_exec::Pool` plus the retained scratch arena), width chosen from work (`WorkModel`, `WidthPolicy`, `BatchPolicy`), and the workspace provider (`ArenaProvider`, `WorkspaceReq`, `TeamLease`: pool-owned, reusable scratch). It starts no task and exposes no scheduler type. | strided-exec, thiserror |
 | `strided-view`, `strided-basic` (external, strided-rs) | Checked borrowed strided views, scalar and conjugation contracts; copy, permutation and elementwise kernels. | none in tcontract |
 | `tcontract-kernel` | The kernel crate: packed formats, kernel-family descriptors, CPU masks and validation, the registry with deterministic built-in families, resolution with a frozen blocking policy (explicit inputs, no environment reads), the partition policy, caller-scoped `KernelCatalog`/`KernelHandle` for downstream kernels, packing, scatter and write-back, cache blocking (`blocking::{probe,model}`), and the microkernel families: Lukas Devos's scalar, AVX2, AVX-512 and NEON register-tile kernels (`kernels::{reference,x86,aarch64}`), the portable reference kernels and the native interleaved complex kernels. Ids: `{isa}.{dtype}.{scheme}.{MR}x{NR}`. No executor and no ambient state. | num-complex |
 | `tcontract` | Binary contraction with free, contracted and batch indices (`dot_general` and label semantics) over one validated `Problem` (`api`: `Labels` and `DotGeneral` front ends, one lowering, one `Error`, the object-safe `ContractionBackend<T>` / `PreparedContraction<T>` traits taking an `&Exec`), planned once into a `Plan<T>` (`plan`: role folding and orientation, offsets, family and strategy resolution, an immutable `PlanReport`) and executed by one of three strategies (`strategy`, `driver`): the packed driver (packing traversal, loop nest, write-back, static and dynamic partition), faer on a copy-free batched-GEMM fusion, and an elementwise pass. Threads and workspace come from a `tcontract_exec::Exec`. Thin permute / add wrappers, the labels-based unary update (`unary`: `Unary`, `add`, one operation for a permutation, a diagonal and a reduction, lowered to a rank-zero `B`), `contract_batched`; `check_raw` / `execute_raw` are the pointer-level entry of the C adapter; `execute_slices` runs a plan on plain slices without building views; `workspace_req` / `execute_raw_in` run a packed plan on a caller-owned bounded `Workspace`, and `ProblemRef` / `Plan::compile` build a plan from borrowed metadata. | faer, num-complex, num-traits, thiserror, tinyvec, `tcontract-kernel`, `tcontract-exec`, `strided-view`, `strided-basic` |
@@ -100,17 +100,41 @@ The DLPack header is Apache-2.0; `tcontract-capi` mirrors its `#[repr(C)]` layou
 
 ## Execution context
 
-`tcontract-exec` defines the Rust contract and `tcontract-capi` its C face. A context is one of:
+Placement, meaning where tasks run and how many run at once, belongs to
+[`strided-exec`](https://github.com/tensor4all/strided-rs) and is described once
+in the shared design ([tensor4all-meta, "Where placement is decided"](https://github.com/tensor4all/tensor4all-meta/blob/main/docs/design/core-boundary-and-execution-ownership.md)):
+a `strided_exec::Pool` owns the workers, and a `strided_exec::Exec` token (a pool
+reference plus a thread budget, neither `Clone` nor `Copy`) is consumed by every
+parallel entry (`fork`, `for_ranges`, `broadcast`, `external`). `tcontract-exec`
+keeps what is specific to contraction and starts no task:
 
-- **Serial:** work runs on the calling thread.
-- **Rayon pool:** a pool borrowed from the host (for example the pool of tenferro-rs) for the duration of a call; created through `tcontract_tapp_executor_create_rayon` by a C host that has none; or created once by a C host through `tcontract_pool_create_rayon` and lent to an executor with `tcontract_tapp_executor_borrow_pool`, so the host keeps one pool instead of two. The global Rayon pool is never used implicitly.
-- **Host callbacks:** a vtable through which a Julia, Python or C host schedules tasks on its own threads. Not part of the TAPP redesign; if added later it starts with barrier-free outer batches and serial inner operations, since an arbitrary task-submission callback does not guarantee SPMD co-scheduling.
+- **`Pool<'p>`**: a `strided_exec::Pool`, borrowed from a host that keeps its own
+  (`Pool::borrow`) or owned (`Pool::owned`, `Pool::shared` for several wrappers
+  over one pool), plus the retained scratch arena (`ArenaProvider`). One wrapper
+  is one workspace owner, so a host keeps one wrapper per pool across calls.
+- **`Exec<'a>`**: the per-call bundle of one placement token, an optional
+  workspace and the `BatchPolicy`. `Exec::new(&pool, budget)` is the only place a
+  budget is clamped (to the pool width); `Exec::serial()` and
+  `Exec::serial_with_workspace(ws)` need no pool. Operations take `&mut Exec`;
+  `exec.token()` lends the token for one strided or driver call,
+  `exec.into_token()` consumes it, and `Exec::from_token` rebuilds a bundle for
+  a child token that `fork` handed out.
+- A C host that has no pool creates one through `tcontract_tapp_executor_create_rayon`,
+  or once through `tcontract_pool_create_rayon` and lends it to executors with
+  `tcontract_tapp_executor_borrow_pool`, so the host keeps one pool instead of
+  two. Both are `strided_exec::Pool`s (the name `rayon` in these symbols is
+  the ABI's, not a promise about the scheduler). The C ABI never takes a pool
+  made elsewhere.
+- **Host callbacks:** a vtable through which a Julia, Python or C host schedules
+  tasks on its own threads is not part of the design; if added later it starts
+  with barrier-free outer batches and serial inner operations, since an
+  arbitrary task-submission callback does not guarantee co-scheduling.
 
-The C face is the standard `TAPP_executor` (`intptr_t`; the signatures are those of the pinned upstream `executor.h`) plus the Rayon extensions and the host-owned pool handle. See [decision-log](decision-log.md#execution) for the choice.
+The C face is the standard `TAPP_executor` (`intptr_t`; the signatures are those of the pinned upstream `executor.h`) plus the pool extensions and the host-owned pool handle. See [decision-log](decision-log.md#execution) for the choice.
 
 ```c
 TAPP_error TAPP_create_executor(TAPP_executor *exec);   /* serial executor, no workers */
-TAPP_error TAPP_destroy_executor(TAPP_executor exec);   /* owned pool: stops and joins it; borrowed pool: releases the borrow */
+TAPP_error TAPP_destroy_executor(TAPP_executor exec);   /* owned pool: stops it and waits for its workers; borrowed pool: releases the borrow */
 TAPP_error tcontract_tapp_executor_create_rayon(TAPP_executor *out, size_t nthreads, const tcontract_rayon_opts *opts); /* stack size */
 TAPP_error tcontract_tapp_executor_set_budget(TAPP_executor exec, size_t budget);
 TAPP_error tcontract_tapp_executor_get_threads(TAPP_executor exec, size_t *pool_size, size_t *budget);
@@ -122,27 +146,27 @@ TAPP_error tcontract_tapp_executor_borrow_pool(TAPP_executor *out, tcontract_poo
 - **Default and width:** executor `0` is the default serial executor (a tcontract policy). `nthreads == 0` is an error; for `tcontract_tapp_executor_create_rayon`, `nthreads == 1` is a serial executor and creates no workers, while `tcontract_pool_create_rayon` builds a real one-worker pool (the handle is a pool, not an executor); the width is never inferred from `RAYON_NUM_THREADS` or the CPU count. The pool width is fixed at creation. The budget is positive, clamped to the pool width and snapshotted at the start of each call. A serial executor reports `pool_size == 0`, `budget == 1`. The query promises neither an active width nor an affinity.
 - **Lifetime:** the C host owns the executor; an owned executor owns its pool. Plans do not bind an executor, so one plan runs on serial and 4T executors. There is no retain/release, and a bindings layer that wants a shared pool creates one `tcontract_pool` handle, one borrowed executor on it, and keeps both alive for every plan. Sharing one executor across plans shares its pool.
 - **A host-owned pool** (`tcontract_pool_create_rayon`) is the shareable case: the handle owns the pool, `tcontract_tapp_executor_borrow_pool` builds an executor on it without creating a second one, and the pool must outlive every executor built from it and every call through one. `TAPP_destroy_executor` on such an executor only releases the borrow. `tcontract_pool_destroy` stops and joins the pool, and refuses with `TCONTRACT_BUSY` while a borrowed executor is live (`TCONTRACT_ERR_WOULD_DEADLOCK` from one of its own workers); both leave the handle live. Each borrowed executor carries its own workspace and SPMD gate for the shared pool, so one executor per pool is the intended configuration.
-- **Destruction of an owned pool is synchronous and joins the threads.** A pool created by `tcontract_tapp_executor_create_rayon` is built with `ThreadPoolBuilder::spawn_handler`, which spawns each worker with `std::thread::Builder` and keeps its `JoinHandle`. `TAPP_destroy_executor` returns `TCONTRACT_ERR_WOULD_DEADLOCK` from a worker of the same pool and `TCONTRACT_BUSY` if calls are in flight (the handle stays live in both cases and the caller may retry); otherwise it drops the pool to start shutdown, joins every handle and frees the executor. An exit-handler notification is not sufficient: in rayon-core 1.13 it runs inside the worker's main loop, before thread-local destructors ([probe](../experiments/pool-close/README.md)). After a successful destroy no tcontract worker code, including TLS teardown, is running. A failed creation joins the workers it had started. Destroying the default executor `0` succeeds as a no-op. A live handle is destroyed successfully once: double destruction and stale or foreign handles are unsupported, and the caller synchronizes destruction with the start of new calls (BUSY detection does not make a race between raw-handle use and destruction safe).
-- **Borrowed pools** (the Rust `Exec::Rayon` case, and the C `tcontract_pool` handle behind a borrowed executor) are governed by their owner's lifetime; tcontract never stops the pool of a borrowed executor (the pool handle's own destroy does). A Rust host shares one `Pool` wrapper per `ThreadPool`, because the SPMD gate and retained workspace belong to the wrapper; the C entry allows several borrowed executors on one pool handle, and each gets its own wrapper, so one borrowed executor per pool is the configuration that keeps that rule.
-- **Tests:** a TLS-destructor handshake with a bounded wait proving destroy does not return early; busy, self-worker and failed-creation cases; bounded-time nested and concurrent SPMD on one executor.
-- **Thread budget:** one budget controls batch-level and inner-matrix parallelism so nested parallelism does not oversubscribe. `Exec::batch_decision` returns the one split (`lanes × item_threads ≤ budget`), and a route either honours both axes (faer nests in the borrowed pool) or refuses the decision with `StrategyUnavailable` before any write (the packed driver's co-scheduled teams, `contract_batched`); it never silently serializes the items.
+- **Destruction of an owned pool waits for its workers.** Every worker installs a thread-local guard when it starts (`PoolBuilder::on_start`), and the guard counts the worker's exit when the thread's TLS is torn down. `TAPP_destroy_executor` returns `TCONTRACT_ERR_WOULD_DEADLOCK` from a worker of the same pool and `TCONTRACT_BUSY` if calls are in flight (the handle stays live in both cases and the caller may retry); otherwise it drops the pool to start shutdown, waits until every worker has run its guard, and frees the executor. `strided-exec` does not hand out thread join handles, so the guarantee is "every worker's TLS destructors registered before ours have run": no tcontract worker code, including the TLS destructors a test registers after the guard, is running. Destroying the default executor `0` succeeds as a no-op. A live handle is destroyed successfully once: double destruction and stale or foreign handles are unsupported, and the caller synchronizes destruction with the start of new calls (BUSY detection does not make a race between raw-handle use and destruction safe).
+- **Borrowed pools** (the Rust `Pool::borrow` case, and the C `tcontract_pool` handle behind a borrowed executor) are governed by their owner's lifetime; tcontract never stops the pool of a borrowed executor (the pool handle's own destroy does). A Rust host shares one `Pool` wrapper per `strided_exec::Pool`, because the retained workspace belongs to the wrapper; the C entry allows several borrowed executors on one pool handle, and each gets its own wrapper, so one borrowed executor per pool is the configuration that keeps that rule.
+- **Tests:** a TLS-destructor handshake with a bounded wait proving destroy does not return early; busy and self-worker cases; bounded-time nested and concurrent teams on one executor; the placement ledger of `strided-exec` for "one entry per large call, none for a small one".
+- **Thread budget:** one budget controls batch-level and inner-matrix parallelism so nested parallelism does not oversubscribe. `Exec::batch_decision` returns the one split (`lanes × item_threads ≤ budget`), and a route either honours both axes (faer receives each lane's share as a width through `Exec::external`) or refuses the decision with `StrategyUnavailable` before any write (the packed driver's co-scheduled teams, `contract_batched`); it never silently serializes the items.
 - **Scratch:** `PackedReport::scratch_bytes` reports the serial packed estimate. The execution workspace is owned by the context, not the plan: a pool or a serial caller lends an `ArenaProvider`, which reports its retained and leased bytes and can release the idle half.
 
-**Entry happens inside kernels, only for parallel work.** The calling thread drives every call. A kernel chooses its width from the amount of work; at width one it runs on the calling thread and never touches the pool. Only a parallel kernel enters the pool, and not at all if the calling thread is already one of its workers. With this rule an entry cost of about 10 µs is acceptable ([measurement](../experiments/rayon-entry/README.md), [decision](decision-log.md#execution)), and faer can serve as the initial backend: `Par::Seq` for serial work, `install` followed by `Par::rayon(n)` for parallel work.
+**Entry happens inside kernels, only for parallel work.** The calling thread drives every call. A kernel chooses its width from the amount of work; at width one it runs on the calling thread and never touches the pool, and the token's entries make no scheduler call for a serial token, a budget of one or a single task. Only a parallel kernel enters the pool, and not at all if the calling thread is already one of its workers. With this rule an entry cost of about 10 µs is acceptable ([measurement](../experiments/rayon-entry/README.md), [decision](decision-log.md#execution)), and faer serves as the initial backend: it receives a plain width through `Exec::external` and turns it into `faer::Par` (`Seq` for one, `Par::rayon(w)` otherwise).
 
 ```rust
-pub enum Exec<'a> {
-    Serial,                                        // no storage owner
-    SerialWithWorkspace(&'a dyn WorkspaceProvider), // caller-owned serial scratch
-    Rayon { pool: &'a Pool<'a>, budget: NonZeroUsize, policy: BatchPolicy }, // host pool
-    // Host(&'a dyn BroadcastExecutor): host scheduler with guaranteed width, Phase 2
-}
+pub struct Exec<'a> { /* strided_exec::Exec<'a>, Option<&'a dyn WorkspaceProvider>, BatchPolicy */ }
+// Not Clone, not Copy. Operations take `&mut Exec`.
+// Exec::serial(), Exec::serial_with_workspace(ws), Exec::new(&pool, budget)?,
+// Exec::from_token(token, ws, policy); budget(), workspace(), batch_policy(),
+// with_batch_policy(p), batch_decision(&q), width_for(ns, &policy), limit(max),
+// reborrow(), token(), into_token().
 ```
 
-Implemented in Phase 1a as `crates/tcontract-exec` (`install`, `for_each_partition`, `broadcast`, `width_for`); see the [decision log](decision-log.md#execution).
+Implemented in `crates/tcontract-exec`; see the [decision log](decision-log.md#execution).
 
-**Batch lane policy.** A pooled `Exec` also carries a `tcontract_exec::batch::BatchPolicy`
-(`Exec::batch_policy`, `Exec::with_batch_policy`; `with_budget` preserves it).
+**Batch lane policy.** Every `Exec` also carries a `tcontract_exec::batch::BatchPolicy`
+(`Exec::batch_policy`, `Exec::with_batch_policy`; `limit` preserves it).
 `Exec::batch_decision(&BatchQuery)` is the one decision function every
 operation that owns batch lanes calls: `Auto` applies the `WorkModel`,
 `Sequential` / `Outer` / `Inner` / `Split` force a route and are clamped to the
@@ -160,18 +184,18 @@ defaults are a later step.
 
 **Three widths, kept distinct.**
 
-- *Budget* `b`: the most threads a kernel may occupy, set by the host (`tcontract_tapp_executor_set_budget`, never above the pool size). tcontract never creates threads beyond the pool; there is no scoped-thread fallback.
+- *Budget* `b`: the most threads a kernel may occupy, set by the host (`Exec::new(&pool, b)`, `tcontract_tapp_executor_set_budget`, never above the pool size) and only ever narrowed with `limit`, never raised. tcontract never creates threads beyond the pool; there is no scoped-thread fallback.
 - *Active width* `k`: the number of workers doing arithmetic, chosen from the work, `k ≤ b`.
 - *Dispatch width* `d`: the number of workers woken. It sets the entry cost. For Rayon `ThreadPool::broadcast`, `d` is always the whole pool, whatever `k` is: on a fixed 18-worker pool, a broadcast with one active worker costs as much as one with 18 (about 165 µs from idle, [measurement](../experiments/rayon-entry/README.md#active-width-on-a-fixed-pool)).
 
 Two execution shapes follow:
 
-- **Barrier-free partition** (batches, independent output tiles, faer's own parallel loops): `install` plus `k` tasks, so `d ≈ k`. Entry scales with `k` (about 17 µs for one task, 50 µs for four, from idle). Tasks are not guaranteed to run concurrently, so no barrier may be used.
-- **SPMD with barriers** (the TBLIS inner driver): needs `k` workers guaranteed to run at once. On Rayon this is `broadcast`, so the active width is `k <= budget <= pool width` while the dispatch width `d` is the whole pool, and it is chosen only when the kernel is large enough to amortize the full-pool entry. A narrower SPMD team on a borrowed Rayon pool would need a subset-broadcast primitive that Rayon lacks; that is a separate prototype, not an assumption.
+- **Barrier-free partition** (batches, independent output tiles, faer's own parallel loops): `fork` over the token, or `external` for a library with its own scheduler. Tasks are not guaranteed to run concurrently, so no barrier may be used. Entry scales with the width (about 17 µs for one task, 50 µs for four, from idle).
+- **Team with barriers** (the TBLIS inner driver): needs `k` workers guaranteed to run at once. This is `token.limit(k).broadcast(..)`: all `k` run concurrently on distinct workers, or the call is refused before anything runs (`Refused::ForkChild`, `Refused::CallerInPool`). The participants are the budget, so there is no width argument to exceed and the barrier counts are exactly the grid's `pm × pn`. A team is chosen only when the kernel is large enough to amortize the full-pool entry.
 
-**Insufficient width.** If a plan's partition needs more workers than `b`, the planner repartitions to at most `b` (down to serial) before execution. It never spawns extra threads and never enters a barrier with fewer participants than the barrier counts.
+**Insufficient width.** If a plan's partition needs more workers than `b`, the planner repartitions to at most `b` (down to serial) before execution. It never spawns extra threads and never enters a barrier with fewer participants than the barrier counts (the driver asserts `p <= budget` before `limit(p).broadcast`).
 
-**Nesting.** An SPMD kernel called from a worker that is already inside an SPMD region, or inside any job of the same pool, runs its barrier-free variant; a partition that can only run co-scheduled is refused with a typed error before any write, never silently serialized: a worker blocked at an outer barrier could not take its share of an inner broadcast. Concurrent SPMD kernels on one pool from different host threads are serialized by the context. Both rules are tested before the adapter is used as a general borrowed-pool solution.
+**Nesting.** A team called through a token that cannot co-schedule, either one produced by `fork` (its slots may share workers with its siblings) or a caller that is a worker of the pool (it would occupy a participant's slot), is refused by `broadcast` before anything runs. The driver then plans the call again without a team: one row strip per column group (`pm == 1`, at most one group per `NR` sliver), which needs no barrier and computes every output element with the team's arithmetic, so the result is bitwise the team's. Dynamic tiles, which are barrier-bearing too, give way to the same static column grid. A refusal is therefore never an error and never a silent serialization: the work still runs on the token's budget. Concurrent teams from different host threads queue in the same order on every worker and do not interleave (`strided-exec`).
 
 ### Cost of parallel execution
 
@@ -354,7 +378,7 @@ Since 0.3 the axis metadata (`LayoutSpec`, `Labels`, `Roles`, `DotShape`, `DotGe
 
 `alpha == 0` or an empty contraction computes `op_D(beta * op_C(C))` in one output pass for every strategy, reading no input; beta zero reads neither C nor D.
 
-The packed driver runs cooperating workers with barriers inside one contraction. It therefore needs guaranteed concurrent width from `tcontract-exec`, not arbitrary task submission. The Rayon `ThreadPool::broadcast` provides it at full pool width only: workers with index at or above the active width return immediately but are still dispatched and awaited. tcontract therefore uses it only for contractions large enough to amortize full-pool entry, repartitions to the budget instead of using a scoped-thread fallback, and otherwise runs a barrier-free partition (independent output tiles, each worker packing its own panels). See [three widths](#execution-context).
+The packed driver runs cooperating workers with barriers inside one contraction. It therefore needs guaranteed concurrent width from `tcontract-exec`, not arbitrary task submission. `strided-exec`'s `broadcast` provides it (today on Rayon's `ThreadPool::broadcast`, which dispatches the full pool: workers with index at or above the budget return immediately but are still dispatched and awaited). tcontract therefore uses it only for contractions large enough to amortize full-pool entry, repartitions to the budget instead of using a scoped-thread fallback, and otherwise (or when the token refuses) runs a barrier-free partition (independent output tiles, each worker packing its own panels). See [three widths](#execution-context).
 
 ## Relationship to `strided-rs`
 
@@ -363,7 +387,7 @@ The packed driver runs cooperating workers with barriers inside one contraction.
 | Component | Role here |
 | --- | --- |
 | `strided-view` | Reused unchanged as the shared view contract. |
-| `strided-basic` (and `strided-perm`, `strided-kernel` through it) | Copies, permutations and every elementwise pass (the all-batch strategy and the `alpha == 0` / empty-`K` output update). `tcontract_exec::strided::run_with_exec` bridges an `Exec` to strided's `ExecContext`. |
+| `strided-basic` (and `strided-perm`, `strided-kernel` through it) | Copies, permutations and every elementwise pass (the all-batch strategy and the `alpha == 0` / empty-`K` output update). Every call takes the `Exec`'s placement token (`exec.token()`) as its last argument; strided-rs decides by its own `MINTHREADLENGTH` whether a loop is worth splitting, so a small operation never enters the pool. |
 
 ## Implementation order
 
@@ -372,7 +396,7 @@ Phase 1 put being usable as the tenferro-rs CPU backend first, with a thin C ABI
 | Phase | Content | Status |
 | --- | --- | --- |
 | 0 | Import strided-rs, the upstream contraction project and strided-rs-benchmark-suite with history; one workspace; rules ported from tenferro-rs; root CI. (strided-rs and its benchmarks were made external again on 2026-09-30.) | Done. |
-| 1a | `tcontract-exec`: borrowed Rayon pool, width chosen from work, kernel-level entry, `broadcast(n, f)`. | Done. |
+| 1a | `tcontract-exec`: execution resources over `strided-exec` (pool wrapper, `Exec` bundle), width chosen from work, kernel-level entry, team via the token's `broadcast`. | Done. |
 | 1b | GEMM and batched GEMM entry points. | Done, then removed in #37: GEMM is a contraction. |
 | 1c | `tcontract`: permute plus batched GEMM and the packed driver compared under one plan API; one planner over the packed, faer and elementwise strategies after the source integration. | Done. |
 | 1d | Dense linear algebra (faer per item plus batched loops). | Done, then removed in #37 (no retained consumer). |

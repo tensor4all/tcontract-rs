@@ -24,7 +24,7 @@ use crate::corpus::{self, Sized};
 use crate::report::Table;
 use crate::Options;
 
-pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
+pub fn run(opts: &Options, exec: &mut Exec<'_>) -> ExitCode {
     crate::report::print_environment();
 
     let cases: Vec<_> = corpus::corpus()
@@ -114,7 +114,7 @@ fn tol<T: Element>() -> f64 {
 }
 
 /// Run `plan` once on fresh data, overwriting `d`.
-fn run_plan<T: BenchElem>(plan: &Plan<T>, exec: &Exec<'_>, a: &[T], b: &[T], d: &mut [T]) {
+fn run_plan<T: BenchElem>(plan: &Plan<T>, exec: &mut Exec<'_>, a: &[T], b: &[T], d: &mut [T]) {
     // SAFETY: the buffers are sized by the layouts (`elems_*`), `D` is exclusive,
     // and `beta = 0` so no previous value is read.
     unsafe {
@@ -133,7 +133,7 @@ fn run_plan<T: BenchElem>(plan: &Plan<T>, exec: &Exec<'_>, a: &[T], b: &[T], d: 
 
 fn check<T>(
     s: &Sized,
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     t: &mut Table,
     known: bool,
     mut census: Option<&mut crate::report::Census>,

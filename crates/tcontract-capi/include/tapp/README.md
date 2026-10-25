@@ -8,7 +8,7 @@ baseline of the tcontract contraction C API; do not edit them. To move the
 baseline, replace all of them from one new commit, update the commit here and in
 `docs/provenance.md`, and rerun `cargo test -p tcontract-capi`.
 
-tcontract-specific declarations (the Rayon executor, extra status codes) live in
+tcontract-specific declarations (the worker-pool executor, extra status codes) live in
 `../tcontract/tapp_ext.h`, never here.
 
 SHA-256 of the files as vendored (checked by `cargo test -p tcontract-capi`):

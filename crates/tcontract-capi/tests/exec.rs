@@ -29,7 +29,11 @@ fn serial_executor_has_no_pool() {
     assert_eq!(unsafe { TAPP_create_executor(&mut e) }, TCONTRACT_OK);
     assert_ne!(e, 0);
     assert_eq!(threads(e), (0, 1));
-    assert!(unsafe { executor_ref(e) }.unwrap().pool_stats().is_none());
+    assert_eq!(
+        unsafe { executor_ref(e) }.unwrap().threads().0,
+        0,
+        "no pool"
+    );
     // A serial executor accepts a budget and stays at one.
     assert_eq!(
         unsafe { tcontract_tapp_executor_set_budget(e, 8) },
@@ -48,7 +52,7 @@ fn zero_is_the_default_serial_executor() {
         TCONTRACT_OK,
         "a no-op, repeatedly"
     );
-    let width = unsafe { with_executor(0, |x| Ok(x.install(4, |p| p.threads()))) }.unwrap();
+    let width = unsafe { with_executor(0, |x| Ok(x.token().external(|w| w.get()))) }.unwrap();
     assert_eq!(width, 1);
 }
 
@@ -56,7 +60,6 @@ fn zero_is_the_default_serial_executor() {
 fn one_thread_is_serial_and_zero_threads_is_an_error() {
     let e = create_rayon(1);
     assert_eq!(threads(e), (0, 1), "nthreads == 1 creates no workers");
-    assert!(unsafe { executor_ref(e) }.unwrap().pool_stats().is_none());
     assert_eq!(unsafe { TAPP_destroy_executor(e) }, TCONTRACT_OK);
 
     let mut out = 7;
@@ -141,7 +144,9 @@ fn destroy_joins_workers_and_waits_for_tls_teardown() {
     thread_local! { static G: std::cell::RefCell<Option<Guard>> = const { std::cell::RefCell::new(None) }; }
     unsafe {
         with_executor(e, |x| {
-            x.broadcast(2, &|_| G.with(|g| *g.borrow_mut() = Some(Guard)))
+            x.token()
+                .limit(2.try_into().unwrap())
+                .broadcast(|_| G.with(|g| *g.borrow_mut() = Some(Guard)))
                 .unwrap();
             Ok(())
         })
@@ -187,7 +192,8 @@ fn busy_and_self_worker_destroy_leave_the_handle_live() {
     // From a worker of the pool itself (the call is also in flight).
     let st = unsafe {
         with_executor(e, |x| {
-            Ok(x.install(2, move |_| TAPP_destroy_executor(ptr as TAPP_executor)))
+            Ok(x.token()
+                .external(move |_| TAPP_destroy_executor(ptr as TAPP_executor)))
         })
     }
     .unwrap();

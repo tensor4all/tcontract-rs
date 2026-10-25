@@ -25,14 +25,18 @@ fn matmul(m: usize, n: usize, k: usize) -> Problem {
     .unwrap()
 }
 
-fn pool(threads: usize) -> rayon::ThreadPool {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .unwrap()
-}
+mod common;
+use common::placement::{installs, pool};
 
-fn run(plan: &Plan<f64>, exec: &Exec<'_>, a: &[f64], b: &[f64], d: &mut [f64], m: usize, n: usize) {
+fn run(
+    plan: &Plan<f64>,
+    exec: &mut Exec<'_>,
+    a: &[f64],
+    b: &[f64],
+    d: &mut [f64],
+    m: usize,
+    n: usize,
+) {
     let k = a.len() / m;
     plan.execute_into(
         exec,
@@ -56,11 +60,11 @@ fn forced_lanes_are_bitwise_serial_for_the_packed_route() {
     // `PlanConfig::packed` forces the packed driver, which is the item-serial
     // route the identity is stated for.
     let plan = Plan::<f64>::new(&matmul(m, n, k), &PlanConfig::packed()).unwrap();
-    let tp = pool(8);
-    let p = Pool::borrow(&tp);
+    let sp = pool(8);
+    let p = Pool::borrow(&sp);
 
     let mut want = vec![0.0f64; m * n];
-    run(&plan, &Exec::serial(), &a, &b, &mut want, m, n);
+    run(&plan, &mut Exec::serial(), &a, &b, &mut want, m, n);
 
     for (strategy, budget) in [
         (BatchStrategy::Sequential, 4),
@@ -73,12 +77,11 @@ fn forced_lanes_are_bitwise_serial_for_the_packed_route() {
             6,
         ),
     ] {
-        let exec = Exec::rayon(&p)
-            .with_budget(budget)
+        let mut exec = Exec::new(&p, budget)
             .unwrap()
             .with_batch_policy(BatchPolicy::new(strategy));
         let mut got = vec![0.0f64; m * n];
-        run(&plan, &exec, &a, &b, &mut got, m, n);
+        run(&plan, &mut exec, &a, &b, &mut got, m, n);
         assert_eq!(got, want, "strategy {strategy:?} at budget {budget}");
     }
 }
@@ -106,11 +109,10 @@ fn forced_lanes_on_a_batch_report_and_run_their_width() {
 
     let (m, n, k, h) = (8usize, 8, 8, 8);
     let plan = Plan::<f64>::new(&batched(m, n, k, h), &PlanConfig::packed()).unwrap();
-    let tp = pool(8);
-    let p = Pool::borrow(&tp);
+    let sp = pool(8);
+    let p = Pool::borrow(&sp);
     let exec = |strategy| {
-        Exec::rayon(&p)
-            .with_budget(8)
+        Exec::new(&p, 8)
             .unwrap()
             .with_batch_policy(BatchPolicy::new(strategy))
     };
@@ -123,14 +125,14 @@ fn forced_lanes_on_a_batch_report_and_run_their_width() {
         .collect();
     let mut want = vec![0.0f64; m * n * h];
     plan.execute_into(
-        &Exec::serial(),
+        &mut Exec::serial(),
         1.0,
         &StridedView::new(&a, &[m, k, h], &[1, mi, mi * ki], 0).unwrap(),
         &StridedView::new(&b, &[k, n, h], &[1, ki, ki * ni], 0).unwrap(),
         &mut StridedViewMut::new(&mut want, &[m, n, h], &[1, mi, mi * ni], 0).unwrap(),
     )
     .unwrap();
-    let run = |exec: &Exec<'_>, d: &mut [f64]| {
+    let run = |exec: &mut Exec<'_>, d: &mut [f64]| {
         plan.execute_into(
             exec,
             1.0,
@@ -141,7 +143,7 @@ fn forced_lanes_on_a_batch_report_and_run_their_width() {
     };
 
     // Outer at budget eight over eight items: eight lane workers.
-    let outer = exec(BatchStrategy::Outer);
+    let mut outer = exec(BatchStrategy::Outer);
     assert_eq!(
         plan.execution_route(&outer, 1.0, OutputContract::Initialized)
             .unwrap(),
@@ -151,11 +153,11 @@ fn forced_lanes_on_a_batch_report_and_run_their_width() {
         }
     );
     let mut got = vec![0.0f64; m * n * h];
-    run(&outer, &mut got).unwrap();
+    run(&mut outer, &mut got).unwrap();
     assert_eq!(got, want, "Outer lanes changed the result");
 
     // Sequential forces the serial route even at budget eight.
-    let sequential = exec(BatchStrategy::Sequential);
+    let mut sequential = exec(BatchStrategy::Sequential);
     assert_eq!(
         plan.execution_route(&sequential, 1.0, OutputContract::Initialized)
             .unwrap(),
@@ -165,13 +167,13 @@ fn forced_lanes_on_a_batch_report_and_run_their_width() {
         }
     );
     let mut got = vec![0.0f64; m * n * h];
-    run(&sequential, &mut got).unwrap();
+    run(&mut sequential, &mut got).unwrap();
     assert_eq!(got, want, "Sequential changed the result");
 
     // Split { lanes: 2 } at budget eight asks for two lanes and four item
     // threads; the packed route runs items serially per lane, so it is refused
     // before any write rather than silently discarding the item width.
-    let split = exec(BatchStrategy::Split {
+    let mut split = exec(BatchStrategy::Split {
         lanes: NonZeroUsize::new(2).unwrap(),
     });
     let err = plan
@@ -182,7 +184,7 @@ fn forced_lanes_on_a_batch_report_and_run_their_width() {
         "{err}"
     );
     let mut sentinel = vec![7.0f64; m * n * h];
-    let err = run(&split, &mut sentinel).unwrap_err();
+    let err = run(&mut split, &mut sentinel).unwrap_err();
     assert!(
         matches!(err, Error::Exec(ExecError::StrategyUnavailable { .. })),
         "{err}"
@@ -208,11 +210,10 @@ fn forced_policy_overrides_a_pinned_grid() {
         ..PlanConfig::default()
     };
     let plan = Plan::<f64>::new(&batched(m, n, k, h), &config).unwrap();
-    let tp = pool(8);
-    let p = Pool::borrow(&tp);
+    let sp = pool(8);
+    let p = Pool::borrow(&sp);
     let with = |strategy| {
-        Exec::rayon(&p)
-            .with_budget(8)
+        Exec::new(&p, 8)
             .unwrap()
             .with_batch_policy(BatchPolicy::new(strategy))
     };
@@ -265,10 +266,9 @@ fn forced_sequential_serializes_the_faer_output_pass() {
     let (m, n, k) = (256usize, 256usize, 8usize);
     let plan = Plan::<f64>::new(&matmul_output_c(m, n, k), &PlanConfig::default()).unwrap();
     assert_eq!(plan.report().algorithm, Algorithm::Faer);
-    let tp = pool(4);
-    let p = Pool::borrow(&tp);
-    let exec = Exec::rayon(&p)
-        .with_budget(4)
+    let sp = pool(4);
+    let p = Pool::borrow(&sp);
+    let mut exec = Exec::new(&p, 4)
         .unwrap()
         .with_batch_policy(BatchPolicy::new(BatchStrategy::Sequential));
 
@@ -278,9 +278,9 @@ fn forced_sequential_serializes_the_faer_output_pass() {
     let av = StridedView::new(&a, &[m, k], &[1, m as isize], 0).unwrap();
     let bv = StridedView::new(&b, &[k, n], &[1, k as isize], 0).unwrap();
     let mut dv = StridedViewMut::new(&mut d, &[m, n], &[1, m as isize], 0).unwrap();
-    p.reset_stats();
+    let root = common::placement::root(&mut exec);
     plan.execute_into_accum(
-        &exec,
+        &mut exec,
         1.0,
         &av,
         &bv,
@@ -290,7 +290,7 @@ fn forced_sequential_serializes_the_faer_output_pass() {
     )
     .unwrap();
     assert_eq!(
-        p.stats().entries,
+        installs(root),
         0,
         "a forced sequential route entered the pool for the output pass"
     );

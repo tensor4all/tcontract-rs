@@ -727,17 +727,20 @@ impl Workspace {
     }
 
     /// Warm one worker slot per worker the executor may run on, so a parallel
-    /// execute within the bound does not allocate a slot per lane. `broadcast`
-    /// runs the closure on `budget` distinct workers, one call to `with_worker`
-    /// each; a context that cannot co-schedule (a serial one or a same-pool
-    /// worker) keeps the calling thread's slot only.
-    pub fn prepare_for(&mut self, exec: &crate::Exec<'_>) {
-        let slots = exec.budget().max(1);
+    /// execute within the bound does not allocate a slot per lane. The token's
+    /// `broadcast` runs the closure on `budget` distinct workers, one call to
+    /// `with_worker` each; a context that cannot co-schedule (a token produced
+    /// by `fork`, or a caller that is a worker of the pool) keeps the calling
+    /// thread's slot only.
+    pub fn prepare_for(&mut self, exec: &mut crate::Exec<'_>) {
+        let slots = exec.budget();
         if slots <= self.slots {
             return;
         }
         let (arena, req) = (&self.arena, &self.req);
-        let warmed = exec.broadcast(slots, &|_| arena.with_worker(req, &mut |_, _, _| {}));
+        let warmed = exec
+            .token()
+            .broadcast(|_| arena.with_worker(req, &mut |_, _, _| {}));
         if warmed.is_ok() {
             self.slots = slots;
         }

@@ -1,5 +1,4 @@
 use strided_view::{StridedView, StridedViewMut};
-use tcontract_exec::strided::run_with_exec;
 use tcontract_exec::Exec;
 use tcontract_kernel::Element;
 
@@ -30,11 +29,11 @@ fn check_out<T>(c: &StridedViewMut<'_, T>) -> Result<()> {
 /// let mut c = [0.0; 6];
 /// let av = StridedView::new(&a, &[2, 3], &[1, 2], 0).unwrap();
 /// let mut cv = StridedViewMut::new(&mut c, &[3, 2], &[1, 3], 0).unwrap();
-/// tcontract::permute(&tcontract_exec::Exec::serial(), &av, &[1, 0], &mut cv).unwrap();
+/// tcontract::permute(&mut tcontract_exec::Exec::serial(), &av, &[1, 0], &mut cv).unwrap();
 /// assert_eq!(c, [1.0, 3.0, 5.0, 2.0, 4.0, 6.0]);
 /// ```
 pub fn permute<T: Scalar>(
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     a: &StridedView<'_, T>,
     perm: &[usize],
     c: &mut StridedViewMut<'_, T>,
@@ -58,8 +57,7 @@ pub fn permute<T: Scalar>(
     }
     check_out(c)?;
     let src = a.permute(perm).map_err(Error::backend)?;
-    let len = c.len();
-    run_with_exec(exec, len, |_| strided_basic::copy_into(c, &src)).map_err(Error::backend)
+    strided_basic::copy_into(c, &src, exec.token()).map_err(Error::backend)
 }
 
 /// `C = alpha * A + beta * C` elementwise over equal extents (any strides);
@@ -77,11 +75,11 @@ pub fn permute<T: Scalar>(
 /// let mut c = [10.0, 20.0];
 /// let av = StridedView::new(&a, &[2], &[1], 0).unwrap();
 /// let mut cv = StridedViewMut::new(&mut c, &[2], &[1], 0).unwrap();
-/// tcontract::add(&tcontract_exec::Exec::serial(), 2.0, &av, 0.5, &mut cv).unwrap();
+/// tcontract::add(&mut tcontract_exec::Exec::serial(), 2.0, &av, 0.5, &mut cv).unwrap();
 /// assert_eq!(c, [7.0, 14.0]);
 /// ```
 pub fn add<T: Scalar>(
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     alpha: T,
     a: &StridedView<'_, T>,
     beta: T,
@@ -95,14 +93,11 @@ pub fn add<T: Scalar>(
         .into());
     }
     check_out(c)?;
-    let len = c.len();
     if beta == <T as Element>::zero() {
-        return run_with_exec(exec, len, |_| {
-            strided_basic::map_into(c, a, move |x| Element::mul(alpha, x))
-        })
-        .map_err(Error::backend);
+        return strided_basic::map_into(c, a, move |x| Element::mul(alpha, x), exec.token())
+            .map_err(Error::backend);
     }
-    if len == 0 {
+    if c.is_empty() {
         return Ok(());
     }
     // SAFETY: both views are non-empty and bounds-checked with these extents;

@@ -245,7 +245,8 @@ fn t1() -> CaseResult {
     let b = data(len, 1.0);
     let mut d = vec![0.0f64; len];
     let mut du: Vec<MaybeUninit<f64>> = vec![MaybeUninit::uninit(); len];
-    let exec = Exec::serial();
+    // One serial context per measured side: an `Exec` is lent mutably per call.
+    let (mut exec_a, mut exec_b) = (Exec::serial(), Exec::serial());
     measure_case(
         "T1",
         "fresh_output (uninit) vs execute_into, packed 8^3",
@@ -253,7 +254,7 @@ fn t1() -> CaseResult {
         Some(1.3),
         || {
             plan.execute_uninit_slices(
-                &exec,
+                &mut exec_a,
                 1.0,
                 (&a, 0),
                 (&b, 0),
@@ -268,7 +269,8 @@ fn t1() -> CaseResult {
             let av = StridedView::new(&a, &dims, &strides, 0).unwrap();
             let bv = StridedView::new(&b, &dims, &strides, 0).unwrap();
             let mut dv = StridedViewMut::new(&mut d, &dims, &strides, 0).unwrap();
-            plan.execute_into(&exec, 1.0, &av, &bv, &mut dv).unwrap();
+            plan.execute_into(&mut exec_b, 1.0, &av, &bv, &mut dv)
+                .unwrap();
             black_box(dv.as_mut_ptr());
         },
     )
@@ -289,7 +291,7 @@ fn t2(n: usize, batched: bool, id: &'static str, iterations: usize, threshold: f
     let b = data(len, 1.0);
     let mut d_a = vec![0.0f64; len];
     let mut d_b = vec![0.0f64; len];
-    let exec = Exec::serial();
+    let (mut exec_a, mut exec_b) = (Exec::serial(), Exec::serial());
     measure_case(
         id,
         "faer beta = 0.5 vs beta = 0",
@@ -300,7 +302,7 @@ fn t2(n: usize, batched: bool, id: &'static str, iterations: usize, threshold: f
             let bv = StridedView::new(&b, &dims, &strides, 0).unwrap();
             let mut dv = StridedViewMut::new(&mut d_a, &dims, &strides, 0).unwrap();
             plan.execute_into_accum(
-                &exec,
+                &mut exec_a,
                 1.0,
                 &av,
                 &bv,
@@ -316,7 +318,7 @@ fn t2(n: usize, batched: bool, id: &'static str, iterations: usize, threshold: f
             let bv = StridedView::new(&b, &dims, &strides, 0).unwrap();
             let mut dv = StridedViewMut::new(&mut d_b, &dims, &strides, 0).unwrap();
             plan.execute_into_accum(
-                &exec,
+                &mut exec_b,
                 1.0,
                 &av,
                 &bv,
@@ -337,11 +339,11 @@ fn t3() -> CaseResult {
     let a = data(len, 0.0);
     let b = data(len, 1.0);
     let arena = ArenaProvider::new();
-    let bare = Exec::serial();
-    let with_ws = Exec::serial_with_workspace(&arena);
+    let mut bare = Exec::serial();
+    let mut with_ws = Exec::serial_with_workspace(&arena);
     let mut d_a = vec![0.0f64; len];
     let mut d_b = vec![0.0f64; len];
-    let run = |d: &mut [f64], exec: &Exec<'_>| {
+    let run = |d: &mut [f64], exec: &mut Exec<'_>| {
         let av = StridedView::new(&a, &dims, &strides, 0).unwrap();
         let bv = StridedView::new(&b, &dims, &strides, 0).unwrap();
         let mut dv = StridedViewMut::new(d, &dims, &strides, 0).unwrap();
@@ -353,8 +355,8 @@ fn t3() -> CaseResult {
         "Exec::serial() vs serial + workspace, packed 8^3",
         2_000,
         None,
-        || run(&mut d_a, &bare),
-        || run(&mut d_b, &with_ws),
+        || run(&mut d_a, &mut bare),
+        || run(&mut d_b, &mut with_ws),
     )
 }
 
@@ -386,7 +388,7 @@ fn t4() -> CaseResult {
     let b = data(4, 1.0);
     let mut d_a = vec![0.0f64; 4];
     let mut d_b = vec![0.0f64; 4];
-    let exec = Exec::serial();
+    let (mut exec_a, mut exec_b) = (Exec::serial(), Exec::serial());
     measure_case(
         "T4",
         "from_labels + compile + execute vs compiled execute, 2x2",
@@ -397,7 +399,8 @@ fn t4() -> CaseResult {
             let av = StridedView::new(&a, &dims, &strides, 0).unwrap();
             let bv = StridedView::new(&b, &dims, &strides, 0).unwrap();
             let mut dv = StridedViewMut::new(&mut d_a, &dims, &strides, 0).unwrap();
-            plan.execute_into(&exec, 1.0, &av, &bv, &mut dv).unwrap();
+            plan.execute_into(&mut exec_a, 1.0, &av, &bv, &mut dv)
+                .unwrap();
             black_box(dv.as_mut_ptr());
         },
         || {
@@ -405,7 +408,7 @@ fn t4() -> CaseResult {
             let bv = StridedView::new(&b, &dims, &strides, 0).unwrap();
             let mut dv = StridedViewMut::new(&mut d_b, &dims, &strides, 0).unwrap();
             compiled
-                .execute_into(&exec, 1.0, &av, &bv, &mut dv)
+                .execute_into(&mut exec_b, 1.0, &av, &bv, &mut dv)
                 .unwrap();
             black_box(dv.as_mut_ptr());
         },
@@ -422,7 +425,7 @@ fn t5() -> CaseResult {
     let b: Vec<Vec<f64>> = (0..ITEMS).map(|i| data(16, i as f64 * 0.5)).collect();
     let mut batched_d: Vec<Vec<f64>> = (0..ITEMS).map(|_| vec![0.0f64; 16]).collect();
     let mut single_d: Vec<Vec<f64>> = (0..ITEMS).map(|_| vec![0.0f64; 16]).collect();
-    let exec = Exec::serial();
+    let (mut exec_a, mut exec_b) = (Exec::serial(), Exec::serial());
 
     let batched = || {
         let mut batch: Vec<BatchItem<'_, f64>> = batched_d
@@ -438,7 +441,7 @@ fn t5() -> CaseResult {
                 d: StridedViewMut::new(d, &dims, &strides, 0).unwrap(),
             })
             .collect();
-        contract_batched(&mut batch, &exec).unwrap();
+        contract_batched(&mut batch, &mut exec_a).unwrap();
         black_box(batch.as_ptr());
     };
     let singles = || {
@@ -446,7 +449,8 @@ fn t5() -> CaseResult {
             let av = StridedView::new(&a[i], &dims, &strides, 0).unwrap();
             let bv = StridedView::new(&b[i], &dims, &strides, 0).unwrap();
             let mut dv = StridedViewMut::new(&mut single_d[i], &dims, &strides, 0).unwrap();
-            plan.execute_into(&exec, 1.0, &av, &bv, &mut dv).unwrap();
+            plan.execute_into(&mut exec_b, 1.0, &av, &bv, &mut dv)
+                .unwrap();
         }
         black_box(single_d.as_ptr());
     };

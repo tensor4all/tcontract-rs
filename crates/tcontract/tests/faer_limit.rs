@@ -152,11 +152,23 @@ fn the_packed_route_above_the_bound_is_correct() {
     let mut d2 = d1.clone();
     let mut v1 = StridedViewMut::new(&mut d1, &bd, &b_strides, 0).unwrap();
     packed
-        .execute_into(&Exec::serial(), Complex64::new(1.0, 0.0), &av, &bv, &mut v1)
+        .execute_into(
+            &mut Exec::serial(),
+            Complex64::new(1.0, 0.0),
+            &av,
+            &bv,
+            &mut v1,
+        )
         .unwrap();
     let mut v2 = StridedViewMut::new(&mut d2, &bd, &b_strides, 0).unwrap();
-    faer.execute_into(&Exec::serial(), Complex64::new(1.0, 0.0), &av, &bv, &mut v2)
-        .unwrap();
+    faer.execute_into(
+        &mut Exec::serial(),
+        Complex64::new(1.0, 0.0),
+        &av,
+        &bv,
+        &mut v2,
+    )
+    .unwrap();
     // Integer-valued inputs: both routes are exact.
     assert_eq!(d1, d2);
 }

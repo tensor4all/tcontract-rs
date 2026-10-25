@@ -36,7 +36,7 @@ fn absent_c_at_zero_beta_uses_only_destination_batch_offsets() {
     let mut fresh = [core::mem::MaybeUninit::uninit(); 8];
     let initialized = public
         .execute_uninit_slices(
-            &tcontract_exec::Exec::serial(),
+            &mut tcontract_exec::Exec::serial(),
             1.0,
             (&[1., 2., 3., 4.], 0),
             (&[1.; 4], 0),

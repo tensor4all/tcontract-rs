@@ -151,10 +151,10 @@ fn run<T: Scalar + 'static>(mode: Mode, conj: [bool; 4], alpha: T, beta: T, tol:
         };
         match source {
             None => plan
-                .execute_into(&Exec::serial(), alpha, &av, &bv, &mut dv)
+                .execute_into(&mut Exec::serial(), alpha, &av, &bv, &mut dv)
                 .unwrap(),
             Some(s) => plan
-                .execute_into_accum(&Exec::serial(), alpha, &av, &bv, beta, s, &mut dv)
+                .execute_into_accum(&mut Exec::serial(), alpha, &av, &bv, beta, s, &mut dv)
                 .unwrap(),
         }
     }
@@ -239,7 +239,7 @@ fn a_threaded_pass_matches_the_formula_and_the_serial_pass() {
     assert_eq!(plan.report().algorithm, Algorithm::Elementwise);
     let av = StridedView::new(&a, &dims, &sa, 0).unwrap();
     let bv = StridedView::new(&b, &dims, &sd, 0).unwrap();
-    let go = |exec: &Exec<'_>| {
+    let go = |exec: &mut Exec<'_>| {
         let mut out = start.clone();
         let mut dv = StridedViewMut::new(&mut out, &dims, &sd, 0).unwrap();
         plan.execute_into_accum(
@@ -254,13 +254,10 @@ fn a_threaded_pass_matches_the_formula_and_the_serial_pass() {
         .unwrap();
         out
     };
-    let serial = go(&Exec::serial());
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
+    let serial = go(&mut Exec::serial());
+    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
-    let par = go(&Exec::rayon(&pool));
+    let par = go(&mut Exec::new(&pool, pool.size()).unwrap());
     assert_eq!(par, serial);
     // D = conj(alpha * conj(A) * B + beta * conj(D)), D and B column-major.
     for j in 0..N {

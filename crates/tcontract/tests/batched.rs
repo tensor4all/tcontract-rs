@@ -18,12 +18,7 @@ fn cm(x: &[f64], d: [usize; 2]) -> StridedView<'_, f64> {
     StridedView::new(x, &d, &[1, d[0] as isize], 0).unwrap()
 }
 
-fn pool(threads: usize) -> rayon::ThreadPool {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .unwrap()
-}
+use common::placement::{installs, max_live, pool, root};
 
 /// `n` independent `ij,jk->ik` contractions with distinct data, run batched and
 /// run one at a time, compared **bitwise**. That equivalence is the whole
@@ -32,13 +27,13 @@ fn pool(threads: usize) -> rayon::ThreadPool {
 #[test]
 fn batched_matches_one_at_a_time_bitwise() {
     let (m, k, n) = (12usize, 9usize, 7usize);
-    let tp = pool(8);
-    let pool = Pool::borrow(&tp);
+    let sp = pool(8);
+    let pool = Pool::borrow(&sp);
     for config in [PlanConfig::default(), packed()] {
         let plan = Plan::<f64>::new(&matmul_problem(m, n, k), &config).unwrap();
         for items in [1usize, 2, 3, 7, 16] {
             for threads in [1usize, 2, 4, 8] {
-                let exec = Exec::rayon(&pool).with_budget(threads).unwrap();
+                let mut exec = Exec::new(&pool, threads).unwrap();
                 // Distinct data per item, so a batch that ran the wrong item,
                 // ran one twice, or skipped one cannot pass.
                 let a: Vec<Vec<f64>> = (0..items).map(|i| data(m * k, i, 0.5)).collect();
@@ -48,7 +43,7 @@ fn batched_matches_one_at_a_time_bitwise() {
                 let mut want = vec![vec![0.0f64; m * n]; items];
                 for i in 0..items {
                     plan.execute_into(
-                        &Exec::serial(),
+                        &mut Exec::serial(),
                         1.0,
                         &cm(&a[i], [m, k]),
                         &cm(&b[i], [k, n]),
@@ -73,7 +68,7 @@ fn batched_matches_one_at_a_time_bitwise() {
                             d: StridedViewMut::new(d, &d_dims, &d_strides, 0).unwrap(),
                         })
                         .collect();
-                    contract_batched(&mut batch, &exec).unwrap();
+                    contract_batched(&mut batch, &mut exec).unwrap();
                 }
                 assert_eq!(got, want, "items = {items}, threads = {threads}");
             }
@@ -115,7 +110,7 @@ fn a_bad_item_leaves_every_output_untouched() {
                 d: StridedViewMut::new(&mut d1, &[4, 2], &[1, 4], 0).unwrap(),
             },
         ];
-        assert!(contract_batched(&mut batch, &Exec::serial()).is_err());
+        assert!(contract_batched(&mut batch, &mut Exec::serial()).is_err());
     }
     assert!(
         d0.iter().all(|&x| x == 0.0),
@@ -127,7 +122,7 @@ fn a_bad_item_leaves_every_output_untouched() {
 #[test]
 fn an_empty_batch_is_ok() {
     let mut items: Vec<BatchItem<'_, f64>> = Vec::new();
-    contract_batched(&mut items, &Exec::serial()).unwrap();
+    contract_batched(&mut items, &mut Exec::serial()).unwrap();
 }
 
 /// The scheduling rule: with at least as many items as workers the items are
@@ -139,14 +134,13 @@ fn fewer_items_than_the_width_run_inner_spmd_and_more_items_partition_the_batch(
     let plan = Plan::<f64>::new(&matmul_problem(m, n, k), &packed()).unwrap();
     let a = data(m * k, 1, 0.01);
     let b = data(k * n, 2, 0.02);
-    let tp = pool(4);
-    let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool);
+    let sp = pool(4);
+    let pool = Pool::borrow(&sp);
 
     let (a_dims, a_strides) = ([m, k], [1isize, m as isize]);
     let (b_dims, b_strides) = ([k, n], [1isize, k as isize]);
     let (d_dims, d_strides) = ([m, n], [1isize, m as isize]);
-    let run = |count: usize| -> Vec<Vec<f64>> {
+    let run = |count: usize, exec: &mut Exec<'_>| -> Vec<Vec<f64>> {
         let mut outs = vec![vec![0.0f64; m * n]; count];
         let mut batch: Vec<BatchItem<'_, f64>> = outs
             .iter_mut()
@@ -160,13 +154,13 @@ fn fewer_items_than_the_width_run_inner_spmd_and_more_items_partition_the_batch(
                 d: StridedViewMut::new(d, &d_dims, &d_strides, 0).unwrap(),
             })
             .collect();
-        contract_batched(&mut batch, &exec).unwrap();
+        contract_batched(&mut batch, exec).unwrap();
         drop(batch);
         outs
     };
     let mut serial = vec![0.0f64; m * n];
     plan.execute_into(
-        &Exec::serial(),
+        &mut Exec::serial(),
         1.0,
         &StridedView::new(&a, &[m, k], &[1, m as isize], 0).unwrap(),
         &StridedView::new(&b, &[k, n], &[1, k as isize], 0).unwrap(),
@@ -174,24 +168,26 @@ fn fewer_items_than_the_width_run_inner_spmd_and_more_items_partition_the_batch(
     )
     .unwrap();
 
-    // Two items on a width of four: each runs its own broadcast.
-    pool.reset_stats();
-    for out in run(2) {
+    // Two items on a width of four: each runs its own team, one after the
+    // other, so the whole call enters the pool twice and every team is at full
+    // width.
+    let mut exec = Exec::new(&pool, 4).unwrap();
+    let two = root(&mut exec);
+    for out in run(2, &mut exec) {
         assert_eq!(out, serial);
     }
-    assert_eq!(pool.stats().broadcasts, 2, "each item should use the pool");
+    assert_eq!(installs(two), 2, "each item should use the pool");
+    assert!(max_live(two) > 1, "the items did not run as teams");
 
     // Four items on a width of four: the batch is the parallel axis, the items
-    // run serially, so nothing broadcasts.
-    pool.reset_stats();
-    for out in run(4) {
+    // run serially on their lanes, so the call enters the pool once.
+    let mut exec = Exec::new(&pool, 4).unwrap();
+    let four = root(&mut exec);
+    for out in run(4, &mut exec) {
         assert_eq!(out, serial);
     }
-    assert_eq!(
-        pool.stats().broadcasts,
-        0,
-        "items run serially on their lanes"
-    );
+    assert_eq!(installs(four), 1, "items run serially on their lanes");
+    assert!(max_live(four) <= 4);
 }
 
 /// A forced `Split` that asks for item threads inside the lanes is refused with
@@ -208,17 +204,16 @@ fn a_forced_split_asking_for_both_axes_is_refused_before_any_write() {
     let plan = Plan::<f64>::new(&matmul_problem(m, n, k), &packed()).unwrap();
     let a = data(m * k, 1, 0.5);
     let b = data(k * n, 2, 0.25);
-    let tp = pool(4);
-    let pool = Pool::borrow(&tp);
+    let sp = pool(4);
+    let pool = Pool::borrow(&sp);
     let with = |strategy| {
-        Exec::rayon(&pool)
-            .with_budget(4)
+        Exec::new(&pool, 4)
             .unwrap()
             .with_batch_policy(BatchPolicy::new(strategy))
     };
     // Two items, two lanes, two item threads each: the packed schedule cannot
     // nest, so the whole batch is refused.
-    let split = with(BatchStrategy::Split {
+    let mut split = with(BatchStrategy::Split {
         lanes: NonZeroUsize::new(2).unwrap(),
     });
     let mut outs = vec![vec![7.0f64; m * n]; 2];
@@ -235,7 +230,7 @@ fn a_forced_split_asking_for_both_axes_is_refused_before_any_write() {
                 d: StridedViewMut::new(d, &[m, n], &[1, m as isize], 0).unwrap(),
             })
             .collect();
-        let err = contract_batched(&mut batch, &split).unwrap_err();
+        let err = contract_batched(&mut batch, &mut split).unwrap_err();
         assert!(
             matches!(err, Error::Exec(ExecError::StrategyUnavailable { .. })),
             "{err}"
@@ -247,7 +242,7 @@ fn a_forced_split_asking_for_both_axes_is_refused_before_any_write() {
     );
 
     // The same two items with `Outer` (no item threads) still run.
-    let outer = with(BatchStrategy::Outer);
+    let mut outer = with(BatchStrategy::Outer);
     let mut outs = vec![vec![0.0f64; m * n]; 2];
     {
         let mut batch: Vec<BatchItem<'_, f64>> = outs
@@ -262,7 +257,7 @@ fn a_forced_split_asking_for_both_axes_is_refused_before_any_write() {
                 d: StridedViewMut::new(d, &[m, n], &[1, m as isize], 0).unwrap(),
             })
             .collect();
-        contract_batched(&mut batch, &outer).unwrap();
+        contract_batched(&mut batch, &mut outer).unwrap();
     }
     assert!(outs.iter().all(|d| d.iter().any(|&x| x != 0.0)));
 }

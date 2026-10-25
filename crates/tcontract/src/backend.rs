@@ -34,7 +34,7 @@ const ID: &str = "tcontract";
 /// let av = StridedView::new(&a, &[2, 2], &[1, 2], 0).unwrap();
 /// let bv = StridedView::new(&b, &[2, 2], &[1, 2], 0).unwrap();
 /// let mut dv = StridedViewMut::new(&mut d, &[2, 2], &[1, 2], 0).unwrap();
-/// plan.execute_into(&Exec::serial(), 1.0, &av, &bv, &mut dv).unwrap();
+/// plan.execute_into(&mut Exec::serial(), 1.0, &av, &bv, &mut dv).unwrap();
 /// assert_eq!(d, a);
 /// ```
 #[derive(Clone, Debug, Default)]

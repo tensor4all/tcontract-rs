@@ -7,9 +7,12 @@ use std::time::Duration;
 use num_complex::Complex64;
 use strided_view::{StridedView, StridedViewMut};
 use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem, Scalar};
-use tcontract::{Plan, PlanConfig};
+use tcontract::{ExecutionRoute, OutputContract, PackedRoute, Plan, PlanConfig};
 use tcontract_exec::{Exec, Pool};
 use tcontract_kernel::{Element, Real};
+
+mod common;
+use common::placement::{installs, max_live, on_worker, pool, root};
 
 /// `D[m,n,h] = sum_k A[m,k,h] B[k,n,h]`, column-major, `h` outermost.
 fn batched_problem(dtype: DType, m: usize, n: usize, k: usize, h: usize) -> Problem {
@@ -33,7 +36,7 @@ fn value<T: Element>(i: usize) -> T {
 }
 
 /// One execute of the packed default plan on `exec`, returning `D`.
-fn run<T: Scalar>(dtype: DType, exec: &Exec<'_>, dims: [usize; 4]) -> Vec<T> {
+fn run<T: Scalar>(dtype: DType, exec: &mut Exec<'_>, dims: [usize; 4]) -> Vec<T> {
     let [m, n, k, h] = dims;
     let a: Vec<T> = (0..m * k * h).map(value).collect();
     let b: Vec<T> = (0..k * n * h).map(|i| value(i + 5)).collect();
@@ -60,11 +63,23 @@ fn bits<T: Scalar>(v: &[T]) -> Vec<u64> {
         .collect()
 }
 
-fn pool8() -> rayon::ThreadPool {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(8)
-        .build()
+fn pool8() -> strided_exec::Pool {
+    pool(8)
+}
+
+/// The packed route the default plan takes for `dims` on `exec`, and the width
+/// it runs at.
+fn route_of(dtype: DType, exec: &Exec<'_>, dims: [usize; 4]) -> (PackedRoute, usize) {
+    let [m, n, k, h] = dims;
+    let plan =
+        Plan::<f64>::new(&batched_problem(dtype, m, n, k, h), &PlanConfig::packed()).unwrap();
+    match plan
+        .execution_route(exec, 1.0, OutputContract::Initialized)
         .unwrap()
+    {
+        ExecutionRoute::Packed { kind, width } => (kind, width),
+        other => panic!("not a packed route: {other:?}"),
+    }
 }
 
 /// Item shapes: tiny (always batch-parallel), and ~1.7 MMAC (SPMD-sized).
@@ -74,15 +89,18 @@ const SPLITTABLE: [usize; 3] = [48, 40, 16];
 const BIG: [usize; 3] = [120, 120, 120];
 
 fn sweep<T: Scalar>(dtype: DType, item: [usize; 3], batches: &[usize]) {
-    let tp = pool8();
-    let pool = Pool::borrow(&tp);
+    let sp = pool8();
+    let pool = Pool::borrow(&sp);
     for &h in batches {
         let dims = [item[0], item[1], item[2], h];
-        let serial = bits(&run::<T>(dtype, &Exec::serial(), dims));
+        let serial = bits(&run::<T>(dtype, &mut Exec::serial(), dims));
         for w in [1usize, 2, 3, 4, 8] {
-            let exec = Exec::rayon(&pool).with_budget(w).unwrap();
-            let got = bits(&run::<T>(dtype, &exec, dims));
+            let mut exec = Exec::new(&pool, w).unwrap();
+            let root = root(&mut exec);
+            let got = bits(&run::<T>(dtype, &mut exec, dims));
             assert_eq!(got, serial, "{dtype:?} item {item:?} h {h} width {w}");
+            // Teams and lanes alike never run more tasks at once than the budget.
+            assert!(max_live(root) <= w, "item {item:?} h {h} width {w}");
         }
     }
 }
@@ -110,10 +128,10 @@ fn large_items_are_bitwise_serial_at_every_width() {
 #[test]
 fn f64_matches_a_naive_contraction() {
     let [m, n, k, h] = [4usize, 3, 5, 9];
-    let tp = pool8();
-    let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool);
-    let d = run::<f64>(DType::F64, &exec, [m, n, k, h]);
+    let sp = pool8();
+    let pool = Pool::borrow(&sp);
+    let mut exec = Exec::new(&pool, pool.size()).unwrap();
+    let d = run::<f64>(DType::F64, &mut exec, [m, n, k, h]);
     let a: Vec<f64> = (0..m * k * h).map(value).collect();
     let b: Vec<f64> = (0..k * n * h).map(|i| value(i + 5)).collect();
     for t in 0..h {
@@ -131,56 +149,58 @@ fn f64_matches_a_naive_contraction() {
 
 #[test]
 fn the_mode_follows_the_width_rule() {
-    let tp = pool8();
-    let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool);
-    // Tiny items: batch lanes, no SPMD broadcast (and so no barrier).
-    run::<f64>(
-        DType::F64,
-        &exec,
-        [SPLITTABLE[0], SPLITTABLE[1], SPLITTABLE[2], 64],
-    );
-    assert_eq!(pool.stats().broadcasts, 0, "tiny items used the team");
-    assert!(
-        pool.stats().entries >= 1,
-        "tiny items never left the caller"
-    );
+    let sp = pool8();
+    let pool = Pool::borrow(&sp);
+    // Each call mints its own token, so the ledger answers per call.
+    let one = |dims: [usize; 4]| {
+        let mut exec = Exec::new(&pool, pool.size()).unwrap();
+        let (kind, width) = route_of(DType::F64, &exec, dims);
+        let root = root(&mut exec);
+        run::<f64>(DType::F64, &mut exec, dims);
+        (kind, width, root)
+    };
+    // Tiny items: batch lanes, no SPMD team (and so no barrier).
+    let (kind, _, root) = one([SPLITTABLE[0], SPLITTABLE[1], SPLITTABLE[2], 64]);
+    assert_eq!(kind, PackedRoute::BatchLanes, "tiny items used the team");
+    assert_eq!(installs(root), 1, "tiny items never left the caller");
     // A big item with fewer entries than workers keeps the team.
-    run::<f64>(DType::F64, &exec, [BIG[0], BIG[1], BIG[2], 3]);
-    assert_eq!(pool.stats().broadcasts, 1, "a big item lost its team");
+    let (kind, width, root) = one([BIG[0], BIG[1], BIG[2], 3]);
+    assert_eq!(kind, PackedRoute::Spmd, "a big item lost its team");
+    assert_eq!(max_live(root), width, "the team did not run at once");
     // As many entries as workers: batch lanes again.
-    run::<f64>(DType::F64, &exec, [BIG[0], BIG[1], BIG[2], 8]);
+    let (kind, _, _) = one([BIG[0], BIG[1], BIG[2], 8]);
     assert_eq!(
-        pool.stats().broadcasts,
-        1,
-        "H >= width should not broadcast"
+        kind,
+        PackedRoute::BatchLanes,
+        "H >= width should not use a team"
     );
     // 9 large entries on 8 lanes would leave one lane with two: keep the team.
-    run::<f64>(DType::F64, &exec, [BIG[0], BIG[1], BIG[2], 9]);
-    assert_eq!(pool.stats().broadcasts, 2, "an uneven split lost its team");
+    let (kind, width, root) = one([BIG[0], BIG[1], BIG[2], 9]);
+    assert_eq!(kind, PackedRoute::Spmd, "an uneven split lost its team");
+    assert_eq!(max_live(root), width);
 }
 
 #[test]
 fn a_tiny_total_stays_on_the_caller() {
-    let tp = pool8();
-    let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool);
-    run::<f64>(DType::F64, &exec, [2, 2, 2, 3]);
-    let s = pool.stats();
-    assert_eq!((s.entries, s.broadcasts), (0, 0));
+    let sp = pool8();
+    let pool = Pool::borrow(&sp);
+    let mut exec = Exec::new(&pool, pool.size()).unwrap();
+    let root = root(&mut exec);
+    run::<f64>(DType::F64, &mut exec, [2, 2, 2, 3]);
+    assert_eq!(installs(root), 0);
 }
 
 #[test]
 fn steady_state_reuses_the_pool_workspace() {
-    let tp = pool8();
-    let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool);
+    let sp = pool8();
+    let pool = Pool::borrow(&sp);
+    let mut exec = Exec::new(&pool, pool.size()).unwrap();
     let dims = [SPLITTABLE[0], SPLITTABLE[1], SPLITTABLE[2], 500];
-    run::<f64>(DType::F64, &exec, dims);
+    run::<f64>(DType::F64, &mut exec, dims);
     let panel = pool.workspace().retained_panel_bytes();
     assert!(panel > 0, "the batch lanes never leased a panel");
     for _ in 0..3 {
-        run::<f64>(DType::F64, &exec, dims);
+        run::<f64>(DType::F64, &mut exec, dims);
     }
     assert_eq!(
         pool.workspace().retained_panel_bytes(),
@@ -196,20 +216,20 @@ fn steady_state_reuses_the_pool_workspace() {
 fn a_call_from_a_worker_runs_barrier_free_lanes_with_the_same_result() {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let tp = pool8();
-        let pool = Pool::borrow(&tp);
-        let exec = Exec::rayon(&pool);
+        let sp = pool8();
+        let pool = Pool::borrow(&sp);
         let dims = [SPLITTABLE[0], SPLITTABLE[1], SPLITTABLE[2], 64];
-        let serial = bits(&run::<f64>(DType::F64, &Exec::serial(), dims));
-        let before = pool.stats();
-        let nested = exec.install(2, |_| bits(&run::<f64>(DType::F64, &exec, dims)));
+        let serial = bits(&run::<f64>(DType::F64, &mut Exec::serial(), dims));
+        let (nested, root) = on_worker(&pool, || {
+            let mut inner = Exec::new(&pool, pool.size()).unwrap();
+            let root = root(&mut inner);
+            (bits(&run::<f64>(DType::F64, &mut inner, dims)), root)
+        });
         assert_eq!(nested, serial);
-        let after = pool.stats();
-        assert_eq!(after.broadcasts, before.broadcasts);
-        // The outer `install` entered the pool; the lanes ran in place on the
-        // worker, which is what makes the batch path barrier-free.
-        assert_eq!(after.entries, before.entries + 1);
-        assert_eq!(after.inline_runs, before.inline_runs + 1);
+        // The lanes ran in place on the worker, which is what makes the batch
+        // path barrier-free.
+        assert_eq!(installs(root), 0);
+        assert!(max_live(root) <= pool.size());
         let _ = tx.send(());
     });
     rx.recv_timeout(Duration::from_secs(60))

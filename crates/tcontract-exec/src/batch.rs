@@ -5,7 +5,7 @@
 //! grouped GEMM, tlinalg's lane plan). This module gives them one vocabulary
 //! and one pure function, [`batch_decision`], so a caller can force a route and
 //! two crates cannot drift on the same decision. The types are plain data with
-//! no `rayon` dependency; they live apart from [`Exec`](crate::Exec) so moving
+//! no scheduler dependency; they live apart from [`Exec`](crate::Exec) so moving
 //! them later is a re-export, not a redesign.
 //!
 //! # Strategies
@@ -382,8 +382,8 @@ impl BatchQuery {
 /// The routes in tcontract, and where each one stands:
 ///
 /// * the faer strategy honours both axes: every item runs with
-///   `Par::rayon(item_threads)` inside its lane's share of the borrowed pool,
-///   which nests there (`crates/tcontract/src/strategy/faer.rs`);
+///   `item_threads` slots as the width it hands faer through `Exec::external`
+///   inside its lane's share of the token, which nests there (`crates/tcontract/src/strategy/faer.rs`);
 /// * the packed driver refuses it
 ///   (`crates/tcontract/src/driver/route.rs`): its inner parallelism is a
 ///   co-scheduled, barrier-bearing team, and a lane worker cannot join one
@@ -829,15 +829,13 @@ mod tests {
 
     #[test]
     fn exec_carries_the_policy_and_budget_keeps_it() {
-        let tp = rayon::ThreadPoolBuilder::new()
-            .num_threads(4)
-            .build()
-            .unwrap();
-        let pool = crate::Pool::borrow(&tp);
-        let exec =
-            crate::Exec::rayon(&pool).with_batch_policy(BatchPolicy::new(BatchStrategy::Outer));
+        let sp = strided_exec::Pool::builder().threads(4).build().unwrap();
+        let pool = crate::Pool::borrow(&sp);
+        let exec = crate::Exec::new(&pool, 4)
+            .unwrap()
+            .with_batch_policy(BatchPolicy::new(BatchStrategy::Outer));
         assert_eq!(exec.batch_policy().strategy, BatchStrategy::Outer);
-        let narrowed = exec.with_budget(2).unwrap();
+        let narrowed = exec.limit(2.try_into().unwrap());
         assert_eq!(narrowed.budget(), 2);
         assert_eq!(narrowed.batch_policy().strategy, BatchStrategy::Outer);
         assert_eq!(

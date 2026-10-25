@@ -37,7 +37,7 @@ fn mixed_storage_batch_checks_nested_fresh_route_before_first_write() {
             d1.as_mut_ptr() as usize,
         );
         let rc = tcontract_capi::executor::with_executor(exec, |x| {
-            Ok(x.install(2, move |_| {
+            Ok(x.token().external(move |_| {
                 let (alpha, beta) = (1.0_f64, 1.0_f64);
                 let aa = [ap as *const std::ffi::c_void; 2];
                 let bb = [bp as *const std::ffi::c_void; 2];
@@ -59,18 +59,11 @@ fn mixed_storage_batch_checks_nested_fresh_route_before_first_write() {
         })
         .unwrap();
         eprintln!("nested mixed-storage batch status={rc}");
-        if rc == TAPP_ERROR_UNSUPPORTED {
-            assert!(
-                d0.iter().all(|&v| v == 17.0),
-                "initialized item wrote before fresh admission"
-            );
-            assert!(d1.iter().all(|&v| v == 19.0));
-        } else {
-            // A backend's barrier-free route is legal on its own pool worker.
-            assert_eq!(rc, TAPP_SUCCESS);
-            assert!(d0.iter().all(|&v| v == k as f64 + 17.0));
-            assert!(d1.iter().all(|&v| v == k as f64 + 23.0));
-        }
+        // A team cannot be co-scheduled on a worker of its own pool; the batch
+        // takes the barrier-free route there and completes.
+        assert_eq!(rc, TAPP_SUCCESS);
+        assert!(d0.iter().all(|&v| v == k as f64 + 17.0));
+        assert!(d1.iter().all(|&v| v == k as f64 + 23.0));
         assert_eq!(TAPP_destroy_executor(exec), TAPP_SUCCESS);
         assert_eq!(TAPP_destroy_tensor_product(plan), TAPP_SUCCESS);
     }

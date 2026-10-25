@@ -38,7 +38,7 @@ fn a_sized_workspace_is_allocation_free_and_a_short_one_is_refused() {
     let (m, n, k) = SHAPE;
     // Forced packed so the plan owns a workspace requirement at all.
     let plan = Plan::<f64>::new(&matmul_problem(m, n, k), &PlanConfig::packed()).unwrap();
-    let exec = Exec::serial();
+    let mut exec = Exec::serial();
     let req = plan.workspace_req(&exec, OutputContract::Initialized);
     assert!(req.bytes() > 0, "the packed route needs a workspace");
 
@@ -53,7 +53,7 @@ fn a_sized_workspace_is_allocation_free_and_a_short_one_is_refused() {
     unsafe {
         plan.execute_raw_in(
             &mut ws,
-            &exec,
+            &mut exec,
             1.0,
             a.as_ptr(),
             b.as_ptr(),
@@ -70,7 +70,7 @@ fn a_sized_workspace_is_allocation_free_and_a_short_one_is_refused() {
     unsafe {
         plan.execute_raw_in(
             &mut ws,
-            &exec,
+            &mut exec,
             1.0,
             a.as_ptr(),
             b.as_ptr(),
@@ -98,7 +98,7 @@ fn a_sized_workspace_is_allocation_free_and_a_short_one_is_refused() {
     let err = unsafe {
         plan.execute_raw_in(
             &mut short,
-            &exec,
+            &mut exec,
             1.0,
             a.as_ptr(),
             b.as_ptr(),

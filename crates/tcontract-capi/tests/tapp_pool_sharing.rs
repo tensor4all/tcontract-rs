@@ -65,13 +65,13 @@ fn concurrent_nested_and_over_budget_products_neither_deadlock_nor_add_threads()
         });
         assert_eq!(ok.load(std::sync::atomic::Ordering::Relaxed), 24);
 
-        // A fresh packed SPMD route is refused before writes on its own pool
-        // worker. A non-team route may execute there; there is no serial retry.
+        // From a worker of the executor's own pool a packed team cannot be
+        // co-scheduled; the call takes the barrier-free route and completes.
         let mut d = vec![17.0; m * n];
         let dp = d.as_mut_ptr() as usize;
         let (ap, bp) = (a.as_ptr() as usize, b.as_ptr() as usize);
         let rc = tcontract_capi::executor::with_executor(exec, |x| {
-            Ok(x.install(2, move |_| {
+            Ok(x.token().external(move |_| {
                 exec_f64(
                     plan,
                     exec,
@@ -85,12 +85,8 @@ fn concurrent_nested_and_over_budget_products_neither_deadlock_nor_add_threads()
             }))
         })
         .unwrap();
-        if rc == TAPP_ERROR_UNSUPPORTED {
-            assert!(d.iter().all(|&v| v == 17.0));
-        } else {
-            assert_eq!(rc, TAPP_SUCCESS);
-            assert_close(&d, &want, 1e-12);
-        }
+        assert_eq!(rc, TAPP_SUCCESS);
+        assert_close(&d, &want, 1e-12);
 
         // Budget below the pool width: the product still completes.
         assert_eq!(tcontract_tapp_executor_set_budget(exec, 2), TAPP_SUCCESS);

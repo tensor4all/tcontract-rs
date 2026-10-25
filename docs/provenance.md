@@ -20,7 +20,7 @@ On 2026-09-30 `strided/` and the strided and einsum benchmarks under
 `benchmarks/` were removed: strided-rs is again an external dependency
 (now pinned to its published v0.4.6 release), and its benchmarks live in
 strided-rs-benchmark-suite. The only tcontract addition to strided,
-`run_with_exec`, moved to `tcontract_exec::strided`. Their history stays
+`run_with_exec`, moved to `tcontract_exec::strided` and deleted when strided 0.7 took the placement token directly. Their history stays
 reachable through the import merges.
 
 `crates/tcontract-capi/include/dlpack/dlpack.h` is DLPack v1.1

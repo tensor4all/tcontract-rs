@@ -1,5 +1,5 @@
 /* tcontract C ABI: core (DLPack operands, status codes). Executors are the TAPP
-   executors of <tapp.h>; the Rayon executors and the host-owned pool they
+   executors of <tapp.h>; the worker-pool executors and the host-owned pool they
    borrow are in <tcontract/tapp_ext.h>. */
 #ifndef TCONTRACT_CORE_H
 #define TCONTRACT_CORE_H

@@ -47,6 +47,7 @@ pub(crate) mod test_support;
 
 use core::marker::PhantomData;
 
+use core::num::NonZeroUsize;
 use strided_view::{StridedView, StridedViewMut};
 use tcontract_exec::Exec;
 use tcontract_kernel::{Element, KernelCatalog, ResolvedGemm, SelectError};
@@ -116,7 +117,7 @@ enum Strategy<T: Scalar> {
 /// let av = StridedView::new(&a, &[2, 2], &[1, 2], 0).unwrap();
 /// let bv = StridedView::new(&b, &[2, 2], &[1, 2], 0).unwrap();
 /// let mut dv = StridedViewMut::new(&mut d, &[2, 2], &[1, 2], 0).unwrap();
-/// plan.execute_into(&Exec::serial(), 1.0, &av, &bv, &mut dv).unwrap();
+/// plan.execute_into(&mut Exec::serial(), 1.0, &av, &bv, &mut dv).unwrap();
 /// assert_eq!(d, a);
 /// ```
 #[derive(Debug)]
@@ -339,7 +340,7 @@ impl<T: Scalar> Plan<T> {
     /// written); [`Error::Exec`](crate::api::Error::Exec) or [`Error::Backend`](crate::api::Error::Backend) from a lower layer.
     pub fn execute_into(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: &StridedView<'_, T>,
         b: &StridedView<'_, T>,
@@ -377,7 +378,7 @@ impl<T: Scalar> Plan<T> {
     /// `AccumulationSource::Absent` with zero beta is an overwrite for any mode.
     pub fn execute_into_accum(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: &StridedView<'_, T>,
         b: &StridedView<'_, T>,
@@ -432,14 +433,14 @@ impl<T: Scalar> Plan<T> {
     /// // A is stored after one padding element.
     /// let (a, b) = ([9.0, 1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 1.0, 0.0]);
     /// let mut d = [0.0; 4];
-    /// let exec = Exec::serial();
-    /// plan.execute_slices(&exec, 1.0, (&a, 1), (&b, 0), (&mut d, 0)).unwrap();
+    /// let mut exec = Exec::serial();
+    /// plan.execute_slices(&mut exec, 1.0, (&a, 1), (&b, 0), (&mut d, 0)).unwrap();
     /// assert_eq!(d, [3.0, 4.0, 1.0, 2.0]);
-    /// assert!(plan.execute_slices(&exec, 1.0, (&a, 2), (&b, 0), (&mut d, 0)).is_err());
+    /// assert!(plan.execute_slices(&mut exec, 1.0, (&a, 2), (&b, 0), (&mut d, 0)).is_err());
     /// ```
     pub fn execute_slices(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         (a, a_origin): (&[T], isize),
         (b, b_origin): (&[T], isize),
@@ -532,7 +533,7 @@ impl<T: Scalar> Plan<T> {
     /// separate C is distinct from `d`.
     pub(crate) unsafe fn run_validated(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: &StridedView<'_, T>,
         b: &StridedView<'_, T>,
@@ -631,7 +632,7 @@ impl<T: Scalar> Plan<T> {
     #[allow(clippy::too_many_arguments)] // INVARIANT: the contraction argument set.
     pub unsafe fn execute_raw(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: *const T,
         b: *const T,
@@ -669,7 +670,7 @@ impl<T: Scalar> Plan<T> {
     pub unsafe fn execute_raw_in(
         &self,
         workspace: &mut tcontract_exec::Workspace,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: *const T,
         b: *const T,
@@ -688,7 +689,7 @@ impl<T: Scalar> Plan<T> {
         // A workspace not warmed for every worker of this executor would have a
         // worker allocate its own slot mid-execute: refuse instead. The executor
         // the driver uses is the narrowed one (`Auto`/`Sequential`).
-        let needed_slots = self.batch_context(exec)?.budget();
+        let needed_slots = self.batch_budget(exec);
         if !required.covered_by(workspace.req()) || workspace.slots() < needed_slots {
             return Err(crate::api::Error::Workspace {
                 needed: required.bytes(),
@@ -724,7 +725,7 @@ impl<T: Scalar> Plan<T> {
         &self,
         workspace: Option<&dyn tcontract_exec::WorkspaceProvider>,
         output: Option<OutputContract>,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: *const T,
         b: *const T,
@@ -779,16 +780,23 @@ impl<T: Scalar> Plan<T> {
     /// batch first (the packed two-stage rule's stage one), a forced batch
     /// strategy is left on the original host budget, as
     /// [`tcontract_exec::Exec::batch_decision`] documents.
-    fn batch_context<'a>(&self, exec: &Exec<'a>) -> Result<Exec<'a>> {
+    fn batch_context<'e>(&self, exec: &'e mut Exec<'_>) -> Exec<'e> {
+        let budget = NonZeroUsize::new(self.batch_budget(exec)).unwrap_or(NonZeroUsize::MIN);
+        exec.reborrow().limit(budget)
+    }
+
+    /// The budget [`Plan::batch_context`] leaves the driver, as a number, for
+    /// the reports that need it without a mutable context.
+    fn batch_budget(&self, exec: &Exec<'_>) -> usize {
         match exec.batch_policy().strategy {
             // `Auto` narrows the budget over the whole batch (the packed
             // two-stage rule's stage one).
-            tcontract_exec::BatchStrategy::Auto => Ok(exec.with_budget(self.width(exec))?),
+            tcontract_exec::BatchStrategy::Auto => self.width(exec),
             // A forced sequential route is one thread for the whole call,
             // including the faer output pass and any packed team.
-            tcontract_exec::BatchStrategy::Sequential => Ok(exec.with_budget(1)?),
+            tcontract_exec::BatchStrategy::Sequential => 1,
             // Every other forced strategy is resolved on the original budget.
-            _ => Ok(*exec),
+            _ => exec.budget(),
         }
     }
 
@@ -801,7 +809,7 @@ impl<T: Scalar> Plan<T> {
     #[allow(clippy::too_many_arguments)] // INVARIANT: the contraction argument set.
     unsafe fn run(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: *const T,
         b: *const T,
@@ -826,7 +834,7 @@ impl<T: Scalar> Plan<T> {
     #[allow(clippy::too_many_arguments)] // INVARIANT: the contraction argument set.
     unsafe fn run_storage(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: *const T,
         b: *const T,
@@ -848,7 +856,7 @@ impl<T: Scalar> Plan<T> {
     unsafe fn run_storage_in(
         &self,
         workspace: Option<&dyn tcontract_exec::WorkspaceProvider>,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: *const T,
         b: *const T,
@@ -885,7 +893,7 @@ impl<T: Scalar> Plan<T> {
             return Ok(());
         }
         if let Strategy::Faer(f) = &self.strategy {
-            let exec = self.batch_context(exec)?;
+            let mut exec = self.batch_context(exec);
             // The C term goes into D first, in one parallel output-sized
             // pass (not an operand copy; see `strategy::faer`), and faer
             // accumulates the product. D itself (in place, or a separate C
@@ -907,7 +915,7 @@ impl<T: Scalar> Plan<T> {
             let accumulate = match c {
                 CRead::Separate(cp) if beta != zero && !core::ptr::eq(cp, d) => {
                     // SAFETY: the caller's contract (C disjoint from D).
-                    unsafe { self.output.run(&exec, expr, Inputs::None, c, d) }?;
+                    unsafe { self.output.run(&mut exec, expr, Inputs::None, c, d) }?;
                     true
                 }
                 _ if fresh => {
@@ -920,8 +928,13 @@ impl<T: Scalar> Plan<T> {
                     // SAFETY: the caller's write-only contract; the output pass
                     // stores through raw pointers and reads nothing of D.
                     unsafe {
-                        self.output
-                            .run(&Exec::serial(), zero_expr, Inputs::None, CRead::None, d)
+                        self.output.run(
+                            &mut Exec::serial(),
+                            zero_expr,
+                            Inputs::None,
+                            CRead::None,
+                            d,
+                        )
                     }?;
                     false
                 }
@@ -933,7 +946,7 @@ impl<T: Scalar> Plan<T> {
                         // SAFETY: the caller's contract; in-place update of D.
                         unsafe {
                             self.output
-                                .run(&exec, expr, Inputs::None, CRead::InPlace, d)
+                                .run(&mut exec, expr, Inputs::None, CRead::InPlace, d)
                         }?;
                     }
                     true
@@ -941,12 +954,12 @@ impl<T: Scalar> Plan<T> {
             };
             // SAFETY: the caller's contract; the fusion was proven copy-free
             // over exactly this problem's layouts.
-            unsafe { f.run(&exec, alpha, a, b, accumulate, d)? };
+            unsafe { f.run(&mut exec, alpha, a, b, accumulate, d)? };
             return Ok(());
         }
         match &self.strategy {
             Strategy::Packed(pk) => {
-                let exec = self.batch_context(exec)?;
+                let mut exec = self.batch_context(exec);
                 // The caller owns the workspace: a pool lends its arena, a
                 // caller that wants serial reuse lends its own provider, and a
                 // bare serial context runs with call-local scratch.
@@ -958,7 +971,7 @@ impl<T: Scalar> Plan<T> {
                 // plan when it was built.
                 unsafe {
                     driver::execute_packed(
-                        &pk.plan, &pk.rg, &exec, workspace, alpha, a, b, beta, cp, d,
+                        &pk.plan, &pk.rg, &mut exec, workspace, alpha, a, b, beta, cp, d,
                     )?
                 };
             }
@@ -1013,7 +1026,7 @@ fn packed_report<T: Scalar>(pk: &Packed<T>) -> PackedReport {
 impl<T: Scalar> PreparedContraction<T> for Plan<T> {
     fn execute_into(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: &StridedView<'_, T>,
         b: &StridedView<'_, T>,
@@ -1024,7 +1037,7 @@ impl<T: Scalar> PreparedContraction<T> for Plan<T> {
 
     fn execute_into_accum(
         &self,
-        exec: &Exec<'_>,
+        exec: &mut Exec<'_>,
         alpha: T,
         a: &StridedView<'_, T>,
         b: &StridedView<'_, T>,

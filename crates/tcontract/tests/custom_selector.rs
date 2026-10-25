@@ -84,7 +84,7 @@ fn run(plan: &Plan<f64>, alpha: f64, beta: f64) -> (Vec<f64>, Vec<f64>) {
     let bv = StridedView::new(&b, &B_DIMS, &sb, 0).unwrap();
     let mut cv = StridedViewMut::new(&mut c, &C_DIMS, &sc, 0).unwrap();
     plan.execute_into_accum(
-        &Exec::serial(),
+        &mut Exec::serial(),
         alpha,
         &av,
         &bv,
@@ -221,7 +221,7 @@ fn all_batch_and_zero_size_problems_still_select_or_refuse() {
     let (x, y) = ([1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]);
     let mut z = [0.0; 4];
     p.execute_into(
-        &Exec::serial(),
+        &mut Exec::serial(),
         1.0,
         &StridedView::new(&x, &dims, &st, 0).unwrap(),
         &StridedView::new(&y, &dims, &st, 0).unwrap(),
@@ -260,7 +260,7 @@ fn all_batch_and_zero_size_problems_still_select_or_refuse() {
     let b = ints::<f64>(1, 12);
     let mut c: Vec<f64> = vec![];
     ok.execute_into(
-        &Exec::serial(),
+        &mut Exec::serial(),
         1.0,
         &StridedView::new(&a, &ad, &sa, 0).unwrap(),
         &StridedView::new(&b, &bd, &sb, 0).unwrap(),
@@ -331,7 +331,7 @@ fn a_direct_b_custom_kernel_updates_c_in_place_and_reports_itself() {
         })
         .unwrap();
     plan.execute_into_accum(
-        &Exec::serial(),
+        &mut Exec::serial(),
         1.0,
         &StridedView::new(&a, &[m, k], &[1, m as isize], 0).unwrap(),
         &StridedView::new(&b, &[k, n], &[1, k as isize], 0).unwrap(),
@@ -403,7 +403,7 @@ fn custom_complex_families_need_a_dtype_correct_catalog() {
     )
     .unwrap();
     plan.execute_into(
-        &Exec::serial(),
+        &mut Exec::serial(),
         Complex::new(1.0, 0.0),
         &StridedView::new(&a, &[m, k], &[1, m as isize], 0).unwrap(),
         &StridedView::new(&b, &[k, n], &[1, k as isize], 0).unwrap(),

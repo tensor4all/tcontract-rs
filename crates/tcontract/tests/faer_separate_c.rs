@@ -183,8 +183,16 @@ fn check<T: Scalar + Element>(
     // SAFETY: every pointer addresses its operand's full layout; D is
     // exclusive, and C is D itself only for the in-place mapping.
     unsafe {
-        plan.execute_raw(&Exec::serial(), alpha, a.as_ptr(), b.as_ptr(), beta, cp, dp)
-            .unwrap();
+        plan.execute_raw(
+            &mut Exec::serial(),
+            alpha,
+            a.as_ptr(),
+            b.as_ptr(),
+            beta,
+            cp,
+            dp,
+        )
+        .unwrap();
     }
     let err = got
         .iter()

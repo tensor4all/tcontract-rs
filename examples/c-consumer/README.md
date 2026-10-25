@@ -145,11 +145,11 @@ cargo vendor vendor >> .cargo/config.toml
 cargo build --offline --release -p tcontract-capi
 ```
 
-Ship `vendor/` alongside the source and the build needs no network as long as
-the git-pinned sources are reachable or vendored too: the crates are
-`publish = false`, and the tree depends on crates.io packages (`num-complex`,
-`rayon`, `faer`, `thiserror`, ...) plus a git-pinned `strided-rs`, which
-`cargo vendor` does not cover. There is no dedicated CI offline lane.
+Ship `vendor/` alongside the source and the build needs no network: the crates
+are `publish = false`, and the tree depends only on crates.io packages
+(`num-complex`, `strided-exec` and the other strided-rs crates, `t4a-faer`,
+`thiserror`, ...), all of which `cargo vendor` covers. There is no dedicated CI
+offline lane.
 
 ## What the API looks like
 

@@ -92,16 +92,17 @@ fn the_trait_path_allocates_exactly_what_the_concrete_path_does() {
             strided_view::StridedView::new(&a, &da, &sa, 0).unwrap(),
             strided_view::StridedView::new(&b, &db, &sb, 0).unwrap(),
         );
-        let exec = Exec::serial();
-        let run_concrete = |c: &mut Vec<f64>| {
+        let (mut exec_concrete, mut exec_trait) = (Exec::serial(), Exec::serial());
+        let mut run_concrete = |c: &mut Vec<f64>| {
             let mut cv = strided_view::StridedViewMut::new(c, &dc, &sc, 0).unwrap();
-            plan.execute_into(&exec, 1.0, &av, &bv, &mut cv).unwrap();
+            plan.execute_into(&mut exec_concrete, 1.0, &av, &bv, &mut cv)
+                .unwrap();
         };
-        let run_trait = |c: &mut Vec<f64>| {
+        let mut run_trait = |c: &mut Vec<f64>| {
             let mut cv = strided_view::StridedViewMut::new(c, &dc, &sc, 0).unwrap();
             boxed
                 .execute_into_accum(
-                    &exec,
+                    &mut exec_trait,
                     1.0,
                     &av,
                     &bv,

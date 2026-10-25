@@ -52,10 +52,11 @@ fn executes(plan: &Plan<f64>, reps: usize) -> usize {
     let (sa, sb, sc) = (strides(&DIMS_A), strides(&DIMS_B), strides(&DIMS_C));
     let av = StridedView::new(&a, &DIMS_A, &sa, 0).unwrap();
     let bv = StridedView::new(&b, &DIMS_B, &sb, 0).unwrap();
-    let exec = Exec::serial();
+    let mut exec = Exec::serial();
     let mut run = || {
         let mut cv = StridedViewMut::new(&mut c, &DIMS_C, &sc, 0).unwrap();
-        plan.execute_into(&exec, 1.0, &av, &bv, &mut cv).unwrap();
+        plan.execute_into(&mut exec, 1.0, &av, &bv, &mut cv)
+            .unwrap();
     };
     // Warm up: first touch of the plan's own workspace.
     run();

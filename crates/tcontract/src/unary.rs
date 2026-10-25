@@ -107,11 +107,11 @@ impl<'a> Unary<'a> {
 /// let av = StridedView::new(&a, &[3, 2], &[1, 3], 0).unwrap();
 /// let mut cv = StridedViewMut::new(&mut c, &[2], &[1], 0).unwrap();
 /// // Label 0 is summed: it is in `A` and not in `D`.
-/// add(&Exec::serial(), &Unary::new(&[0, 1], &[1]), 1.0, &av, 0.0, &mut cv).unwrap();
+/// add(&mut Exec::serial(), &Unary::new(&[0, 1], &[1]), 1.0, &av, 0.0, &mut cv).unwrap();
 /// assert_eq!(c, [6.0, 15.0]);
 /// ```
 pub fn add<T: Scalar>(
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     spec: &Unary<'_>,
     alpha: T,
     a: &StridedView<'_, T>,

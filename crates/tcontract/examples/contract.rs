@@ -203,7 +203,7 @@ fn execute<T: tcontract::api::Scalar>(
     let (sa, sb, sd) = (strides(da), strides(db), strides(dd));
     let view = |x, dims, st| StridedView::new(x, dims, st, 0).map_err(tcontract::Error::backend);
     plan.execute_into(
-        &Exec::serial(),
+        &mut Exec::serial(),
         <T as tcontract_kernel::Element>::one(),
         &view(a, da, &sa)?,
         &view(b, db, &sb)?,

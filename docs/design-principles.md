@@ -36,7 +36,7 @@ Crates are named `tcontract-<part>` with a part name that says what it does: `tc
 
 `tcontract-capi` is the only crate with C symbols and builds `libtcontract_capi` (`cdylib`, `staticlib`, `rlib`). It contains no algorithm.
 
-- Everything in the library shares one execution runtime and one set of handle types, so an executor is valid in every call. The executor is the standard `TAPP_executor`, created and destroyed through the C API; the C host owns it and it owns its Rayon pool. Handles of another TAPP provider cannot be mixed in.
+- Everything in the library shares one execution runtime and one set of handle types, so an executor is valid in every call. The executor is the standard `TAPP_executor`, created and destroyed through the C API; the C host owns it and it owns its worker pool. Handles of another TAPP provider cannot be mixed in.
 - Where a standard exists, the ABI is the standard: contraction is [TAPP](https://arxiv.org/abs/2601.07827) with the prototypes of the pinned upstream headers, and tcontract adds only named extensions (`tcontract_tapp_*`, DLPack operands, status codes). Nonzero error codes are provider-defined, so callers test success with `TAPP_check_success`.
 - Separate libraries per part are not supported: they would duplicate handle types, thread pools and, for static libraries, Rust runtime symbols.
 - There is no C tuning API; kernel and blocking choices are Rust `PlanConfig` inputs.
@@ -63,8 +63,8 @@ A caller must be able to see and control what an operation costs.
 
 Whoever embeds the stack decides how many threads run and on which runtime.
 
-- A Rust caller passes an execution context. A C, Julia or Python host can create, use and close a Rayon pool through the ABI, or run serially.
-- Closing a pool the library created joins its threads, so a host can shut down cleanly. Closing a context that borrows the host's pool never stops the host's threads.
+- A Rust caller passes an execution context. A C, Julia or Python host can create, use and close a worker pool through the ABI, or run serially.
+- Closing a pool the library created waits for its workers to exit, so a host can shut down cleanly. Closing a context that borrows the host's pool never stops the host's threads.
 - One thread budget governs both batch-level and inner parallelism so nested parallelism does not oversubscribe.
 
 ## 9. Correct first, then measured

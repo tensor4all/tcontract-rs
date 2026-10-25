@@ -235,3 +235,5 @@ pub fn out_dims(cfg: &DotGeneral, a: &[usize], b: &[usize]) -> Vec<usize> {
     cfg.validate(a, b).unwrap().out_dims.to_vec()
 }
 pub mod plans;
+
+pub mod placement;

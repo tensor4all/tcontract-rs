@@ -34,7 +34,7 @@ pub const ENGINE_ORDER: &[&str] = &[
     "tblis",
 ];
 
-pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
+pub fn run(opts: &Options, exec: &mut Exec<'_>) -> ExitCode {
     if opts.reps == 0 {
         eprintln!(
             "tcbench: --reps 0 leaves nothing to time and skips priming for every arm; \
@@ -125,7 +125,7 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
 pub fn run_case<T>(
     s: &Sized,
     opts: &Options,
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     results: &mut Results,
     mut census: Option<&mut crate::report::Census>,
 ) where
@@ -189,6 +189,9 @@ pub fn run_case<T>(
         }
     };
 
+    // The budget is fixed for the run; read it once so the row closure below
+    // does not hold the (mutably lent) context.
+    let threads = exec.budget();
     let push = |engine: &str,
                 samples: Vec<f64>,
                 spread: f64,
@@ -205,7 +208,7 @@ pub fn run_case<T>(
             case: s.case.name.to_string(),
             dtype: T::NAME.to_string(),
             engine: engine.to_string(),
-            threads: exec.budget(),
+            threads,
             m,
             n,
             k,

@@ -264,7 +264,7 @@ fn dot_labels(e: &DotGeneralEntry) -> Labels {
 
 fn run<T: Scalar>(
     e: &DotGeneralEntry,
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     threads: usize,
     warmup: usize,
     runs: usize,
@@ -405,7 +405,7 @@ fn run<T: Scalar>(
     );
 }
 
-fn dispatch(e: &DotGeneralEntry, exec: &Exec<'_>, threads: usize, warmup: usize, runs: usize) {
+fn dispatch(e: &DotGeneralEntry, exec: &mut Exec<'_>, threads: usize, warmup: usize, runs: usize) {
     match e.dtype {
         Dtype::F32 => run::<f32>(e, exec, threads, warmup, runs),
         Dtype::F64 => run::<f64>(e, exec, threads, warmup, runs),

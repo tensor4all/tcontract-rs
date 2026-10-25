@@ -230,11 +230,11 @@ fn check(
         let mut dv = StridedViewMut::new(&mut got, &shape.d, &sd, 0).unwrap();
         match mode {
             Mode::Overwrite => plan
-                .execute_into(&Exec::serial(), alpha, &av, &bv, &mut dv)
+                .execute_into(&mut Exec::serial(), alpha, &av, &bv, &mut dv)
                 .unwrap(),
             Mode::Output => plan
                 .execute_into_accum(
-                    &Exec::serial(),
+                    &mut Exec::serial(),
                     alpha,
                     &av,
                     &bv,
@@ -245,7 +245,7 @@ fn check(
                 .unwrap(),
             Mode::Separate => plan
                 .execute_into_accum(
-                    &Exec::serial(),
+                    &mut Exec::serial(),
                     alpha,
                     &av,
                     &bv,

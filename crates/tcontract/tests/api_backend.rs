@@ -11,7 +11,7 @@ fn interface_is_object_safe_at_fixed_scalar() {
     fn _backend(_: &dyn ContractionBackend<f64>) {}
     fn _plan(_: &dyn PreparedContraction<f32>) {}
     fn _slot(_: Vec<Box<dyn ContractionBackend<num_complex::Complex64>>>) {}
-    fn _exec(_: &Exec<'_>, _: AccumulationSource<'_, f64>) {}
+    fn _exec(_: &mut Exec<'_>, _: AccumulationSource<'_, f64>) {}
     fn send_sync<X: Send + Sync>() {}
     send_sync::<BoxedPlan<f64>>();
     send_sync::<Box<dyn ContractionBackend<f32>>>();

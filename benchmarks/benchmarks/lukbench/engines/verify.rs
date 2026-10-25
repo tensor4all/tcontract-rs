@@ -22,7 +22,7 @@ use crate::corpus::{self, Program};
 use crate::report::{Census, Table};
 use crate::Options;
 
-pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
+pub fn run(opts: &Options, exec: &mut Exec<'_>) -> ExitCode {
     crate::report::print_environment();
     let cases = crate::select_cases(opts);
     // Only a case whose own dtype was requested is checked; the rest are still
@@ -88,7 +88,7 @@ pub fn run(opts: &Options, exec: &Exec<'_>) -> ExitCode {
 fn check<T: BenchElem>(
     p: &Program,
     opts: &Options,
-    exec: &Exec<'_>,
+    exec: &mut Exec<'_>,
     t: &mut Table,
     mut census: Option<&mut Census>,
 ) -> usize {

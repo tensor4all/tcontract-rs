@@ -15,6 +15,8 @@ use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
 use tcontract::{Plan, PlanConfig};
 use tcontract_exec::{Exec, Pool};
 
+mod common;
+
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 
 struct Counting;
@@ -76,7 +78,7 @@ impl Case {
 
     /// One execute on `exec`, returning the allocations the library and its
     /// dispatch made. Views are built before the count starts.
-    fn run(&mut self, exec: &Exec<'_>) -> usize {
+    fn run(&mut self, exec: &mut Exec<'_>) -> usize {
         let [m, n, k, h] = self.dims;
         let (mi, ni, ki) = (m as isize, n as isize, k as isize);
         let av = StridedView::new(&self.a, &[m, k, h], &[1, mi, mi * ki], 0).unwrap();
@@ -96,12 +98,10 @@ const DISPATCH_ALLOCS: usize = 24;
 
 #[test]
 fn parallel_allocations_do_not_grow_with_size_or_batch() {
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
-    let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool).with_budget(4).unwrap();
+    let sp = common::placement::pool(4);
+    let pool = Pool::borrow(&sp);
+    let mut exec = Exec::new(&pool, 4).unwrap();
+    let root = common::placement::root(&mut exec);
 
     // Two batches at the same tiny item, four times apart. Both narrow to the
     // same full budget, so the lanes are equal and the only variable is the
@@ -109,13 +109,13 @@ fn parallel_allocations_do_not_grow_with_size_or_batch() {
     let mut small = Case::new(8, 8, 8, 2048);
     let mut large = Case::new(8, 8, 8, 8192);
     // Warm the arena (worker slots, panel, scatter) outside the counted window.
-    small.run(&exec);
-    large.run(&exec);
+    small.run(&mut exec);
+    large.run(&mut exec);
 
-    let small_allocs = small.run(&exec);
-    let large_allocs = large.run(&exec);
+    let small_allocs = small.run(&mut exec);
+    let large_allocs = large.run(&mut exec);
     assert!(
-        pool.stats().entries >= 1,
+        common::placement::installs(root) >= 1,
         "the batch never left the caller; this is not a parallel case"
     );
     assert!(
@@ -129,8 +129,8 @@ fn parallel_allocations_do_not_grow_with_size_or_batch() {
 
     // A larger item must not change the dispatch bound either.
     let mut bigger = Case::new(120, 120, 120, 8);
-    bigger.run(&exec);
-    let bigger_allocs = bigger.run(&exec);
+    bigger.run(&mut exec);
+    let bigger_allocs = bigger.run(&mut exec);
     assert!(
         bigger_allocs <= DISPATCH_ALLOCS,
         "a larger item allocated {bigger_allocs} times"

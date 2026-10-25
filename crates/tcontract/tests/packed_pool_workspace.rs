@@ -13,8 +13,8 @@ const N: usize = 160;
 const K: usize = 128;
 
 /// One `ij,jk->ik` contraction on `width` workers of the pool.
-fn run(exec: &Exec<'_>, width: usize) {
-    let exec = exec.with_budget(width).unwrap();
+fn run(exec: &mut Exec<'_>, width: usize) {
+    let mut exec = exec.reborrow().limit(width.try_into().unwrap());
     let av: Vec<f64> = (0..M * K).map(|x| (x % 11) as f64 - 5.0).collect();
     let bv: Vec<f64> = (0..K * N).map(|x| (x % 7) as f64 * 0.5).collect();
     let config = PlanConfig {
@@ -24,7 +24,7 @@ fn run(exec: &Exec<'_>, width: usize) {
     let plan = Plan::<f64>::new(&matmul_problem(M, N, K), &config).unwrap();
     let mut out = vec![0.0; M * N];
     plan.execute_into(
-        &exec,
+        &mut exec,
         1.0,
         &StridedView::new(&av, &[M, K], &[1, M as isize], 0).unwrap(),
         &StridedView::new(&bv, &[K, N], &[1, K as isize], 0).unwrap(),
@@ -35,13 +35,10 @@ fn run(exec: &Exec<'_>, width: usize) {
 
 #[test]
 fn one_pool_lends_one_workspace_and_two_pools_never_share() {
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
+    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
     let pool_a = Pool::borrow(&tp);
     let pool_b = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool_a);
+    let mut exec = Exec::new(&pool_a, pool_a.size()).unwrap();
 
     // The context answers with a workspace, and the only one it can answer with
     // is this pool's: the run below is what proves it did.
@@ -58,7 +55,7 @@ fn one_pool_lends_one_workspace_and_two_pools_never_share() {
 
     // Two operations on one pool reuse its storage: it grows on the first and
     // stops growing after that.
-    run(&exec, 3);
+    run(&mut exec, 3);
     let panel = pool_a.workspace().retained_panel_bytes();
     assert!(panel > 0, "the pool's workspace was never used");
     assert_eq!(
@@ -68,7 +65,7 @@ fn one_pool_lends_one_workspace_and_two_pools_never_share() {
     );
     // The panel a shape needs does not depend on which workers took part, so a
     // second run of the same shape must reuse the very same allocation.
-    run(&exec, 3);
+    run(&mut exec, 3);
     assert_eq!(
         pool_a.workspace().retained_panel_bytes(),
         panel,
@@ -77,6 +74,6 @@ fn one_pool_lends_one_workspace_and_two_pools_never_share() {
     // Trimming releases idle storage and leaves the pool usable.
     pool_a.trim_workspace();
     assert!(pool_a.workspace().retained_panel_bytes() <= panel);
-    run(&exec, 3);
+    run(&mut exec, 3);
     assert!(pool_a.workspace().retained_panel_bytes() > 0);
 }

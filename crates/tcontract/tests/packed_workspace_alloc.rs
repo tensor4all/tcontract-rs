@@ -90,9 +90,9 @@ impl Prepared {
         let before = COUNT.load(Relaxed);
         // The plan owns no scratch; a serial caller that wants a steady state
         // with no allocation lends its own provider.
-        let exec = Exec::serial_with_workspace(&self.arena);
+        let mut exec = Exec::serial_with_workspace(&self.arena);
         self.plan
-            .execute_into(&exec, 1.5, &av, &bv, &mut dv)
+            .execute_into(&mut exec, 1.5, &av, &bv, &mut dv)
             .unwrap();
         COUNT.load(Relaxed) - before
     }

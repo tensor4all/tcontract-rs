@@ -1,24 +1,19 @@
 [package]
 name = "tcontract-exec"
-version = "0.4.2"
+version = "0.5.0"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 publish = true
-description = "Explicit execution contexts for the tcontract stack: borrowed Rayon pools, kernel-level entry"
-
-[features]
-# `strided::run_with_exec`: strided-rs kernels on an `Exec`. Parallel
-# strided kernels are the point of the adapter, so it enables them.
-strided = ["dep:strided-basic", "strided-basic/parallel"]
+description = "Execution resources for the tcontract stack: the per-call Exec bundle (strided-exec token, workspace, batch policy) and the Pool wrapper with its scratch arena"
+readme = "README.md"
 
 [dependencies]
-rayon = { workspace = true }
+strided-exec = { workspace = true }
 thiserror = { workspace = true }
-strided-basic = { workspace = true, optional = true }
 
 [dev-dependencies]
-faer = { workspace = true }
+strided-exec = { workspace = true, features = ["ledger"] }
 
 [lints]
 workspace = true
