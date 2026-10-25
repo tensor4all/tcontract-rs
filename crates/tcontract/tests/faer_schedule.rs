@@ -92,6 +92,30 @@ fn one_large_gemm_enters_the_pool_once_and_width_one_never() {
     assert_eq!(installs(single_root), 0);
 }
 
+/// A plain token (a pool exists, the caller is outside it) below the dispatch
+/// gate runs the GEMM on the calling thread: the one rule (`Exec::width_for` over
+/// the serial estimate) gives width one, faer receives `Par::Seq`, and the pool is
+/// never entered. Sizes 32 to 96 have serial estimates under three plain dispatch
+/// costs (9.7 us and 32.7 us at 64 and 96 against 3 x 14 us). Timing is not
+/// asserted; only the entry count and the (serial, hence exact) result.
+#[test]
+fn a_plain_token_below_the_gate_never_enters_the_pool() {
+    for n in [32usize, 48, 64, 96] {
+        let dims = [n, n, n, 1];
+        let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
+        let serial = run(&plan, dims, &a, &b, &mut Exec::serial());
+        let sp = pool(4);
+        let pool = Pool::borrow(&sp);
+        let mut exec = Exec::new(&pool, pool.size()).unwrap();
+        let root = root(&mut exec);
+        for _ in 0..3 {
+            assert_eq!(run(&plan, dims, &a, &b, &mut exec), serial, "n = {n}");
+        }
+        assert_eq!(installs(root), 0, "n = {n}: below the gate, no pool entry");
+        assert_eq!(max_live(root), 0, "n = {n}: no task was spawned");
+    }
+}
+
 /// A token that carries a team hands faer a `Par::Team`: the GEMM runs as team
 /// sections on the reserved members, so it makes no entry into the pool (a plain
 /// token enters once, see the test above), and the result agrees with the serial
