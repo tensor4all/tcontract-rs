@@ -62,7 +62,7 @@ fn build<T: api::Scalar>(problem: &Problem) -> Result<Plan<T>, FfiError> {
 /// the problem is lowered and validated once, and the index classification,
 /// folding and scatter vectors are built — so this is the call to hoist out of a
 /// loop. The plan snapshots the metadata, owns no data pointer and no executor,
-/// and can be executed against different buffers and serial or Rayon executors.
+/// and can be executed against different buffers and serial or pooled executors.
 ///
 /// `handle` must be a live library handle (zero is rejected). `prec` must be
 /// [`TAPP_DEFAULT_PREC`] or the precision of the storage type

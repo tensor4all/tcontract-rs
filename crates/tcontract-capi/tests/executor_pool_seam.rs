@@ -1,4 +1,5 @@
-//! The Rust seam a sibling C-API crate uses to run on the host's pool.
+//! The Rust seam a sibling C-API crate uses to run on the host's pool: it
+//! receives an `Exec` for the executor's pool and budget, never the pool.
 
 use std::ffi::c_void;
 
@@ -23,16 +24,22 @@ fn a_borrowed_executor_lends_its_pool_and_budget() {
     // SAFETY: a live handle.
     let executor = unsafe { executor_from_handle(exec) }.expect("a live executor");
     let observed = executor
-        .with_pool(|policy| policy.map(|(pool, budget)| (pool.current_num_threads(), budget)));
-    assert_eq!(observed, Some((2, 2)));
+        .with(|exec| Ok((executor.threads().0, exec.budget())))
+        .unwrap();
+    assert_eq!(observed, (2, 2));
 
-    // While the call is in flight the pool cannot be released: the seam holds
-    // the same guard the C entries hold.
-    let busy = executor.with_pool(|_| {
-        // SAFETY: a live pool handle.
-        unsafe { tcontract_pool_destroy(pool) }
-    });
+    // While the call is in flight the executor cannot be destroyed: the seam
+    // holds the same guard the C entries hold.
+    let busy = executor
+        .with(|_| {
+            // SAFETY: a live handle, destroyed by nobody else.
+            Ok(unsafe { TAPP_destroy_executor(exec) })
+        })
+        .unwrap();
     assert_eq!(busy, TAPP_ERROR_BUSY);
+    // And the pool cannot be released from under the borrowing executor.
+    // SAFETY: a live pool handle.
+    assert_eq!(unsafe { tcontract_pool_destroy(pool) }, TAPP_ERROR_BUSY);
 
     // SAFETY: a live handle no call uses afterwards.
     assert!(TAPP_check_success(unsafe { TAPP_destroy_executor(exec) }));
@@ -50,7 +57,8 @@ fn a_serial_executor_has_no_pool_to_lend() {
 
     // SAFETY: a live handle.
     let executor = unsafe { executor_from_handle(serial) }.expect("a live executor");
-    assert!(executor.with_pool(|policy| policy.is_none()));
+    assert_eq!(executor.threads(), (0, 1));
+    assert!(executor.with(|exec| Ok(exec.token().is_serial())).unwrap());
 
     // SAFETY: a live handle no call uses afterwards.
     assert!(TAPP_check_success(unsafe { TAPP_destroy_executor(serial) }));

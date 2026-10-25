@@ -55,7 +55,7 @@ fn validate<T: api::Scalar>(plan: &Plan<T>, it: Item, beta_is_zero: bool) -> Res
 /// accepted `it`.
 unsafe fn run<T: api::Scalar>(
     plan: &Plan<T>,
-    exec: &tcontract_exec::Exec<'_>,
+    exec: &mut tcontract_exec::Exec<'_>,
     alpha: T,
     beta: T,
     it: Item,

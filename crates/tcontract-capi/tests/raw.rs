@@ -167,7 +167,7 @@ pub unsafe fn serial_exec() -> isize {
     e
 }
 
-/// The pool's entry counters, or `None` for a serial executor.
-pub fn pool_stats(exec: isize) -> Option<tcontract_exec::PoolStats> {
-    unsafe { tcontract_capi::executor::executor_ref(exec) }.and_then(|e| e.pool_stats())
+/// The width of the executor's pool: zero for a serial executor (including 0).
+pub fn pool_width(exec: isize) -> usize {
+    unsafe { tcontract_capi::executor::executor_ref(exec) }.map_or(0, |e| e.threads().0)
 }

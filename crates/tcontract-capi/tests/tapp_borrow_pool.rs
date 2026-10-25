@@ -1,4 +1,4 @@
-//! A Rayon pool the *host* owns, lent to a TAPP executor through
+//! A worker pool the *host* owns, lent to a TAPP executor through
 //! `tcontract_pool_create_rayon` / `tcontract_tapp_executor_borrow_pool`: work
 //! runs on that pool (not on the global one, and not on a second pool), the
 //! budget is clamped to its width, and destroying it while a borrowed executor
@@ -32,15 +32,21 @@ unsafe fn borrow(pool: tcontract_pool, budget: usize) -> TAPP_executor {
 }
 
 /// The workers of the executor's pool, as `(index, thread id)`.
-unsafe fn workers(exec: TAPP_executor, width: usize) -> HashSet<(usize, std::thread::ThreadId)> {
+unsafe fn workers(
+    exec: TAPP_executor,
+    width: usize,
+) -> HashSet<(usize, std::thread::ThreadId, String)> {
     let seen = Mutex::new(HashSet::new());
     with_executor(exec, |x| {
-        x.broadcast(width, &|t| {
-            seen.lock()
-                .unwrap()
-                .insert((t, std::thread::current().id()));
-        })
-        .unwrap();
+        x.token()
+            .limit(width.try_into().unwrap())
+            .broadcast(|t| {
+                let me = std::thread::current();
+                seen.lock()
+                    .unwrap()
+                    .insert((t, me.id(), me.name().unwrap_or("").to_string()));
+            })
+            .unwrap();
         Ok(())
     })
     .unwrap();
@@ -58,20 +64,19 @@ fn a_borrowed_executor_runs_on_the_hosts_pool() {
         // The effective width is the pool's, on its own workers.
         assert_eq!(on_pool.len(), WIDTH, "not the pool's width: {on_pool:?}");
         assert_eq!(
-            on_pool.iter().map(|(i, _)| *i).collect::<HashSet<_>>(),
+            on_pool.iter().map(|(i, ..)| *i).collect::<HashSet<_>>(),
             (0..WIDTH).collect::<HashSet<_>>()
         );
-        let ids: HashSet<_> = on_pool.iter().map(|(_, id)| *id).collect();
+        let ids: HashSet<_> = on_pool.iter().map(|(_, id, _)| *id).collect();
 
-        // Those are not the global pool's threads: the call neither fell back to
-        // the global Rayon pool nor created a pool of its own.
-        let global = Mutex::new(HashSet::new());
-        rayon::broadcast(|_| {
-            global.lock().unwrap().insert(std::thread::current().id());
-        });
+        // Those are the workers tcontract named when it built the host's pool,
+        // not a pool of anyone else's: the call neither fell back to an ambient
+        // pool nor created a pool of its own.
         assert!(
-            ids.is_disjoint(&global.into_inner().unwrap()),
-            "the borrowed executor ran on the global Rayon pool"
+            on_pool
+                .iter()
+                .all(|(i, _, name)| *name == format!("tcontract-worker-{i}")),
+            "not the host pool's workers: {on_pool:?}"
         );
 
         // A second executor on the same handle is the same pool, not a new one.
@@ -79,7 +84,7 @@ fn a_borrowed_executor_runs_on_the_hosts_pool() {
         assert_eq!(
             workers(e2, WIDTH)
                 .iter()
-                .map(|(_, id)| *id)
+                .map(|(_, id, _)| *id)
                 .collect::<HashSet<_>>(),
             ids,
             "two borrowed executors must share one pool"
@@ -130,13 +135,6 @@ fn a_product_runs_on_the_borrowed_pool() {
             TAPP_SUCCESS
         );
         assert_close(&d, &want, 1e-12);
-        let s = pool_stats(e).unwrap();
-        assert_eq!(
-            s.entries + s.broadcasts,
-            1,
-            "the product entered the borrowed pool exactly once"
-        );
-
         assert_eq!(TAPP_destroy_executor(e), TAPP_SUCCESS);
         assert_eq!(tcontract_pool_destroy(p), TAPP_SUCCESS);
         TAPP_destroy_tensor_product(plan);
@@ -157,22 +155,25 @@ fn the_budget_is_clamped_to_the_pool_width() {
         );
         assert_eq!((width, budget), (4, 4), "borrow_pool did not clamp");
 
-        // Below it: kept, and a wider broadcast is refused, as set_budget
-        // refuses it.
+        // Below it: kept, and a team is the budget, never the pool.
         assert_eq!(tcontract_tapp_executor_set_budget(e, 2), TAPP_SUCCESS);
         assert_eq!(
             tcontract_tapp_executor_get_threads(e, &mut width, &mut budget),
             TAPP_SUCCESS
         );
         assert_eq!((width, budget), (4, 2));
-        assert!(
-            with_executor(e, |x| Ok(x.broadcast(4, &|_| {}).is_err())).unwrap(),
-            "a width above the budget is refused"
-        );
-        assert!(
-            with_executor(e, |x| Ok(x.broadcast(2, &|_| {}).is_ok())).unwrap(),
-            "a width within the budget runs"
-        );
+        let team = |e| {
+            let n = std::sync::atomic::AtomicUsize::new(0);
+            with_executor(e, |x| {
+                x.token()
+                    .broadcast(|_| _ = n.fetch_add(1, Ordering::SeqCst))
+                    .unwrap();
+                Ok(())
+            })
+            .unwrap();
+            n.into_inner()
+        };
+        assert_eq!(team(e), 2, "a broadcast runs exactly the budget");
 
         // A second borrow keeps its own (clamped) budget.
         let e2 = borrow(p, 3);
@@ -201,7 +202,7 @@ fn a_one_worker_pool_is_a_real_pool() {
             TAPP_SUCCESS
         );
         assert_eq!((width, budget), (1, 1));
-        assert!(pool_stats(e).is_some(), "a one-worker pool is not serial");
+        assert_eq!(pool_width(e), 1, "a one-worker pool is not serial");
         assert_eq!(TAPP_destroy_executor(e), TAPP_SUCCESS);
         assert_eq!(tcontract_pool_destroy(p), TAPP_SUCCESS);
     }
@@ -259,7 +260,7 @@ fn destroying_a_pool_with_a_live_executor_is_refused() {
         // a live borrower, so the handle stays live and the caller retries.
         assert_eq!(tcontract_pool_destroy(p), TAPP_ERROR_BUSY);
         with_executor(e, |x| {
-            x.broadcast(2, &|_| {}).unwrap();
+            x.token().broadcast(|_| {}).unwrap();
             Ok(())
         })
         .unwrap();
@@ -272,10 +273,11 @@ fn destroying_a_pool_with_a_live_executor_is_refused() {
         let e = borrow(p, 2);
         let code = AtomicI32::new(i32::MIN);
         with_executor(e, |x| {
-            x.broadcast(2, &|_| {
-                code.store(tcontract_pool_destroy(p), Ordering::Relaxed);
-            })
-            .unwrap();
+            x.token()
+                .broadcast(|_| {
+                    code.store(tcontract_pool_destroy(p), Ordering::Relaxed);
+                })
+                .unwrap();
             Ok(())
         })
         .unwrap();

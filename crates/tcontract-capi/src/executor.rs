@@ -1,30 +1,32 @@
-//! Executors: the `TAPP_executor` of the TAPP C API, serial or owning a Rayon
-//! pool that tcontract creates and joins for C hosts without one, plus the
+//! Executors: the `TAPP_executor` of the TAPP C API, serial or owning a worker
+//! pool that tcontract creates and stops for C hosts without one, plus the
 //! host-owned pool handle a C host shares with it.
 //!
 //! A `TAPP_executor` is an `intptr_t` holding a pointer to an [`Executor`];
 //! zero selects the default serial executor (a tcontract policy, not in the
 //! pinned TAPP headers). `TAPP_create_executor` makes a serial executor;
 //! `tcontract_tapp_executor_create_rayon` makes one that owns a pool;
-//! `TAPP_destroy_executor` stops and joins that pool. Operations of every
+//! `TAPP_destroy_executor` stops that pool and waits for its workers to exit. Operations of every
 //! part of `libtcontract_capi` (TAPP products) take the same executor.
 //!
 //! A `tcontract_pool` is the same discipline for a pool the *host* owns:
-//! `tcontract_pool_create_rayon` builds it, `tcontract_pool_destroy` stops and
-//! joins it, and `tcontract_tapp_executor_borrow_pool` makes an executor that
+//! `tcontract_pool_create_rayon` builds it, `tcontract_pool_destroy` stops it and
+//! waits for its workers, and `tcontract_tapp_executor_borrow_pool` makes an executor that
 //! runs on it instead of creating a second pool. The host keeps the pool alive
 //! for every executor built from it and every call through one.
 //!
-//! Rust hosts do not use this module: they lend their pool to
-//! [`tcontract_exec::Pool::borrow`] and never create a second one.
+//! The pools are [`strided_exec::Pool`]s: the C ABI never takes a pool made
+//! elsewhere. Rust hosts do not use this module: they own a
+//! [`strided_exec::Pool`], lend it to [`tcontract_exec::Pool::borrow`] and never
+//! create a second one.
 #![allow(non_camel_case_types)]
 
+use std::cell::RefCell;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
-use ::tcontract_exec::{ArenaProvider, Exec, Pool, PoolStats};
+use ::tcontract_exec::{ArenaProvider, Exec, Pool};
 
 use crate::abi::null;
 use crate::status::*;
@@ -32,7 +34,7 @@ use crate::status::*;
 /// `TAPP_executor`: `intptr_t`, zero meaning the default serial executor.
 pub type TAPP_executor = isize;
 
-/// `tcontract_pool`: `intptr_t` holding a host-owned Rayon pool from
+/// `tcontract_pool`: `intptr_t` holding a host-owned worker pool from
 /// [`tcontract_pool_create_rayon`]; zero means no pool.
 pub type tcontract_pool = isize;
 
@@ -49,14 +51,15 @@ enum Kind {
     /// No workers, and the storage its calls reuse across a serial session.
     Serial(ArenaProvider),
     Pool {
-        // The executor's `Pool` wrapper: its SPMD gate is wrapper-wide, so
-        // every call through this executor goes through it. One executor per
+        // The executor's `Pool` wrapper: it carries this executor's workspace,
+        // so every call through the executor goes through it. One executor per
         // pool is the intended configuration (create it once, share it across
         // plans); when a host pool is lent to several borrowed executors, each
-        // one keeps its own workspace and gate, so concurrent numerical work
-        // belongs on one of them.
+        // one keeps its own workspace, so concurrent numerical work belongs on
+        // one of them.
         pool: Box<Pool<'static>>,
-        joins: Mutex<Vec<JoinHandle<()>>>,
+        /// Present for an owned pool, whose workers `destroy` waits for.
+        exits: Option<Arc<Exits>>,
         budget: AtomicUsize,
     },
 }
@@ -110,37 +113,31 @@ impl Executor {
         })
     }
 
-    /// A pool of `nthreads >= 2` workers. `hook` runs for each worker's index
-    /// before it is spawned and may refuse (a failed OS spawn); the value it
-    /// returns lives as long as that worker does.
-    fn pooled(
-        nthreads: usize,
-        stack: usize,
-        hook: impl Fn(usize) -> std::io::Result<Box<dyn std::any::Any + Send>> + Send + Sync + 'static,
-    ) -> Result<Box<Self>, FfiError> {
-        let (tp, joins) = build_workers(nthreads, stack, hook)?;
+    /// A pool of `nthreads >= 2` workers that this executor owns.
+    fn pooled(nthreads: usize, stack: usize) -> Result<Box<Self>, FfiError> {
+        let (pool, exits) = Workers::start(nthreads, stack)?;
         Ok(Box::new(Self {
             inflight: AtomicUsize::new(0),
             kind: Kind::Pool {
-                pool: Box::new(Pool::owned(tp)),
-                joins: Mutex::new(joins),
+                pool: Box::new(Pool::shared(pool)),
+                exits: Some(exits),
                 budget: AtomicUsize::new(nthreads),
             },
         }))
     }
 
-    /// An executor that borrows `pool` (a raw pool the host owns) with `budget`
-    /// clamped to its width. It keeps one `Pool` wrapper of that raw pool, so
-    /// the pool's workspace and SPMD gate belong to this executor; the host
-    /// creates one borrowed executor and shares it across plans.
-    fn borrowing(pool: Arc<rayon::ThreadPool>, budget: usize) -> Box<Self> {
+    /// An executor that borrows `pool` (a pool the host owns) with `budget`
+    /// clamped to its width. It keeps one `Pool` wrapper of that pool, so the
+    /// workspace belongs to this executor; the host creates one borrowed
+    /// executor and shares it across plans.
+    fn borrowing(pool: Arc<strided_exec::Pool>, budget: usize) -> Box<Self> {
         let pool = Pool::shared(pool);
         let width = pool.size().max(1);
         Box::new(Self {
             inflight: AtomicUsize::new(0),
             kind: Kind::Pool {
                 pool: Box::new(pool),
-                joins: Mutex::new(Vec::new()),
+                exits: None,
                 budget: AtomicUsize::new(budget.min(width)),
             },
         })
@@ -152,35 +149,18 @@ impl Executor {
     /// # Errors
     ///
     /// Whatever `f` returns.
-    pub fn with<R>(&self, f: impl FnOnce(&Exec<'_>) -> Result<R, FfiError>) -> Result<R, FfiError> {
+    pub fn with<R>(
+        &self,
+        f: impl FnOnce(&mut Exec<'_>) -> Result<R, FfiError>,
+    ) -> Result<R, FfiError> {
         self.inflight.fetch_add(1, Ordering::Acquire);
         let _flight = Flight(&self.inflight);
         match &self.kind {
-            Kind::Serial(workspace) => f(&Exec::serial_with_workspace(workspace)),
+            Kind::Serial(workspace) => f(&mut Exec::serial_with_workspace(workspace)),
             Kind::Pool { pool, budget, .. } => {
-                let exec = Exec::rayon(pool)
-                    .with_budget(budget.load(Ordering::Relaxed))
+                let mut exec = Exec::new(pool, budget.load(Ordering::Relaxed))
                     .map_err(|e| FfiError::new(TCONTRACT_ERR_INVALID_ARGUMENT, e.to_string()))?;
-                f(&exec)
-            }
-        }
-    }
-
-    /// Run `f` with this executor's pool and budget.
-    ///
-    /// This is the seam for a provider that takes a `rayon::ThreadPool` directly
-    /// rather than an [`Exec`] (`tlinalg-capi`): it runs on the host's pool, and
-    /// the in-flight guard keeps `tcontract_pool_destroy` from releasing that
-    /// pool under the call. `None` means a serial executor, which has no pool.
-    pub fn with_pool<R>(&self, f: impl FnOnce(Option<(&rayon::ThreadPool, usize)>) -> R) -> R {
-        self.inflight.fetch_add(1, Ordering::Acquire);
-        let _flight = Flight(&self.inflight);
-        match &self.kind {
-            Kind::Serial(_) => f(None),
-            Kind::Pool { pool, budget, .. } => {
-                let width = pool.size().max(1);
-                let budget = budget.load(Ordering::Relaxed).clamp(1, width);
-                f(Some((pool.rayon_pool(), budget)))
+                f(&mut exec)
             }
         }
     }
@@ -197,29 +177,20 @@ impl Executor {
         }
     }
 
-    /// Entry counters of the owned pool, or `None` for a serial executor
-    /// (which has no pool to enter). For tests and benchmarks.
-    pub fn pool_stats(&self) -> Option<PoolStats> {
-        match &self.kind {
-            Kind::Serial(_) => None,
-            Kind::Pool { pool, .. } => Some(pool.stats()),
-        }
-    }
-
     /// Whether the calling thread is a worker of this executor's pool.
     fn on_own_worker(&self) -> bool {
         match &self.kind {
             Kind::Serial(_) => false,
-            Kind::Pool { pool, .. } => Exec::rayon(pool).is_worker(),
+            Kind::Pool { exits, .. } => exits.as_ref().is_some_and(Exits::on_worker),
         }
     }
 
-    /// Stop and join an owned pool, or release a borrowed one, then free.
-    /// Consumes the box only on success.
+    /// Stop an owned pool and wait for its workers, or release a borrowed one,
+    /// then free. Consumes the box only on success.
     fn destroy(this: *mut Executor) -> Result<(), FfiError> {
         // SAFETY: `this` is a live executor handle (caller contract).
         let e = unsafe { &*this };
-        // A worker cannot join its own pool.
+        // A worker cannot wait for its own exit.
         if e.on_own_worker() {
             return Err(FfiError::new(
                 TCONTRACT_ERR_WOULD_DEADLOCK,
@@ -235,66 +206,57 @@ impl Executor {
         // SAFETY: nothing is in flight and the caller synchronizes new calls
         // with this destruction; the handle was produced by `Box::into_raw`.
         let boxed = unsafe { Box::from_raw(this) };
-        if let Kind::Pool { pool, joins, .. } = boxed.kind {
-            // Take the join handles before shutdown starts, join after: when
-            // this returns no tcontract worker code, TLS teardown included, runs.
-            let handles = joins
-                .into_inner()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            drop(pool.into_owned()); // starts worker shutdown
-            for h in handles {
-                let _ = h.join();
+        if let Kind::Pool { pool, exits, .. } = boxed.kind {
+            drop(pool); // starts worker shutdown
+            if let Some(exits) = exits {
+                exits.wait();
             }
         }
         Ok(())
     }
 }
 
-/// A host-owned Rayon pool behind a `tcontract_pool` (opaque in C), built by
+/// A host-owned worker pool behind a `tcontract_pool` (opaque in C), built by
 /// [`tcontract_pool_create_rayon`].
 ///
-/// The handle holds the only `Arc<rayon::ThreadPool>` of a dedicated pool;
+/// The handle holds the only `Arc<strided_exec::Pool>` of a dedicated pool;
 /// every borrowed executor holds one clone, so `Arc::strong_count` is one plus
 /// the number of live borrowers and [`PoolHandle::destroy`] can refuse while
-/// one is live. The join handles are the OS threads the custom `spawn_handler`
-/// created: with that handler Rayon keeps no `JoinHandle` of its own, so
-/// dropping the `ThreadPool` signals shutdown but joins nothing. They are set
-/// once at creation and only read at destruction, hence a plain `Vec`.
+/// one is live. `exits` counts the workers' exits: dropping the pool signals
+/// shutdown but waits for nothing.
 struct PoolHandle {
-    pool: Arc<rayon::ThreadPool>,
-    joins: Vec<JoinHandle<()>>,
+    pool: Arc<strided_exec::Pool>,
+    exits: Arc<Exits>,
 }
 
 impl std::fmt::Debug for PoolHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PoolHandle")
-            .field("size", &self.pool.current_num_threads())
+            .field("size", &self.pool.width())
             .field("borrowers", &(Arc::strong_count(&self.pool) - 1))
             .finish()
     }
 }
 
 impl PoolHandle {
-    /// Build the pool: workers are spawned through the same handler as
+    /// Build the pool: workers are started exactly as for
     /// [`tcontract_tapp_executor_create_rayon`], so worker names and `stack`
     /// are identical.
     fn create(nthreads: usize, stack: usize) -> Result<Box<Self>, FfiError> {
-        let (tp, joins) = build_workers(nthreads, stack, |_| Ok(Box::new(())))?;
-        Ok(Box::new(Self {
-            pool: Arc::new(tp),
-            joins,
-        }))
+        let (pool, exits) = Workers::start(nthreads, stack)?;
+        Ok(Box::new(Self { pool, exits }))
     }
 
-    /// Stop, join and free the pool. Consumes the box only on success.
+    /// Stop the pool, wait for its workers and free the handle. Consumes the
+    /// box only on success.
     fn destroy(handle: tcontract_pool) -> Result<(), FfiError> {
         if handle == 0 {
             return Err(null("pool"));
         }
         // SAFETY: `handle` is a live pool handle (caller contract).
         let h = unsafe { &*(handle as *const Self) };
-        // A worker cannot join its own pool.
-        if h.pool.current_thread_index().is_some() {
+        // A worker cannot wait for its own exit.
+        if Exits::on_worker(&h.exits) {
             return Err(FfiError::new(
                 TCONTRACT_ERR_WOULD_DEADLOCK,
                 "pool destroyed from one of its own workers",
@@ -313,59 +275,85 @@ impl PoolHandle {
         // destruction with new borrows; the handle was produced by
         // `Box::into_raw`.
         let boxed = unsafe { Box::from_raw(handle as *mut Self) };
-        let Self { pool, joins } = *boxed;
+        let Self { pool, exits } = *boxed;
         drop(pool); // the last Arc: starts worker shutdown
-        for h in joins {
-            let _ = h.join();
-        }
+        exits.wait();
         Ok(())
     }
 }
 
-/// Spawn `nthreads` Rayon workers on `stack`-sized threads, `hook(i)` before
-/// worker `i` starts. Returns the pool and the join handles of the OS threads,
-/// which the caller needs because a custom `spawn_handler` leaves Rayon without
-/// any of its own. On failure every worker already started is stopped and
-/// joined before the error is returned, thread-exit work included.
-fn build_workers(
-    nthreads: usize,
-    stack: usize,
-    hook: impl Fn(usize) -> std::io::Result<Box<dyn std::any::Any + Send>> + Send + Sync + 'static,
-) -> Result<(rayon::ThreadPool, Vec<JoinHandle<()>>), FfiError> {
-    let joins = Arc::new(Mutex::new(Vec::new()));
-    let j2 = joins.clone();
-    let built = rayon::ThreadPoolBuilder::new()
-        .num_threads(nthreads)
-        .spawn_handler(move |t| {
-            let held = hook(t.index())?;
-            let h = std::thread::Builder::new()
-                .name(format!("tcontract-worker-{}", t.index()))
-                .stack_size(stack)
-                .spawn(move || {
-                    let _held = held;
-                    t.run()
-                })?;
-            j2.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(h);
-            Ok(())
-        })
-        .build();
-    let mut handles = std::mem::take(
-        &mut *joins
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    );
-    match built {
-        Ok(tp) => Ok((tp, handles)),
-        Err(e) => {
-            // Rayon terminated the workers it had started; wait for them
-            // (and their TLS teardown) so a failed create leaves no thread.
-            for h in handles.drain(..) {
-                let _ = h.join();
-            }
-            Err(FfiError::new(TCONTRACT_ERR_INTERNAL, e.to_string()))
+/// How many workers of one pool have exited, so that a destroy can return only
+/// when none of tcontract's worker code is left to run (a C host may unload the
+/// library right after). The count is driven by a thread-local guard each
+/// worker installs when it starts, which drops when the thread exits.
+struct Exits {
+    expected: usize,
+    exited: Mutex<usize>,
+    changed: Condvar,
+}
+
+/// A worker's membership in a pool; dropped by the thread's TLS teardown.
+struct Member(Arc<Exits>);
+
+thread_local! {
+    static MEMBER: RefCell<Option<Member>> = const { RefCell::new(None) };
+}
+
+impl Drop for Member {
+    fn drop(&mut self) {
+        *self.0.exited.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        self.0.changed.notify_all();
+    }
+}
+
+impl Exits {
+    /// Whether the calling thread is a worker of the pool counted by `this`.
+    fn on_worker(this: &Arc<Self>) -> bool {
+        MEMBER
+            .try_with(|m| m.borrow().as_ref().is_some_and(|m| Arc::ptr_eq(&m.0, this)))
+            .unwrap_or(false)
+    }
+
+    /// Block until every expected worker has exited.
+    fn wait(&self) {
+        let mut exited = self.exited.lock().unwrap_or_else(PoisonError::into_inner);
+        while *exited < self.expected {
+            exited = self
+                .changed
+                .wait(exited)
+                .unwrap_or_else(PoisonError::into_inner);
         }
+    }
+}
+
+/// Starts a pool of workers named `tcontract-worker-<i>` on `stack`-sized threads.
+struct Workers;
+
+impl Workers {
+    /// Build the pool and the exit counter its workers report to.
+    fn start(
+        nthreads: usize,
+        stack: usize,
+    ) -> Result<(Arc<strided_exec::Pool>, Arc<Exits>), FfiError> {
+        let exits = Arc::new(Exits {
+            expected: nthreads,
+            exited: Mutex::new(0),
+            changed: Condvar::new(),
+        });
+        let on_start = exits.clone();
+        let pool = strided_exec::Pool::builder()
+            .threads(nthreads)
+            .stack_size(stack)
+            .thread_name(|i| format!("tcontract-worker-{i}"))
+            .on_start(move |_| {
+                let member = Member(on_start.clone());
+                // INVARIANT: the hook runs once per worker, on its own thread,
+                // and nothing else borrows the cell.
+                let _ = MEMBER.try_with(|m| *m.borrow_mut() = Some(member));
+            })
+            .build()
+            .map_err(|e| FfiError::new(TCONTRACT_ERR_INTERNAL, e.to_string()))?;
+        Ok((Arc::new(pool), exits))
     }
 }
 
@@ -390,12 +378,12 @@ unsafe fn resolve<'a>(e: TAPP_executor) -> Option<&'a Executor> {
 /// `exec` is zero or a live handle, not destroyed during the call.
 pub unsafe fn with_executor<R>(
     exec: TAPP_executor,
-    f: impl FnOnce(&Exec<'_>) -> Result<R, FfiError>,
+    f: impl FnOnce(&mut Exec<'_>) -> Result<R, FfiError>,
 ) -> Result<R, FfiError> {
     // SAFETY: forwarded contract.
     match unsafe { resolve(exec) } {
         Some(e) => e.with(f),
-        None => f(&Exec::serial()),
+        None => f(&mut Exec::serial()),
     }
 }
 
@@ -501,7 +489,7 @@ pub unsafe extern "C" fn TAPP_destroy_executor(exec: TAPP_executor) -> c_int {
     })
 }
 
-/// Create an executor that owns a private Rayon pool of `nthreads` workers,
+/// Create an executor that owns a private worker pool of `nthreads` workers,
 /// reusable across plans and shared by every part of the library.
 /// `nthreads == 0` is an error; `nthreads == 1` is a serial executor with no
 /// workers. The width is never inferred from the environment. `opts` may be
@@ -524,13 +512,13 @@ pub unsafe extern "C" fn tcontract_tapp_executor_create_rayon(
         let e = if nthreads == 1 {
             Executor::serial()
         } else {
-            Executor::pooled(nthreads, stack, |_| Ok(Box::new(())))?
+            Executor::pooled(nthreads, stack)?
         };
         out_handle(out, e)
     })
 }
 
-/// Create a Rayon pool the *host* owns and shares: an opaque handle that
+/// Create a worker pool the *host* owns and shares: an opaque handle that
 /// [`tcontract_tapp_executor_borrow_pool`] can lend to any number of executors,
 /// so a C host that manages its own threads keeps one pool instead of two.
 /// `nthreads == 0` is an error. Unlike
@@ -540,9 +528,9 @@ pub unsafe extern "C" fn tcontract_tapp_executor_create_rayon(
 /// [`tcontract_tapp_executor_create_rayon`]. Free the handle with
 /// [`tcontract_pool_destroy`].
 ///
-/// Each borrowed executor keeps its own `Pool` wrapper of the shared raw pool
-/// (its own workspace and SPMD gate), so one executor shared across plans is
-/// what keeps `tcontract-exec`'s one-wrapper-per-raw-pool rule.
+/// Each borrowed executor keeps its own `Pool` wrapper of the shared pool
+/// (its own workspace), so one executor shared across plans is
+/// what keeps `tcontract-exec`'s one-wrapper-per-pool rule.
 ///
 /// # Safety
 ///
@@ -590,8 +578,8 @@ pub unsafe extern "C" fn tcontract_pool_destroy(pool: tcontract_pool) -> c_int {
 /// Destroy the executor with [`TAPP_destroy_executor`], which releases the
 /// borrow and never stops the borrowed pool. The pool must outlive the executor
 /// and every call through it. Build one executor per pool and share it across
-/// plans; a second executor on the same pool gets its own workspace and SPMD
-/// gate, so concurrent numerical work belongs on one of them.
+/// plans; a second executor on the same pool gets its own workspace, so concurrent
+/// numerical work belongs on one of them.
 ///
 /// # Safety
 ///
@@ -684,59 +672,45 @@ pub unsafe extern "C" fn tcontract_tapp_executor_get_threads(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-
     use super::*;
 
-    /// A worker's exit takes this long to finish; `Executor::pooled` must
-    /// not return before it did, also when it fails.
-    struct SlowExit(Arc<AtomicUsize>);
-
-    impl Drop for SlowExit {
-        fn drop(&mut self) {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            self.0.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-
-    /// A spawn failure at worker `at` joins the workers already started,
-    /// including their thread-exit work.
+    /// `destroy` returns only after every worker of an owned pool has exited,
+    /// thread-exit work included.
     #[test]
-    fn failed_creation_reclaims_started_workers() {
-        for at in [1usize, 2, 3] {
-            let alive = Arc::new(AtomicUsize::new(0));
-            let a2 = alive.clone();
-            let err = Executor::pooled(4, 1 << 20, move |i| {
-                if i == at {
-                    return Err(std::io::Error::other("injected spawn failure"));
-                }
-                a2.fetch_add(1, Ordering::SeqCst);
-                Ok(Box::new(SlowExit(a2.clone())))
-            })
-            .unwrap_err();
-            assert_eq!(err.status, TCONTRACT_ERR_INTERNAL);
-            assert_eq!(
-                alive.load(Ordering::SeqCst),
-                0,
-                "creation failed at worker {at} but returned before the started workers finished"
-            );
-        }
-    }
-
-    /// A successful creation does not wait for or touch the hook values.
-    #[test]
-    fn successful_creation_keeps_workers_until_destroy() {
-        let alive = Arc::new(AtomicUsize::new(0));
-        let a2 = alive.clone();
-        let e = Executor::pooled(3, 1 << 20, move |_| {
-            a2.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::new(SlowExit(a2.clone())))
-        })
-        .unwrap();
-        assert_eq!(alive.load(Ordering::SeqCst), 3);
+    fn destroy_waits_for_every_worker_to_exit() {
+        let e = Executor::pooled(3, 1 << 20).unwrap();
         assert_eq!(e.threads(), (3, 3));
+        let exits = match &e.kind {
+            Kind::Pool { exits, .. } => exits.clone().expect("an owned pool counts exits"),
+            Kind::Serial(_) => unreachable!("pooled executor"),
+        };
         Executor::destroy(Box::into_raw(e)).unwrap();
-        assert_eq!(alive.load(Ordering::SeqCst), 0, "destroy returned early");
+        assert_eq!(*exits.exited.lock().unwrap(), 3, "destroy returned early");
+    }
+
+    /// A worker is recognised as a member of its own pool and of no other.
+    #[test]
+    fn a_worker_is_a_member_of_its_own_pool_only() {
+        let a = Executor::pooled(2, 1 << 20).unwrap();
+        let b = Executor::pooled(2, 1 << 20).unwrap();
+        assert!(!a.on_own_worker() && !b.on_own_worker());
+        let pool_a = match &a.kind {
+            Kind::Pool { pool, .. } => pool,
+            Kind::Serial(_) => unreachable!("pooled executor"),
+        };
+        let seen = std::sync::Mutex::new(Vec::new());
+        let mut exec = Exec::new(pool_a, 2).unwrap();
+        exec.token().fork(2, |_, _| {
+            seen.lock()
+                .unwrap()
+                .push((a.on_own_worker(), b.on_own_worker()));
+        });
+        // Never a member of the other pool; at least one job ran on a worker of
+        // this one (the caller may take the other).
+        let seen = seen.into_inner().unwrap();
+        assert!(seen.iter().all(|&(_, in_b)| !in_b));
+        assert!(seen.iter().any(|&(in_a, _)| in_a));
+        Executor::destroy(Box::into_raw(a)).unwrap();
+        Executor::destroy(Box::into_raw(b)).unwrap();
     }
 }

@@ -19,12 +19,13 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 num-complex = { workspace = true }
-rayon = { workspace = true }
+strided-exec = { workspace = true }
 strided-view = { workspace = true }
 tcontract = { workspace = true }
 tcontract-exec = { workspace = true }
 
 [dev-dependencies]
+strided-exec = { workspace = true, features = ["ledger"] }
 tcontract-kernel = { workspace = true }
 tcontract-testkit = { workspace = true }
 

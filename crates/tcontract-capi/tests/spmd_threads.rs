@@ -1,4 +1,5 @@
-//! Nested and concurrent SPMD on one executor: no deadlock, no extra threads.
+//! Nested and concurrent co-scheduled teams on one executor: no deadlock, no
+//! extra threads.
 //! Alone in its test binary so the process-wide thread count is meaningful.
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -27,13 +28,13 @@ fn nested_and_concurrent_spmd_neither_deadlock_nor_add_threads() {
         // starting up.
         unsafe {
             with_executor(ex, |x| {
-                x.broadcast(4, &|_| {}).unwrap();
+                x.token().broadcast(|_| {}).unwrap();
                 Ok(())
             })
         }
         .unwrap();
         let before = live();
-        // Concurrent broadcasts from several callers serialize on the pool.
+        // Concurrent broadcasts from several callers do not interleave.
         let hits = Arc::new(AtomicUsize::new(0));
         let callers: Vec<_> = (0..3)
             .map(|_| {
@@ -42,10 +43,11 @@ fn nested_and_concurrent_spmd_neither_deadlock_nor_add_threads() {
                     for _ in 0..20 {
                         unsafe {
                             with_executor(ex, |x| {
-                                x.broadcast(4, &|_| {
-                                    hits.fetch_add(1, Ordering::Relaxed);
-                                })
-                                .unwrap();
+                                x.token()
+                                    .broadcast(|_| {
+                                        hits.fetch_add(1, Ordering::Relaxed);
+                                    })
+                                    .unwrap();
                                 Ok(())
                             })
                         }
@@ -57,18 +59,29 @@ fn nested_and_concurrent_spmd_neither_deadlock_nor_add_threads() {
         for c in callers {
             c.join().unwrap();
         }
-        // Nested: a broadcast from a worker is declined, never queued.
+        // Nested: a broadcast from a worker is refused, never queued.
         let nested = unsafe {
             with_executor(ex, |x| {
-                Ok(x.install(2, |_| {
-                    with_executor(ex, |y| Ok(y.broadcast(2, &|_| {}).is_err())).unwrap()
+                Ok(x.token().external(|_| {
+                    with_executor(ex, |y| Ok(y.token().broadcast(|_| {}).is_err())).unwrap()
                 }))
             })
         }
         .unwrap();
-        // Budget smaller than the requested width is refused.
+        // A broadcast runs exactly the budget: a smaller budget is a smaller team.
         unsafe { tcontract_tapp_executor_set_budget(ex, 2) };
-        let over = unsafe { with_executor(ex, |x| Ok(x.broadcast(4, &|_| {}).is_err())) }.unwrap();
+        let team = Arc::new(AtomicUsize::new(0));
+        let t2 = team.clone();
+        unsafe {
+            with_executor(ex, |x| {
+                x.token()
+                    .broadcast(|_| _ = t2.fetch_add(1, Ordering::Relaxed))
+                    .unwrap();
+                Ok(())
+            })
+        }
+        .unwrap();
+        let over = team.load(Ordering::Relaxed) == 2;
         // The three callers are joined, so only the pool's workers remain. A
         // joined thread can stay in /proc/self/task for a moment after `join`
         // returns, so wait (bounded) for the count to settle; a thread that was
@@ -88,8 +101,8 @@ fn nested_and_concurrent_spmd_neither_deadlock_nor_add_threads() {
         .recv_timeout(Duration::from_secs(60))
         .expect("nested/concurrent SPMD did not finish: deadlock");
     assert_eq!(hits, 3 * 20 * 4);
-    assert!(nested, "a nested broadcast must be declined");
-    assert!(over, "a width above the budget must be declined");
+    assert!(nested, "a nested broadcast must be refused");
+    assert!(over, "a smaller budget must be a smaller team");
     assert_eq!(before, after, "no thread was added");
     assert_eq!(unsafe { TAPP_destroy_executor(e) }, TCONTRACT_OK);
 }
