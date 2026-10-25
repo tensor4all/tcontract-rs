@@ -387,19 +387,16 @@ fn reserve_keeps_component_wise_maxima() {
 /// `prepare_for` warms one worker slot per worker the executor may use.
 #[test]
 fn prepare_for_warms_every_worker_slot() {
-    let tp = rayon::ThreadPoolBuilder::new()
-        .num_threads(2)
-        .build()
-        .unwrap();
-    let pool = Pool::borrow(&tp);
-    let exec = Exec::rayon(&pool).with_budget(2).unwrap();
+    let sp = strided_exec::Pool::builder().threads(2).build().unwrap();
+    let pool = Pool::borrow(&sp);
+    let mut exec = Exec::new(&pool, 2).unwrap();
     let req = WorkspaceReq {
         a_bytes: 4096,
         ..Default::default()
     };
     let mut ws = Workspace::with_req(&req);
     assert_eq!(ws.slots(), 1);
-    ws.prepare_for(&exec);
+    ws.prepare_for(&mut exec);
     assert_eq!(ws.slots(), 2, "both workers must be warmed");
     assert!(
         ws.retained_bytes() >= 2 * req.a_bytes,
@@ -407,6 +404,6 @@ fn prepare_for_warms_every_worker_slot() {
         ws.retained_bytes()
     );
     let before = ws.retained_bytes();
-    ws.prepare_for(&exec);
+    ws.prepare_for(&mut exec);
     assert_eq!(ws.retained_bytes(), before, "a second prepare is a no-op");
 }

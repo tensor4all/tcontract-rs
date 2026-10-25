@@ -1,30 +1,11 @@
 /// Errors from building or using an [`Exec`](crate::Exec).
-#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ExecError {
-    /// A thread budget of zero was requested.
-    #[error("thread budget must be at least 1")]
-    ZeroBudget,
-    /// An SPMD width larger than the pool was requested.
-    #[error("SPMD width {width} exceeds pool size {pool}")]
-    WidthExceedsPool {
-        /// Requested width.
-        width: usize,
-        /// Workers in the pool.
-        pool: usize,
-    },
-    /// An SPMD width larger than the context's thread budget was requested.
-    #[error("SPMD width {width} exceeds thread budget {budget}")]
-    WidthExceedsBudget {
-        /// Requested width.
-        width: usize,
-        /// The context's budget.
-        budget: usize,
-    },
-    /// Co-scheduled execution cannot be guaranteed here (serial context, or
-    /// the caller is already a worker of the pool).
-    #[error("co-scheduled execution unavailable in this context")]
-    Unavailable,
+    /// The placement layer refused a token or a pool (for example a thread
+    /// budget of zero).
+    #[error("placement: {0}")]
+    Placement(#[from] strided_exec::Error),
     /// A forced batch strategy is unavailable on this route: for example a
     /// [`BatchStrategy::Split`](crate::batch::BatchStrategy::Split) that asks for
     /// both lanes and item threads on a route that runs each item serially inside
