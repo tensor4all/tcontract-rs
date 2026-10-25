@@ -50,12 +50,12 @@ pub fn parse_threads(args: &[String]) -> Result<usize, String> {
 }
 
 /// A benchmark's thread configuration: a serial `Exec` that lends the
-/// caller-owned arena for one thread, a bounded pool borrowed through `Exec`
-/// otherwise.
+/// caller-owned arena for one thread, a `strided_exec::Pool` borrowed through
+/// `Exec` otherwise.
 pub struct BenchThreads {
     /// Requested thread count.
     pub requested: usize,
-    pool: Option<rayon::ThreadPool>,
+    pool: Option<strided_exec::Pool>,
     /// The plan owns no scratch any more, so the 1T rows own exactly the
     /// steady-state storage they measure and no other row can see it.
     arena: ArenaProvider,
@@ -77,14 +77,10 @@ impl BenchThreads {
                 "{name}={value}: this variable was removed in tcontract-rs#37 and is not read; use the benchmark's flags"
             ));
         }
-        // Accidental ambient Rayon use runs on a one-thread global pool, so it
-        // cannot inflate a row; tcontract paths use the borrowed pool below.
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(1)
-            .build_global();
+        // tcontract paths run on this pool and start no ambient one.
         let pool = (requested > 1).then(|| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(requested)
+            strided_exec::Pool::builder()
+                .threads(requested)
                 .build()
                 .unwrap_or_else(|e| fail(&format!("pool: {e}")))
         });
@@ -96,14 +92,15 @@ impl BenchThreads {
     }
 
     /// Run `f` with the configured context and, for multi-thread runs, the
-    /// borrowed pool (for entry counters).
-    pub fn with_exec<R>(&self, f: impl FnOnce(&Exec<'_>, Option<&Pool<'_>>) -> R) -> R {
+    /// borrowed pool (for its size).
+    pub fn with_exec<R>(&self, f: impl FnOnce(&mut Exec<'_>, Option<&Pool<'_>>) -> R) -> R {
         match &self.pool {
-            None => f(&Exec::serial_with_workspace(&self.arena), None),
-            Some(tp) => {
-                let pool = Pool::borrow(tp);
-                let exec = Exec::rayon(&pool);
-                f(&exec, Some(&pool))
+            None => f(&mut Exec::serial_with_workspace(&self.arena), None),
+            Some(sp) => {
+                let pool = Pool::borrow(sp);
+                let mut exec =
+                    Exec::new(&pool, pool.size()).unwrap_or_else(|e| fail(&format!("budget: {e}")));
+                f(&mut exec, Some(&pool))
             }
         }
     }

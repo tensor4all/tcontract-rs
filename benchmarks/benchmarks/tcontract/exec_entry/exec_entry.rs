@@ -2,8 +2,10 @@
 //! driven through `Exec`, at an enforced thread count.
 //!
 //! Usage: `exec_entry --threads N`. CSV `case,variant,threads,median_ns,samples`
-//! plus `# stats` lines with pool entry counters. Environment: `BENCH_RUNS`
-//! (default 200), `BENCH_WARMUP` (default 20), `BENCH_FILTER`.
+//! plus, when built with the `ledger` feature (off for timing runs, because the
+//! ledger adds counters to the hot path), `# stats` lines with the pool entries
+//! of each case. Environment: `BENCH_RUNS` (default 200), `BENCH_WARMUP`
+//! (default 20), `BENCH_FILTER`.
 use std::hint::black_box;
 
 use strided_basic::{map_into, StridedArray};
@@ -12,8 +14,7 @@ use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
 use tcontract::{Partition, Plan, PlanConfig};
 use tcontract_bench::threads::BenchThreads;
 use tcontract_bench::timing::{env_usize, median_ns};
-use tcontract_exec::strided::run_with_exec;
-use tcontract_exec::{Exec, Pool};
+use tcontract_exec::Exec;
 
 struct Cfg {
     threads: usize,
@@ -31,54 +32,65 @@ impl Cfg {
     }
 }
 
-fn stats(case: &str, pool: Option<&Pool<'_>>) {
-    if let Some(p) = pool {
-        let s = p.stats();
-        println!(
-            "# stats {case}: entries={} broadcasts={} inline={}",
-            s.entries, s.broadcasts, s.inline_runs
-        );
-        p.reset_stats();
+/// The entries of `root` into the pool since the last call, per case.
+#[cfg(feature = "ledger")]
+fn stats(case: &str, exec: &mut Exec<'_>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SEEN: AtomicUsize = AtomicUsize::new(0);
+    if let Some(root) = exec.token().ledger_root() {
+        let installs = strided_exec::ledger::installs(root);
+        let before = SEEN.swap(installs, Ordering::Relaxed);
+        println!("# stats {case}: installs={}", installs - before);
     }
 }
 
-fn entry_cases(cfg: &Cfg, exec: &Exec<'_>, pool: Option<&Pool<'_>>) {
+#[cfg(not(feature = "ledger"))]
+fn stats(_case: &str, _exec: &mut Exec<'_>) {}
+
+fn entry_cases(cfg: &Cfg, exec: &mut Exec<'_>) {
+    let limit = |k: usize| k.try_into().expect("a positive width");
     for k in [1usize, 2, 4] {
-        if k > cfg.threads || !cfg.want("install_empty") {
+        if k > cfg.threads || !cfg.want("external_empty") {
             continue;
         }
         let ns = median_ns(cfg.warmup, cfg.runs, || {
-            black_box(exec.install(k, |par| black_box(par.threads())));
+            black_box(
+                exec.token()
+                    .limit(limit(k))
+                    .external(|w| black_box(w.get())),
+            );
         });
-        cfg.row("install_empty", &format!("k{k}"), ns, cfg.runs);
-        stats("install_empty", pool);
+        cfg.row("external_empty", &format!("k{k}"), ns, cfg.runs);
+        stats("external_empty", exec);
     }
     for k in [2usize, 4] {
-        if k > cfg.threads || !cfg.want("partition_empty") {
+        if k > cfg.threads || !cfg.want("fork_empty") {
             continue;
         }
         let ns = median_ns(cfg.warmup, cfg.runs, || {
-            exec.for_each_partition(k, &|i| {
+            exec.token().limit(limit(k)).fork(k, |i, _| {
                 black_box(i);
             })
         });
-        cfg.row("partition_empty", &format!("k{k}"), ns, cfg.runs);
-        stats("partition_empty", pool);
+        cfg.row("fork_empty", &format!("k{k}"), ns, cfg.runs);
+        stats("fork_empty", exec);
     }
     if cfg.threads > 1 && cfg.want("broadcast_empty") {
         let w = cfg.threads;
         let ns = median_ns(cfg.warmup, cfg.runs, || {
-            exec.broadcast(w, &|t| {
-                black_box(t);
-            })
-            .expect("broadcast");
+            exec.token()
+                .limit(limit(w))
+                .broadcast(|t| {
+                    black_box(t);
+                })
+                .expect("broadcast");
         });
         cfg.row("broadcast_empty", &format!("w{w}"), ns, cfg.runs);
-        stats("broadcast_empty", pool);
+        stats("broadcast_empty", exec);
     }
 }
 
-fn strided_cases(cfg: &Cfg, exec: &Exec<'_>, pool: Option<&Pool<'_>>) {
+fn strided_cases(cfg: &Cfg, exec: &mut Exec<'_>) {
     if !cfg.want("strided_map_f64") {
         return;
     }
@@ -96,17 +108,15 @@ fn strided_cases(cfg: &Cfg, exec: &Exec<'_>, pool: Option<&Pool<'_>>) {
             cfg.runs
         };
         let ns = median_ns(cfg.warmup.min(5), runs, || {
-            run_with_exec(exec, n, |_| {
-                map_into(&mut dst.view_mut(), &src_t, |x| x * 1.5 + 1.0).expect("map")
-            });
+            map_into(&mut dst.view_mut(), &src_t, |x| x * 1.5 + 1.0, exec.token()).expect("map");
         });
         black_box(&dst);
         cfg.row("strided_map_f64", &format!("transpose_2^{log2}"), ns, runs);
-        stats("strided_map_f64", pool);
+        stats("strided_map_f64", exec);
     }
 }
 
-fn gemm_case(cfg: &Cfg, exec: &Exec<'_>, pool: Option<&Pool<'_>>) {
+fn gemm_case(cfg: &Cfg, exec: &mut Exec<'_>) {
     if !cfg.want("packed_gemm_f64") {
         return;
     }
@@ -140,7 +150,7 @@ fn gemm_case(cfg: &Cfg, exec: &Exec<'_>, pool: Option<&Pool<'_>>) {
     let (av, bv) = (view(&a, n), view(&b, n));
     let mut reference = vec![0.0; n * n];
     plan.execute_into(
-        &Exec::serial(),
+        &mut Exec::serial(),
         1.0,
         &av,
         &bv,
@@ -170,7 +180,7 @@ fn gemm_case(cfg: &Cfg, exec: &Exec<'_>, pool: Option<&Pool<'_>>) {
         if max_diff == 0.0 { "ok" } else { "MISMATCH" }
     );
     cfg.row("packed_gemm_f64", "512^3", ns, runs);
-    stats("packed_gemm_f64", pool);
+    stats("packed_gemm_f64", exec);
 }
 
 fn main() {
@@ -183,9 +193,9 @@ fn main() {
         filter: std::env::var("BENCH_FILTER").ok().filter(|f| !f.is_empty()),
     };
     println!("case,variant,threads,median_ns,samples");
-    threads.with_exec(|exec, pool| {
-        entry_cases(&cfg, exec, pool);
-        strided_cases(&cfg, exec, pool);
-        gemm_case(&cfg, exec, pool);
+    threads.with_exec(|exec, _| {
+        entry_cases(&cfg, exec);
+        strided_cases(&cfg, exec);
+        gemm_case(&cfg, exec);
     });
 }
