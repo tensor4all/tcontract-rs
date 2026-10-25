@@ -49,13 +49,13 @@ rand_distr = "0.4"
 thiserror = "1.0"
 tinyvec = { version = "1", default-features = false, features = ["alloc"] }
 
-# Coordinated release: delete this section once threadteam 0.1.0 and strided 0.8.0 are on crates.io.
+# Unpublished upstreams: delete this section once threadteam 0.1.0 and strided 0.8.0 are on crates.io.
 [patch.crates-io]
 threadteam = { git = "https://github.com/tensor4all/threadteam-rs", rev = "97404b580951aa9d89910a739618ce044e988b16" }
-strided-traits = { git = "https://github.com/tensor4all/strided-rs", rev = "bc42a17ccbca47c894e0b9eb253ce323458c5828" }
-strided-view = { git = "https://github.com/tensor4all/strided-rs", rev = "bc42a17ccbca47c894e0b9eb253ce323458c5828" }
-strided-perm = { git = "https://github.com/tensor4all/strided-rs", rev = "bc42a17ccbca47c894e0b9eb253ce323458c5828" }
-strided-basic = { git = "https://github.com/tensor4all/strided-rs", rev = "bc42a17ccbca47c894e0b9eb253ce323458c5828" }
+strided-traits = { git = "https://github.com/tensor4all/strided-rs", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
+strided-view = { git = "https://github.com/tensor4all/strided-rs", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
+strided-perm = { git = "https://github.com/tensor4all/strided-rs", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
+strided-basic = { git = "https://github.com/tensor4all/strided-rs", rev = "d24474d89dd3c6ca8ebdc16a5638289787376575" }
 
 # Workspace tests instantiate large generic kernels in many executables.
 # Omitting debuginfo keeps those artifacts small while preserving debug
