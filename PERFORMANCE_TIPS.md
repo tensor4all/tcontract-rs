@@ -400,12 +400,12 @@ Audit hints:
 ## CPU Threading Contract
 
 - There is no ambient pool and tcontract starts no task of its own. Placement
-  belongs to `strided-exec`: a host owns a `strided_exec::Pool`, and every
+  belongs to `threadteam`: a host owns a `threadteam::Pool`, and every
   operation that may run in parallel takes a `tcontract_exec::Exec`, the bundle
-  of one `strided_exec::Exec` token (a pool reference plus a budget, neither
+  of one `threadteam::Exec` token (a pool reference plus a budget, neither
   `Clone` nor `Copy`), an optional workspace and the batch policy. `Exec::new`
   is the only place a budget is clamped. The global Rayon pool is never used
-  implicitly (`strided_exec::ledger::global_pool_unstarted()` is asserted in a
+  implicitly (`threadteam::ledger::global_pool_unstarted()` is asserted in a
   test binary of its own), and no tcontract code calls
   `rayon::current_num_threads()`, builds a `ThreadPoolBuilder`, or names a Rayon
   type: `cargo deny check bans` and `cargo public-api -p tcontract-exec` check it.

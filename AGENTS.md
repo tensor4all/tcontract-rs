@@ -34,8 +34,8 @@ This is a research repository, not a production tensor-algebra library. Read `RE
   with the `tcontract-benchmark` skill.
 - strided-rs is an external dependency from crates.io, one release train across
   its crates (`Cargo.toml` carries the requirement); consumers resolve the same
-  release to share view types and the `strided_exec::Exec` token. Only
-  `strided-exec` starts tasks on a thread pool (`deny.toml`, the `placement` CI
+  release to share view types and the `threadteam::Exec` token. Only
+  `threadteam` starts tasks on a thread pool (`deny.toml`, the `placement` CI
   job): parallelism here is split with `Exec::fork` / `for_ranges` on the
   token, never with a direct `rayon` dependency. strided changes and strided
   benchmarks go to tensor4all/strided-rs and

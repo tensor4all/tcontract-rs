@@ -276,3 +276,11 @@ Design: [cpu-exec-placement](https://github.com/tensor4all/strided-rs/blob/main/
 | faer identity? | **Decided:** `faer` is `t4a-faer` (`package = "t4a-faer"`), the one faer of the stack, so the stack has one faer; how faer schedules a width is decided in t4a-faer (see tensor4all/faer#59); the width reaches it through `Exec::external` as `faer::Par`. | `deny.toml` wrappers |
 | C ABI worker teardown? | **Decided:** `strided-exec` hands out no join handles, so `TAPP_destroy_executor` and `tcontract_pool_destroy` wait on a per-pool exit count driven by a thread-local guard installed by `PoolBuilder::on_start`, not on `JoinHandle`s. The C names containing `rayon` stay (ABI), documented as not promising the scheduler. | `crates/tcontract-capi/src/executor.rs` |
 | Placement observations in tests? | **Decided:** through the `strided-exec` ledger (`installs`, `max_live`, `global_pool_unstarted`) instead of pool counters. | `crates/tcontract/tests/common/placement.rs` |
+
+## 2026-10-25 strided-exec is renamed threadteam
+
+| Question | Ruling | Evidence or next check |
+| --- | --- | --- |
+| Where does placement live now? | **Decided:** the crate `strided-exec` became `threadteam` 0.1.0 (repository tensor4all/threadteam-rs), same API with `strided_exec::` becoming `threadteam::`. The entries above keep the old name as written at the time. | `Cargo.toml`, `deny.toml` |
+| Versions? | **Decided:** `tcontract-exec` and `tcontract` 0.6.0 (the public `Exec` and `Pool` expose the token type, so the rename is breaking); `tcontract-kernel` stays 0.3.0 and `tcontract-capi` 0.1.0 (ABI unchanged). strided-basic and strided-perm 0.8.0, strided-view 0.7.0. | `Cargo.toml` |
+| Release step? | **Decided:** merge only after threadteam 0.1.0 and strided 0.8.0 are on crates.io; the release deletes the `[patch.crates-io]` section of the root `Cargo.toml`. | PR description |

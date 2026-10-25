@@ -1,6 +1,6 @@
 [package]
 name = "tcontract"
-version = "0.5.0"
+version = "0.6.0"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
@@ -17,7 +17,7 @@ strided-view = { workspace = true }
 thiserror = { workspace = true }
 tinyvec = { workspace = true }
 tcontract-exec = { workspace = true }
-strided-exec = { workspace = true }
+threadteam = { workspace = true }
 tcontract-kernel = { workspace = true, features = ["std"] }
 
 [features]
@@ -28,7 +28,7 @@ phase-timing = []
 [dev-dependencies]
 rand = { workspace = true }
 rand_chacha = "0.3"
-strided-exec = { workspace = true, features = ["ledger"] }
+threadteam = { workspace = true, features = ["ledger"] }
 tcontract-testkit = { workspace = true }
 
 [lints]

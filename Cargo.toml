@@ -19,23 +19,22 @@ rust-version = "1.89"
 [workspace.dependencies]
 # strided-rs from published crates.io releases, with compatible (`^`) requirements.
 # Every crate here comes from the registry, so cargo resolves one 0.7.x version
-# and `StridedView` and `strided_exec::Exec` stay single types; an exact
+# and `StridedView` and `threadteam::Exec` stay single types; an exact
 # requirement would instead force a coordinated release of tcontract, cpueinsum
 # and tlinalg for every strided patch (tensor4all/tenferro-rs#2214).
-# strided 0.7.0 is one release train across all workspace crates and moves
-# placement into `strided-exec`: every fan-out entry takes an `Exec` token.
-strided-basic = { version = "0.7.0", default-features = false }
-strided-exec = { version = "0.7.1" }
+# Placement lives in `threadteam`: every fan-out entry takes an `Exec` token.
+strided-basic = { version = "0.8.0", default-features = false }
+threadteam = { version = "0.1.0" }
 strided-view = { version = "0.7.0" }
-strided-perm = { version = "0.7.0" }
-strided-kernel = { version = "0.7.0" }
+strided-perm = { version = "0.8.0" }
+strided-kernel = { version = "0.8.0" }
 tcontract-kernel = { version = "0.3.0", path = "crates/tcontract-kernel", default-features = false }
-tcontract-exec = { version = "0.5.0", path = "crates/tcontract-exec" }
+tcontract-exec = { version = "0.6.0", path = "crates/tcontract-exec" }
 tcontract-capi = { version = "0.1.0", path = "crates/tcontract-capi" }
 # Path-only on purpose: `tcontract` only dev-depends on it, and a version here
 # makes `cargo package` resolve the never-published testkit from crates.io and fail.
 tcontract-testkit = { path = "crates/tcontract-testkit" }
-tcontract = { version = "0.5.0", path = "crates/tcontract" }
+tcontract = { version = "0.6.0", path = "crates/tcontract" }
 
 approx = "0.5"
 criterion = "0.5"
@@ -49,6 +48,14 @@ rand = "0.8"
 rand_distr = "0.4"
 thiserror = "1.0"
 tinyvec = { version = "1", default-features = false, features = ["alloc"] }
+
+# Coordinated release: delete this section once threadteam 0.1.0 and strided 0.8.0 are on crates.io.
+[patch.crates-io]
+threadteam = { git = "https://github.com/tensor4all/threadteam-rs", rev = "97404b580951aa9d89910a739618ce044e988b16" }
+strided-traits = { git = "https://github.com/tensor4all/strided-rs", rev = "bc42a17ccbca47c894e0b9eb253ce323458c5828" }
+strided-view = { git = "https://github.com/tensor4all/strided-rs", rev = "bc42a17ccbca47c894e0b9eb253ce323458c5828" }
+strided-perm = { git = "https://github.com/tensor4all/strided-rs", rev = "bc42a17ccbca47c894e0b9eb253ce323458c5828" }
+strided-basic = { git = "https://github.com/tensor4all/strided-rs", rev = "bc42a17ccbca47c894e0b9eb253ce323458c5828" }
 
 # Workspace tests instantiate large generic kernels in many executables.
 # Omitting debuginfo keeps those artifacts small while preserving debug

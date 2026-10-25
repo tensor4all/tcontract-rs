@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn exec_carries_the_policy_and_budget_keeps_it() {
-        let sp = strided_exec::Pool::builder().threads(4).build().unwrap();
+        let sp = threadteam::Pool::builder().threads(4).build().unwrap();
         let pool = crate::Pool::borrow(&sp);
         let exec = crate::Exec::new(&pool, 4)
             .unwrap()

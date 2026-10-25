@@ -1,9 +1,9 @@
 //! CPU resources for the tcontract stack: scratch memory and contraction policy.
 //!
 //! Placement (where tasks run, and how many at once) belongs to
-//! [`strided_exec`]: a host owns a [`strided_exec::Pool`], lends it through
+//! [`threadteam`]: a host owns a [`threadteam::Pool`], lends it through
 //! [`Pool`], and each operation takes an [`Exec`], a bundle of one
-//! [`strided_exec::Exec`] token, an optional workspace and a [`BatchPolicy`].
+//! [`threadteam::Exec`] token, an optional workspace and a [`BatchPolicy`].
 //! This crate starts no task and exposes no scheduler type. See
 //! `PERFORMANCE_TIPS.md`, CPU Threading Contract.
 //!
@@ -11,7 +11,7 @@
 //!
 //! ```
 //! use tcontract_exec::{Exec, Pool};
-//! let sp = strided_exec::Pool::builder().threads(2).build().unwrap();
+//! let sp = threadteam::Pool::builder().threads(2).build().unwrap();
 //! let pool = Pool::borrow(&sp);
 //! let mut exec = Exec::new(&pool, 2).unwrap();
 //! assert_eq!(exec.budget(), pool.size().min(2));

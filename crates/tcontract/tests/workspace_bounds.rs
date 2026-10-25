@@ -293,7 +293,7 @@ fn a_workspace_not_prepared_for_the_executor_is_refused() {
     // needed and `with_req` warms only one.
     let m = 128;
     let plan = Plan::<f64>::new(&matmul(m, m, m), &PlanConfig::packed()).unwrap();
-    let tp = strided_exec::Pool::builder().threads(2).build().unwrap();
+    let tp = threadteam::Pool::builder().threads(2).build().unwrap();
     let pool = Pool::borrow(&tp);
     let mut exec = Exec::new(&pool, 2).unwrap();
     let mut ws = Workspace::with_req(&plan.workspace_req(&exec, OutputContract::Initialized));

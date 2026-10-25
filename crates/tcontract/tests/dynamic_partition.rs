@@ -62,7 +62,7 @@ fn run(plan: &Plan<f64>, exec: &mut Exec<'_>) -> Vec<f64> {
 
 #[test]
 fn a_non_fusable_contraction_runs_dynamically_and_reports_the_policy() {
-    let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
+    let tp = threadteam::Pool::builder().threads(4).build().unwrap();
     let pool = Pool::borrow(&tp);
     let exec = Exec::new(&pool, pool.size()).unwrap();
     let stat = plan(&PlanConfig {
@@ -167,7 +167,7 @@ fn an_explicit_partition_on_an_all_batch_problem_runs_packed() {
             Problem::from_dot_general(DType::F64, spec(&a), spec(&b), spec(&c0), &dg).unwrap();
         let plan = Plan::<f64>::new(&problem, &config).unwrap();
         assert_eq!(plan.report().algorithm, Algorithm::Packed, "{partition:?}");
-        let tp = strided_exec::Pool::builder().threads(4).build().unwrap();
+        let tp = threadteam::Pool::builder().threads(4).build().unwrap();
         let pool = Pool::borrow(&tp);
         for mut exec in [Exec::serial(), Exec::new(&pool, pool.size()).unwrap()] {
             let mut c = c0.clone();

@@ -454,7 +454,7 @@ impl<T: Scalar> Job<'_, T> {
     fn with(
         &self,
         exec: &mut Exec<'_>,
-        body: impl FnOnce(&[usize], &[&[isize]; 4], strided_exec::Exec<'_>) -> Done,
+        body: impl FnOnce(&[usize], &[&[isize]; 4], threadteam::Exec<'_>) -> Done,
     ) -> Done {
         let plan = self.plan;
         body(&plan.dims, &plan.strides(), exec.token())

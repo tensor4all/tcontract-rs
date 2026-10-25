@@ -264,10 +264,10 @@ pub struct Shape {
 /// A pool of eight workers shared by every width-sweep run. Each run takes a
 /// budget of it, so the pool is built once instead of once per call.
 fn sweep_pool() -> &'static tcontract_exec::Pool<'static> {
-    static TP: std::sync::OnceLock<strided_exec::Pool> = std::sync::OnceLock::new();
+    static TP: std::sync::OnceLock<threadteam::Pool> = std::sync::OnceLock::new();
     static POOL: std::sync::OnceLock<tcontract_exec::Pool<'static>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
-        let tp = TP.get_or_init(|| strided_exec::Pool::builder().threads(8).build().unwrap());
+        let tp = TP.get_or_init(|| threadteam::Pool::builder().threads(8).build().unwrap());
         tcontract_exec::Pool::borrow(tp)
     })
 }

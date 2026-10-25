@@ -63,7 +63,7 @@ fn bits<T: Scalar>(v: &[T]) -> Vec<u64> {
         .collect()
 }
 
-fn pool8() -> strided_exec::Pool {
+fn pool8() -> threadteam::Pool {
     pool(8)
 }
 

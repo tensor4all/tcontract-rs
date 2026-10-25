@@ -1,14 +1,14 @@
-//! The resource bundle over `strided-exec`: budgets, ownership of the pool, the
-//! placement invariants (checked through the `strided-exec` ledger) and the
+//! The resource bundle over `threadteam`: budgets, ownership of the pool, the
+//! placement invariants (checked through the `threadteam` ledger) and the
 //! global-pool rule for a serial `Exec`.
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
-use strided_exec::ledger;
 use tcontract_exec::{BatchPolicy, BatchStrategy, Exec, ExecError, Pool};
+use threadteam::ledger;
 
-fn pool(n: usize) -> strided_exec::Pool {
-    strided_exec::Pool::builder().threads(n).build().unwrap()
+fn pool(n: usize) -> threadteam::Pool {
+    threadteam::Pool::builder().threads(n).build().unwrap()
 }
 
 fn nz(n: usize) -> std::num::NonZeroUsize {
@@ -52,7 +52,7 @@ fn budget_is_clamped_once_and_zero_is_an_error() {
     assert_eq!(Exec::new(&p, 99).unwrap().budget(), p.size());
     assert!(matches!(
         Exec::new(&p, 0),
-        Err(ExecError::Placement(strided_exec::Error::ZeroBudget))
+        Err(ExecError::Placement(threadteam::Error::ZeroBudget))
     ));
     let narrowed = Exec::new(&p, 4).unwrap().limit(nz(2));
     assert_eq!(narrowed.budget(), 2);
@@ -167,7 +167,7 @@ fn broadcast_through_the_bundle_is_concurrent_or_refused_never_partial() {
     exec.token().fork(2, |_, child| {
         assert_eq!(child.budget().get(), 2);
         if child.broadcast(|_| _ = ran.fetch_add(1, Ordering::Relaxed))
-            == Err(strided_exec::Refused::ForkChild)
+            == Err(threadteam::Refused::ForkChild)
         {
             refused.fetch_add(1, Ordering::Relaxed);
         }

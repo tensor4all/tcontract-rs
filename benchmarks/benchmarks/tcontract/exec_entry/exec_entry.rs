@@ -38,7 +38,7 @@ fn stats(case: &str, exec: &mut Exec<'_>) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static SEEN: AtomicUsize = AtomicUsize::new(0);
     if let Some(root) = exec.token().ledger_root() {
-        let installs = strided_exec::ledger::installs(root);
+        let installs = threadteam::ledger::installs(root);
         let before = SEEN.swap(installs, Ordering::Relaxed);
         println!("# stats {case}: installs={}", installs - before);
     }

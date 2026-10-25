@@ -5,7 +5,7 @@ pub enum ExecError {
     /// The placement layer refused a token or a pool (for example a thread
     /// budget of zero).
     #[error("placement: {0}")]
-    Placement(#[from] strided_exec::Error),
+    Placement(#[from] threadteam::Error),
     /// A forced batch strategy is unavailable on this route: for example a
     /// [`BatchStrategy::Split`](crate::batch::BatchStrategy::Split) that asks for
     /// both lanes and item threads on a route that runs each item serially inside
