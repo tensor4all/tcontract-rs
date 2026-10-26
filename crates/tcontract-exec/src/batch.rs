@@ -46,7 +46,7 @@
 //!
 //! | Rule | Source | Encoding here |
 //! |---|---|---|
-//! | packed balanced lanes | `crates/tcontract/src/driver/batch.rs:38`, `plan/mod.rs:641`, `driver/route.rs:49` | `Auto` + `balanced_lanes` + the default [`WorkModel`] (its item cost is `NS_PER_FLOP`) |
+//! | packed balanced lanes | `crates/tcontract/src/driver/batch.rs:38`, `plan/mod.rs:641`, `driver/route.rs:49` | `Auto` + `balanced_lanes` + the default [`WorkModel`] (its item cost is `ns_per_flop()`) |
 //! | faer item-width-1 | `crates/tcontract/src/strategy/faer.rs:243` | `Auto` + `item_parallel`; a decision with `item_threads > 1` is the inner route, `lanes > 1` with item threads one is the outer route |
 //! | `contract_batched` item count | `crates/tcontract/src/batch.rs:140` | forced strategies, not `Auto`: [`BatchStrategy::Outer`] when the items fill the budget; below that one lane, the caller running each item on the whole budget (`Sequential`/`Inner`). It has no work threshold. |
 //!
@@ -81,28 +81,6 @@ use core::num::NonZeroUsize;
 
 use crate::Exec;
 
-/// Serial multiply-adds per nanosecond of one packed or faer GEMM item on the
-/// measured host (`1 / NS_PER_FLOP / 2` with `NS_PER_FLOP = 0.0185`, thresholds.md).
-pub(crate) const MULADDS_PER_NS: f64 = 27.0;
-
-/// The default policy [`BatchStrategy::Auto`] applies when no explicit policy is
-/// set on an [`Exec`](crate::Exec).
-///
-/// It is the literal form of [`BatchPolicy::default`], so a `Serial` context can
-/// hand out a `'static` policy without carrying one. A unit test pins the two
-/// together.
-pub(crate) const DEFAULT_BATCH_POLICY: BatchPolicy = BatchPolicy {
-    strategy: BatchStrategy::Auto,
-    model: WorkModel {
-        // Reproduce `driver/batch.rs`: `item_ns = 2 * m * n * k * NS_PER_FLOP`.
-        item_overhead_ns: 0.0,
-        muladds_per_ns: MULADDS_PER_NS,
-        min_work_per_lane_ns: 0.0,
-        min_items: 2,
-        min_items_per_lane: 1,
-    },
-};
-
 /// How the items of a batch are split over a thread budget.
 ///
 /// # Examples
@@ -136,8 +114,9 @@ pub enum BatchStrategy {
 
 /// The cost and fan-out model [`BatchStrategy::Auto`] applies.
 ///
-/// The item rate is the serial GEMM throughput measured on the reference host
-/// (27 multiply-adds per nanosecond, `docs/design/thresholds.md` of threadteam-rs);
+/// The item rate is the serial GEMM throughput of the host class (`host::muladds_per_ns`: 27
+/// multiply-adds per nanosecond on `aarch64-apple` and the `generic` row, 15.6 on `x86_64-avx512`;
+/// see `crates/tcontract-exec/src/host.rs` and `docs/design/thresholds.md` of threadteam-rs);
 /// the width a team pays for comes from the token, not from this model.
 ///
 /// The three item-cost fields follow tenferro's restored
@@ -161,12 +140,13 @@ pub struct WorkModel {
     /// Estimated fixed cost of one item, in nanoseconds.
     ///
     /// The default is zero so that [`Default`] reproduces the packed
-    /// `NS_PER_FLOP` estimate exactly.
+    /// `ns_per_flop()` estimate.
     pub item_overhead_ns: f64,
     /// Estimated multiply-adds per nanosecond on one lane.
     ///
-    /// `1.0 / NS_PER_FLOP / 2.0 == 27.0` reproduces
-    /// `2 * macs * NS_PER_FLOP`: the packed driver counts two flops per
+    /// `1.0 / ns_per_flop() / 2.0` (27 on `aarch64-apple` and the
+    /// `generic` row, 15.6 on `x86_64-avx512`) reproduces
+    /// `2 * macs * ns_per_flop()`: the packed driver counts two flops per
     /// multiply-add. A value `<= 0` is treated as one multiply-add per
     /// nanosecond.
     pub muladds_per_ns: f64,
@@ -182,9 +162,9 @@ pub struct WorkModel {
 impl Default for WorkModel {
     fn default() -> Self {
         Self {
-            // Reproduce `driver/batch.rs`: `item_ns = 2 * m * n * k * NS_PER_FLOP`.
+            // Reproduce `driver/batch.rs`: `item_ns = 2 * m * n * k * ns_per_flop()`.
             item_overhead_ns: 0.0,
-            muladds_per_ns: MULADDS_PER_NS,
+            muladds_per_ns: crate::host::muladds_per_ns(),
             min_work_per_lane_ns: 0.0,
             min_items: 2,
             min_items_per_lane: 1,
@@ -726,9 +706,9 @@ mod tests {
     /// and applies the tiny/balanced rule. Returns `(lanes, item_threads)` where
     /// `item_threads` is the narrowed team width the route uses with one lane.
     fn legacy_packed(items: usize, item_muladds: f64, host_budget: usize) -> (usize, usize) {
-        // `NS_PER_FLOP` applies to flops, and the packed driver counts two flops
+        // `ns_per_flop()` applies to flops, and the packed driver counts two flops
         // per multiply-add.
-        let item_ns = item_muladds / MULADDS_PER_NS;
+        let item_ns = item_muladds / crate::host::muladds_per_ns();
         let total_ns = item_ns * items as f64;
         let narrowed = legacy_width_for(total_ns, host_budget);
         if items < 2 || narrowed < 2 {
@@ -836,21 +816,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn default_matches_the_static_policy() {
-        // `Exec::batch_policy` hands a `Serial` context the static policy, so the
-        // two must not drift.
-        assert_eq!(BatchPolicy::default(), DEFAULT_BATCH_POLICY);
-        assert_eq!(WorkModel::default(), DEFAULT_BATCH_POLICY.model);
-    }
-
     /// Independent copy of the pre-#123 faer schedule.
     ///
     /// `strategy/faer.rs` computed `inner = width_for(item_ns)` and
     /// `total = width_for(item_ns * count)` and picked outer lanes only when
     /// `inner == 1 && total > 1 && count > 1`. Returns `(lanes, item_threads)`.
     fn legacy_faer(count: usize, item_muladds: f64, budget: usize) -> (usize, usize) {
-        let item_ns = item_muladds / MULADDS_PER_NS;
+        let item_ns = item_muladds / crate::host::muladds_per_ns();
         let total_ns = item_ns * count as f64;
         let inner = legacy_width_for(item_ns, budget);
         let total = legacy_width_for(total_ns, budget);

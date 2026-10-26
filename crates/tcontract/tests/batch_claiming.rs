@@ -12,7 +12,7 @@ use tcontract_exec::{Exec, Pool};
 use tcontract_kernel::{Element, Real};
 
 mod common;
-use common::placement::{installs, max_live, on_worker, pool, root};
+use common::placement::{installs, max_live, on_worker, pool_with_reference_costs, root};
 
 /// `D[m,n,h] = sum_k A[m,k,h] B[k,n,h]`, column-major, `h` outermost.
 fn batched_problem(dtype: DType, m: usize, n: usize, k: usize, h: usize) -> Problem {
@@ -64,7 +64,7 @@ fn bits<T: Scalar>(v: &[T]) -> Vec<u64> {
 }
 
 fn pool8() -> threadteam::Pool {
-    pool(8)
+    pool_with_reference_costs(8)
 }
 
 /// The packed route the default plan takes for `dims` on `exec`, and the width

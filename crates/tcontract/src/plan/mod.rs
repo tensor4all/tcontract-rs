@@ -68,12 +68,7 @@ use crate::resolve;
 use crate::select::Chooser;
 use crate::strategy::elementwise::{CRead, ElementPlan, Expr, Inputs};
 use crate::strategy::faer::{self as faer_strategy, FaerPlan};
-
-/// Estimated serial time per real flop on the reference host (about 54 GFLOP/s,
-/// `docs/design/thresholds.md` of threadteam-rs); the one default the width
-/// choice uses everywhere. The width itself is the token's decision
-/// (`Exec::width_for` over this estimate).
-pub const NS_PER_FLOP: f64 = 0.0185;
+use tcontract_exec::host::ns_per_flop;
 
 /// Dispatches one execution of a plan performs, declared to the token's width rule:
 /// the packed driver publishes its grid once (a team or fork), one faer GEMM is one
@@ -780,7 +775,7 @@ impl<T: Scalar> Plan<T> {
     /// rule (`Exec::width_for`) over the serial estimate and the declared sections.
     fn width(&self, exec: &Exec<'_>) -> usize {
         let flops = 2.0 * self.problem.macs() as f64 * if T::IS_COMPLEX { 4.0 } else { 1.0 };
-        exec.width_for(flops * NS_PER_FLOP, PLAN_SECTIONS)
+        exec.width_for(flops * ns_per_flop(), PLAN_SECTIONS)
     }
 
     /// The context the driver sees: `Auto` narrows the budget over the whole

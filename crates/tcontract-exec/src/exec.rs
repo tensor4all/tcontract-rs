@@ -45,11 +45,11 @@ impl std::fmt::Debug for Exec<'_> {
 
 impl<'a> Exec<'a> {
     /// The serial context: the calling thread only, call-local scratch.
-    pub const fn serial() -> Exec<'static> {
+    pub fn serial() -> Exec<'static> {
         Exec {
             token: threadteam::Exec::serial(),
             workspace: None,
-            policy: crate::batch::DEFAULT_BATCH_POLICY,
+            policy: BatchPolicy::default(),
         }
     }
 
@@ -58,7 +58,7 @@ impl<'a> Exec<'a> {
         Exec {
             token: threadteam::Exec::serial(),
             workspace: Some(workspace),
-            policy: crate::batch::DEFAULT_BATCH_POLICY,
+            policy: BatchPolicy::default(),
         }
     }
 

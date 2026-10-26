@@ -76,7 +76,8 @@ pub use driver::{Assignment, DynSnapshot, DynStats, DynamicReport};
 pub use plan::{
     Algorithm, Axis, CacheModel, ExecutionRoute, FaerLimit, Orient, OutputContract, PackedReport,
     PackedRoute, Partition, Plan, PlanConfig, PlanReport, PlanStats, Reason, RowBlock,
-    SliceAccumulationSource, Writeback, NS_PER_FLOP,
+    SliceAccumulationSource, Writeback,
 };
 pub use select::{Chooser, KernelCandidate, OperandMeta, Selection, SelectionContext};
+pub use tcontract_exec::host::ns_per_flop;
 pub use wrappers::{add, permute};

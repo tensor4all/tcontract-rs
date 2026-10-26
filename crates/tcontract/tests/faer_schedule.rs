@@ -8,7 +8,7 @@ use tcontract::{Algorithm, Plan, PlanConfig};
 use tcontract_exec::{Exec, Pool};
 
 mod common;
-use common::placement::{installs, max_live, pool, root};
+use common::placement::{installs, max_live, pool, pool_with_reference_costs, root};
 
 /// `D[i,j,h] = sum_k A[i,k,h] B[k,j,h]` on compact column-major items.
 fn batched(m: usize, n: usize, k: usize, items: usize) -> (Plan<f64>, Vec<f64>, Vec<f64>) {
@@ -54,7 +54,7 @@ fn many_small_items_spread_over_the_pool_and_match_serial() {
     let dims = [8usize, 8, 8, 4096];
     let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
     let serial = run(&plan, dims, &a, &b, &mut Exec::serial());
-    let sp = pool(4);
+    let sp = pool_with_reference_costs(4);
     let pool = Pool::borrow(&sp);
     let mut exec = Exec::new(&pool, pool.size()).unwrap();
     let root = root(&mut exec);
