@@ -104,7 +104,7 @@ fn a_plain_token_below_the_gate_never_enters_the_pool() {
         let dims = [n, n, n, 1];
         let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
         let serial = run(&plan, dims, &a, &b, &mut Exec::serial());
-        let sp = pool(4);
+        let sp = pool_with_reference_costs(4);
         let pool = Pool::borrow(&sp);
         let mut exec = Exec::new(&pool, pool.size()).unwrap();
         let root = root(&mut exec);
