@@ -5,7 +5,7 @@
 //! grouped GEMM, tlinalg's lane plan). This module gives them one vocabulary
 //! and one pure function, [`batch_decision`], so a caller can force a route and
 //! two crates cannot drift on the same decision. The types are plain data with
-//! no scheduler dependency; they live apart from [`Exec`](crate::Exec) so moving
+//! no scheduler dependency; they live apart from [`Exec`] so moving
 //! them later is a re-export, not a redesign.
 //!
 //! # Strategies
