@@ -8,7 +8,7 @@ use tcontract::{Algorithm, Plan, PlanConfig};
 use tcontract_exec::{Exec, Pool};
 
 mod common;
-use common::placement::{installs, max_live, pool, root};
+use common::placement::{installs, max_live, pool, pool_with_reference_costs, root};
 
 /// `D[i,j,h] = sum_k A[i,k,h] B[k,j,h]` on compact column-major items.
 fn batched(m: usize, n: usize, k: usize, items: usize) -> (Plan<f64>, Vec<f64>, Vec<f64>) {
@@ -54,7 +54,7 @@ fn many_small_items_spread_over_the_pool_and_match_serial() {
     let dims = [8usize, 8, 8, 4096];
     let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
     let serial = run(&plan, dims, &a, &b, &mut Exec::serial());
-    let sp = pool(4);
+    let sp = pool_with_reference_costs(4);
     let pool = Pool::borrow(&sp);
     let mut exec = Exec::new(&pool, pool.size()).unwrap();
     let root = root(&mut exec);
@@ -90,6 +90,64 @@ fn one_large_gemm_enters_the_pool_once_and_width_one_never() {
     let one = run(&plan, dims, &a, &b, &mut single);
     assert_eq!(one, serial);
     assert_eq!(installs(single_root), 0);
+}
+
+/// A plain token (a pool exists, the caller is outside it) below the dispatch
+/// gate runs the GEMM on the calling thread: the one rule (`Exec::width_for` over
+/// the serial estimate) gives width one, faer receives `Par::Seq`, and the pool is
+/// never entered. Sizes 32 to 96 have serial estimates under three plain dispatch
+/// costs (9.7 us and 32.7 us at 64 and 96 against 3 x 14 us). Timing is not
+/// asserted; only the entry count and the (serial, hence exact) result.
+#[test]
+fn a_plain_token_below_the_gate_never_enters_the_pool() {
+    for n in [32usize, 48, 64, 96] {
+        let dims = [n, n, n, 1];
+        let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
+        let serial = run(&plan, dims, &a, &b, &mut Exec::serial());
+        let sp = pool_with_reference_costs(4);
+        let pool = Pool::borrow(&sp);
+        let mut exec = Exec::new(&pool, pool.size()).unwrap();
+        let root = root(&mut exec);
+        for _ in 0..3 {
+            assert_eq!(run(&plan, dims, &a, &b, &mut exec), serial, "n = {n}");
+        }
+        assert_eq!(installs(root), 0, "n = {n}: below the gate, no pool entry");
+        assert_eq!(max_live(root), 0, "n = {n}: no task was spawned");
+    }
+}
+
+/// A token that carries a team hands faer a `Par::Team`: the GEMM runs as team
+/// sections on the reserved members, so it makes no entry into the pool (a plain
+/// token enters once, see the test above), and the result agrees with the serial
+/// one numerically.
+#[test]
+fn a_team_token_runs_faer_on_the_team_without_a_pool_entry() {
+    use tcontract_exec::BatchPolicy;
+
+    let dims = [384usize, 384, 384, 1];
+    let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
+    let serial = run(&plan, dims, &a, &b, &mut Exec::serial());
+    let sp = threadteam::Pool::builder()
+        .threads(4)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("pool");
+    let Ok(team) = sp.into_team(4) else {
+        // The host could not reserve the members; the plain route is covered above.
+        return;
+    };
+    let token = team.exec(4);
+    assert!(token.carries_team());
+    let root = token.ledger_root().expect("a team token is a ledger root");
+    let mut exec = Exec::from_token(token, None, BatchPolicy::default());
+    let wide = run(&plan, dims, &a, &b, &mut exec);
+    let err = wide
+        .iter()
+        .zip(&serial)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f64::max);
+    assert!(err < 1e-9, "{err}");
+    assert_eq!(installs(root), 0, "team sections make no pool entry");
 }
 
 /// A forced `Split` is honoured on this route, not silently discarded: at a

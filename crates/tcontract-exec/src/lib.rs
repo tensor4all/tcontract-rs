@@ -24,15 +24,15 @@
 pub mod batch;
 mod error;
 mod exec;
+pub mod host;
 mod pool;
-mod width;
 mod workspace;
 
 pub use batch::{BatchDecision, BatchPolicy, BatchQuery, BatchStrategy, WorkModel};
 pub use error::ExecError;
 pub use exec::Exec;
+pub use host::HostClass;
 pub use pool::Pool;
-pub use width::WidthPolicy;
 pub use workspace::{
     ArenaProvider, TeamLease, Workspace, WorkspaceProvider, WorkspaceReq, WorkspaceStats,
 };

@@ -10,8 +10,8 @@ many at once, belongs to [`threadteam`](https://crates.io/crates/threadteam)
 | `Pool<'p>` | A `threadteam::Pool` (borrowed with `Pool::borrow`, owned with `Pool::owned`, or shared by several wrappers with `Pool::shared`) plus the retained scratch arena. One wrapper is one workspace owner: keep it across calls. |
 | `Exec<'a>` | The per-call resource bundle: one `threadteam::Exec` token, an optional workspace, and the `BatchPolicy`. Not `Clone`, not `Copy`; operations take `&mut Exec`. |
 | `ArenaProvider`, `Workspace`, `WorkspaceReq`, `TeamLease` | Reusable scratch, owned by a `Pool` or lent by a serial caller. |
-| `BatchPolicy`, `BatchQuery`, `BatchDecision`, `batch_decision`, `WorkModel` | The one lane decision (`lanes * item_threads <= budget`) every batch-owning operation shares. |
-| `WidthPolicy`, `Exec::width_for` | The partition width for work estimated at `serial_ns`. |
+| `BatchPolicy`, `BatchQuery`, `BatchDecision`, `batch_decision`, `batch_decision_within`, `WorkModel` | The one lane decision (`lanes * item_threads <= budget`) every batch-owning operation shares; its widths are the token's. |
+| `Exec::width_for(ns, sections)`, `Exec::width_for_within`, `Exec::pays(ns, sections, width)` | The partition width, and the gate, for work estimated at `serial_ns` that performs `sections` dispatches: the token's rule (`threadteam`'s dispatch cost of the token's kind, times `PAYS`). |
 
 ## `Exec`
 
@@ -29,7 +29,7 @@ Constructors: `Exec::serial()` and `Exec::serial_with_workspace(ws)` need no
 pool; `Exec::new(&pool, budget)` mints the token from a pool (budget zero is an
 error, a budget above the pool width is clamped) and lends the pool's workspace.
 Accessors: `budget()`, `workspace()`, `batch_policy()`, `with_batch_policy(p)`,
-`batch_decision(&query)`, `width_for(ns, &policy)`, `limit(max)`,
+`batch_decision(&query)`, `width_for(ns, sections)`, `pays(ns, sections, width)`, `limit(max)`, `token_ref()`,
 `reborrow(&mut self)`.
 
 Placement is the token's. Take it with `exec.token()` (a reborrow, so one `Exec`

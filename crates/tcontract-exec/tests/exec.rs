@@ -200,10 +200,12 @@ fn width_for_and_batch_decision_read_the_token_budget() {
     let sp = pool(4);
     let p = Pool::borrow(&sp);
     let exec = Exec::new(&p, 4).unwrap();
-    let w = exec.width_for(1e9, &tcontract_exec::WidthPolicy::default());
+    let w = exec.width_for(1e9, 1);
     assert!((2..=4).contains(&w), "{w}");
-    assert_eq!(
-        Exec::serial().width_for(1e9, &tcontract_exec::WidthPolicy::default()),
-        1
-    );
+    // The stage narrowed to two slots never exceeds them, and tiny work stays serial.
+    assert!(exec.width_for_within(2, 1e9, 1) <= 2);
+    assert_eq!(exec.width_for(100.0, 1), 1);
+    assert!(exec.pays(1e9, 1, 4));
+    assert!(!exec.pays(100.0, 1, 4));
+    assert_eq!(Exec::serial().width_for(1e9, 1), 1);
 }

@@ -427,9 +427,12 @@ Audit hints:
   the team's and the work still stays within the budget; nothing is
   silently serialized and nothing is an error. Concurrent teams on one pool queue
   in the same order and do not interleave.
-- faer parallelism is derived from the token: `Exec::external` hands the budget
-  as a plain width, and the adapter turns it into `faer::Par` (`Seq` for one,
-  `Par::rayon(w)` otherwise). Never pick `Par` inside a helper.
+- faer parallelism is derived from the token. A token that carries a team
+  (`threadteam::Exec::carries_team`) hands faer its team as `Par::Team` (through
+  `Exec::team`, which returns the carried team without acquisition); any other
+  token keeps `Exec::external`, which hands the budget as a plain width that the
+  adapter turns into `faer::Par` (`Seq` for one, `Par::rayon(w)` otherwise). Never
+  pick `Par` inside a helper.
 - One budget governs batch-level and inner parallelism: `lanes * item_threads`
   from the shared batch decision never exceeds it (`tcontract_exec::batch`). A
   route that can nest runs each item with the `item_threads` it was granted

@@ -250,10 +250,11 @@ impl FaerPlan {
         let decision = exec.batch_decision(
             &BatchQuery::new(count, self.item_muladds::<T>())
                 .with_item_parallel(true)
-                .with_outer_only_when_item_serial(true),
+                .with_outer_only_when_item_serial(true)
+                .with_item_sections(FAER_GEMM_SECTIONS),
         );
         let (ap, bp, dp) = (SendConst(a), SendConst(b), SendMut(d));
-        let item = |i: usize, par: faer::Par| {
+        let item = |i: usize, par: faer::Par<'_>| {
             let i = i as isize;
             // SAFETY: offsets `i * stride` stay inside the validated layouts
             // (i < count); output items are disjoint (D is injective).
@@ -288,15 +289,18 @@ impl FaerPlan {
                 .into_token()
                 .fork(lanes, |lane, mut child| {
                     // Contiguous items per lane, as the batch partition always was.
-                    for i in lane * count / lanes..(lane + 1) * count / lanes {
-                        child.reborrow().external(|w| item(i, to_faer(w)));
-                    }
+                    let items = lane * count / lanes..(lane + 1) * count / lanes;
+                    with_faer_par(child.reborrow(), |mut par| {
+                        for i in items {
+                            item(i, par.reborrow());
+                        }
+                    });
                 });
         } else {
-            // One pool entry for the whole batch.
-            exec.token().limit(nz(decision.item_threads)).external(|w| {
+            // One pool entry (or one team section sequence) for the whole batch.
+            with_faer_par(exec.token().limit(nz(decision.item_threads)), |mut par| {
                 for i in 0..count {
-                    item(i, to_faer(w));
+                    item(i, par.reborrow());
                 }
             });
         }
@@ -341,12 +345,45 @@ impl FaerPlan {
     }
 }
 
+/// Dispatches one faer GEMM performs, declared to the token's width rule: one parallel
+/// region per product (the team route publishes it once, the rayon route is one
+/// tile split).
+const FAER_GEMM_SECTIONS: u32 = 1;
+
 /// The width `Exec::external` hands over, as faer's own parallelism type.
-fn to_faer(width: NonZeroUsize) -> faer::Par {
+fn to_faer(width: NonZeroUsize) -> faer::Par<'static> {
     match width.get() {
         1 => faer::Par::Seq,
         w => faer::Par::rayon(w),
     }
+}
+
+/// Runs `f` with the parallelism faer should use for `token`.
+///
+/// A token that carries a team (minted by a `threadteam::Team`, or a child of one)
+/// hands faer its own team as `Par::Team`: faer's regions run on the reserved
+/// members as team sections, at the dispatch cost the floors were derived from. A
+/// plain token keeps `Exec::external`, which hands over its width as `Par::rayon`
+/// (and enters the pool once, or not at all from inside it).
+fn with_faer_par<R: Send>(
+    mut token: threadteam::Exec<'_>,
+    f: impl FnOnce(faer::Par<'_>) -> R + Send,
+) -> R {
+    if token.carries_team() {
+        let mut f = Some(f);
+        // A team token returns its carried team at once, without acquisition.
+        let ran = token.team(|team| {
+            let f = f.take().expect("the closure runs once");
+            f(faer::Par::Team(team))
+        });
+        // A refusal is unreachable for a token that carries a team; fall back to the width.
+        if let Ok(value) = ran {
+            return value;
+        }
+        let f = f.take().expect("a refused team did not run the closure");
+        return token.external(|w| f(to_faer(w)));
+    }
+    token.external(|w| f(to_faer(w)))
 }
 
 /// Raw pointers moved into a pool closure.

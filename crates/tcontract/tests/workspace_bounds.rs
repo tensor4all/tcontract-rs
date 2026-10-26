@@ -6,6 +6,8 @@
 //! observation.
 use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
 use tcontract::{Error, OutputContract, Plan, PlanConfig};
+mod common;
+
 use tcontract_exec::{Exec, Workspace, WorkspaceReq};
 use tcontract_kernel::KernelChoice;
 
@@ -293,7 +295,8 @@ fn a_workspace_not_prepared_for_the_executor_is_refused() {
     // needed and `with_req` warms only one.
     let m = 128;
     let plan = Plan::<f64>::new(&matmul(m, m, m), &PlanConfig::packed()).unwrap();
-    let tp = threadteam::Pool::builder().threads(2).build().unwrap();
+    // Explicit costs (scaled with the host's GEMM rate): the narrowing must not depend on the host table.
+    let tp = common::placement::pool_with_reference_costs(2);
     let pool = Pool::borrow(&tp);
     let mut exec = Exec::new(&pool, 2).unwrap();
     let mut ws = Workspace::with_req(&plan.workspace_req(&exec, OutputContract::Initialized));

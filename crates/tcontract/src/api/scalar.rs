@@ -142,7 +142,7 @@ pub trait FaerGemm: Sized {
         b_strides: (isize, isize),
         conj_b: bool,
         alpha: Self,
-        par: faer::Par,
+        par: faer::Par<'_>,
     );
 }
 
@@ -161,7 +161,7 @@ macro_rules! faer_gemm {
                 (brs, bcs): (isize, isize),
                 conj_b: bool,
                 alpha: Self,
-                par: faer::Par,
+                par: faer::Par<'_>,
             ) {
                 // SAFETY: the caller's contract.
                 let (am, bm, dm) = unsafe {
