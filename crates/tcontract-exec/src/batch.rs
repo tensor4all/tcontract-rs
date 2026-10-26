@@ -1004,7 +1004,10 @@ mod tests {
     fn forced_strategies_use_the_original_budget() {
         // Auto narrows the whole batch to five lanes (the width its total work
         // pays for), but Outer is evaluated against the original host budget of eight.
-        let query = BatchQuery::new(9, 40_000.0).with_balanced_lanes(true);
+        // The item is 40 000 multiply-adds at the 27 per ns of the `generic` row (about 1.5 us),
+        // scaled to this host class's rate so that its serial time does not depend on the class.
+        let query = BatchQuery::new(9, 40_000.0 * crate::host::muladds_per_ns() / 27.0)
+            .with_balanced_lanes(true);
         let auto = bd(&BatchPolicy::default(), budget(8), &query);
         assert_eq!((auto.lanes, auto.item_threads), (5, 1));
         let outer = bd(&BatchPolicy::new(BatchStrategy::Outer), budget(8), &query);
