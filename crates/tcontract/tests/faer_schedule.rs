@@ -1,7 +1,9 @@
 //! The faer strategy's batched loop: many small items are spread over the pool
-//! with each item serial, a single large GEMM enters the pool once with its
-//! inner width, and a width-one executor never enters it. Results equal the
-//! serial run exactly (each item is the same faer call on the same operands).
+//! with each item serial; a single large GEMM runs on a team when the token
+//! carries one and as `Par::Seq` on the calling thread otherwise (faer has no
+//! rayon route here), and a width-one executor never enters the pool. A plain
+//! token's results equal the serial run exactly (each item is the same serial
+//! faer call on the same operands).
 use strided_view::{StridedView, StridedViewMut};
 use tcontract::api::{DType, DotGeneral, LayoutSpec, OperandSpec, Problem};
 use tcontract::{Algorithm, Plan, PlanConfig};
@@ -67,7 +69,7 @@ fn many_small_items_spread_over_the_pool_and_match_serial() {
 }
 
 #[test]
-fn one_large_gemm_enters_the_pool_once_and_width_one_never() {
+fn one_large_gemm_on_a_plain_token_runs_serially_and_never_enters_the_pool() {
     let dims = [384usize, 384, 384, 1];
     let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
     let serial = run(&plan, dims, &a, &b, &mut Exec::serial());
@@ -75,16 +77,15 @@ fn one_large_gemm_enters_the_pool_once_and_width_one_never() {
     let pool = Pool::borrow(&sp);
     let mut exec = Exec::new(&pool, pool.size()).unwrap();
     let root = root(&mut exec);
+    // Only a team gives faer internal parallelism: a plain token is `Par::Seq`,
+    // so the result is the serial one exactly and no entry is made.
     let wide = run(&plan, dims, &a, &b, &mut exec);
-    // faer's parallel GEMM may reorder partial sums across threads, so the
-    // agreement is numerical here; the entry count is the contract.
-    let err = wide
-        .iter()
-        .zip(&serial)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0, f64::max);
-    assert!(err < 1e-9, "{err}");
-    assert_eq!(installs(root), 1, "one pool entry for the whole batch");
+    assert_eq!(wide, serial);
+    assert_eq!(
+        installs(root),
+        0,
+        "a plain token never enters the pool for faer"
+    );
     let mut single = Exec::new(&pool, 1).unwrap();
     let single_root = common::placement::root(&mut single);
     let one = run(&plan, dims, &a, &b, &mut single);
@@ -92,14 +93,12 @@ fn one_large_gemm_enters_the_pool_once_and_width_one_never() {
     assert_eq!(installs(single_root), 0);
 }
 
-/// A plain token (a pool exists, the caller is outside it) below the dispatch
-/// gate runs the GEMM on the calling thread: the one rule (`Exec::width_for` over
-/// the serial estimate) gives width one, faer receives `Par::Seq`, and the pool is
-/// never entered. Sizes 32 to 96 have serial estimates under three plain dispatch
-/// costs (9.7 us and 32.7 us at 64 and 96 against 3 x 14 us). Timing is not
-/// asserted; only the entry count and the (serial, hence exact) result.
+/// A plain token (a pool exists, the caller is outside it) runs the GEMM on the
+/// calling thread as `Par::Seq` and never enters the pool, whatever the size.
+/// Timing is not asserted; only the entry count and the (serial, hence exact)
+/// result.
 #[test]
-fn a_plain_token_below_the_gate_never_enters_the_pool() {
+fn a_plain_token_never_enters_the_pool() {
     for n in [32usize, 48, 64, 96] {
         let dims = [n, n, n, 1];
         let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
@@ -111,14 +110,14 @@ fn a_plain_token_below_the_gate_never_enters_the_pool() {
         for _ in 0..3 {
             assert_eq!(run(&plan, dims, &a, &b, &mut exec), serial, "n = {n}");
         }
-        assert_eq!(installs(root), 0, "n = {n}: below the gate, no pool entry");
+        assert_eq!(installs(root), 0, "n = {n}: faer is serial, no pool entry");
         assert_eq!(max_live(root), 0, "n = {n}: no task was spawned");
     }
 }
 
 /// A token that carries a team hands faer a `Par::Team`: the GEMM runs as team
-/// sections on the reserved members, so it makes no entry into the pool (a plain
-/// token enters once, see the test above), and the result agrees with the serial
+/// sections on the reserved members, so it makes no entry into the pool (neither
+/// does a plain token, which runs `Par::Seq`), and the result agrees with the serial
 /// one numerically.
 #[test]
 fn a_team_token_runs_faer_on_the_team_without_a_pool_entry() {
@@ -205,14 +204,12 @@ fn a_forced_split_gives_every_item_its_item_threads() {
 }
 
 /// The same split on items large enough to leave faer's serial nano-GEMM path,
-/// so the item's `Par::rayon(2)` reaches the provider's parallel GEMM:
-/// `faer-0.24.4/src/linalg/matmul/mod.rs:16` sends `m * n * k <= 16^3` to
-/// `nano_gemm` and `:1405` hands the x86 gemm `par.degree()` only once
-/// `m * n * k >= 4096 * size_of::<T>()` (32768 f64 elements). One 128^3 item is
-/// 2^21 multiply-adds. Bounded completion, because a lane worker that cannot
-/// nest would hang at the provider's barrier instead of failing.
+/// on a team: each lane is a child team token, so the item's `Par::Team` reaches
+/// the provider's parallel GEMM. One 128^3 item is 2^21 multiply-adds. Bounded
+/// completion, because a lane that cannot nest would hang at a team barrier
+/// instead of failing.
 #[test]
-fn a_split_on_large_items_nests_faer_parallelism_and_matches_sequential() {
+fn a_split_on_large_items_nests_team_parallelism_and_matches_sequential() {
     use std::num::NonZeroUsize;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -222,26 +219,36 @@ fn a_split_on_large_items_nests_faer_parallelism_and_matches_sequential() {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
-        let sp = pool(4);
-        let pool = Pool::borrow(&sp);
-        let at = |strategy| {
-            Exec::new(&pool, 4)
-                .unwrap()
-                .with_batch_policy(BatchPolicy::new(strategy))
+        let want = run(&plan, dims, &a, &b, &mut Exec::serial());
+        let sp = threadteam::Pool::builder()
+            .threads(4)
+            .acquire_timeout(Duration::from_secs(10))
+            .build()
+            .expect("pool");
+        let Ok(team) = sp.into_team(4) else {
+            // The host could not reserve the members.
+            tx.send(None).unwrap();
+            return;
         };
-        let want = run(&plan, dims, &a, &b, &mut at(BatchStrategy::Sequential));
-        let mut split = at(BatchStrategy::Split {
-            lanes: NonZeroUsize::new(2).unwrap(),
-        });
-        let split_root = root(&mut split);
+        let mut split = Exec::from_token(
+            team.exec(4),
+            None,
+            BatchPolicy::new(BatchStrategy::Split {
+                lanes: NonZeroUsize::new(2).unwrap(),
+            }),
+        );
         let got = run(&plan, dims, &a, &b, &mut split);
-        tx.send((got == want, installs(split_root), max_live(split_root)))
-            .unwrap();
+        let err = got
+            .iter()
+            .zip(&want)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f64::max);
+        tx.send(Some(err)).unwrap();
     });
-    let (same, entries, live) = rx
+    let err = rx
         .recv_timeout(Duration::from_secs(60))
-        .expect("a nested faer GEMM deadlocked");
-    assert!(same, "the split changed the result");
-    assert_eq!(entries, 1, "one pool entry for the whole batch");
-    assert!(live <= 2, "two lanes, each on its two item threads");
+        .expect("a nested team GEMM deadlocked");
+    if let Some(err) = err {
+        assert!(err < 1e-9, "the split changed the result: {err}");
+    }
 }

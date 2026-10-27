@@ -1,6 +1,6 @@
 //! Enforced thread counts for benchmark binaries.
 
-use tcontract_exec::{ArenaProvider, Exec, Pool};
+use tcontract_exec::{ArenaProvider, BatchPolicy, Exec, Pool};
 
 /// Thread environment variables that must agree with `--threads`.
 pub const THREAD_ENV_VARS: [&str; 3] = [
@@ -50,12 +50,12 @@ pub fn parse_threads(args: &[String]) -> Result<usize, String> {
 }
 
 /// A benchmark's thread configuration: a serial `Exec` that lends the
-/// caller-owned arena for one thread, a `threadteam::Pool` borrowed through
-/// `Exec` otherwise.
+/// caller-owned arena for one thread, a `threadteam::Team` otherwise (faer
+/// parallelism needs a team: a plain pool token runs faer serially).
 pub struct BenchThreads {
     /// Requested thread count.
     pub requested: usize,
-    pool: Option<threadteam::Pool>,
+    team: Option<threadteam::Team>,
     /// The plan owns no scratch any more, so the 1T rows own exactly the
     /// steady-state storage they measure and no other row can see it.
     arena: ArenaProvider,
@@ -78,15 +78,17 @@ impl BenchThreads {
             ));
         }
         // tcontract paths run on this pool and start no ambient one.
-        let pool = (requested > 1).then(|| {
+        let team = (requested > 1).then(|| {
             threadteam::Pool::builder()
                 .threads(requested)
                 .build()
                 .unwrap_or_else(|e| fail(&format!("pool: {e}")))
+                .into_team(requested)
+                .unwrap_or_else(|e| fail(&format!("team: {e}")))
         });
         Self {
             requested,
-            pool,
+            team,
             arena: ArenaProvider::new(),
         }
     }
@@ -94,12 +96,15 @@ impl BenchThreads {
     /// Run `f` with the configured context and, for multi-thread runs, the
     /// borrowed pool (for its size).
     pub fn with_exec<R>(&self, f: impl FnOnce(&mut Exec<'_>, Option<&Pool<'_>>) -> R) -> R {
-        match &self.pool {
+        match &self.team {
             None => f(&mut Exec::serial_with_workspace(&self.arena), None),
-            Some(sp) => {
-                let pool = Pool::borrow(sp);
-                let mut exec =
-                    Exec::new(&pool, pool.size()).unwrap_or_else(|e| fail(&format!("budget: {e}")));
+            Some(team) => {
+                let pool = Pool::borrow(team.pool());
+                let mut exec = Exec::from_token(
+                    team.exec(pool.size()),
+                    Some(pool.workspace()),
+                    BatchPolicy::default(),
+                );
                 f(&mut exec, Some(&pool))
             }
         }

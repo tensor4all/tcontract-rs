@@ -1013,7 +1013,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "thiserror",
  "threadteam",

@@ -37,7 +37,8 @@ This is a research repository, not a production tensor-algebra library. Read `RE
   release to share view types and the `threadteam::Exec` token. Only
   `threadteam` starts tasks on a thread pool (`deny.toml`, the `placement` CI
   job): parallelism here is split with `Exec::fork` / `for_ranges` on the
-  token, never with a direct `rayon` dependency. strided changes and strided
+  token, never with a direct `rayon` dependency. faer gets `Par::Team` from a team-carrying
+  token and `Par::Seq` otherwise; never build `Par::rayon`. strided changes and strided
   benchmarks go to tensor4all/strided-rs and
   tensor4all/strided-rs-benchmark-suite.
 

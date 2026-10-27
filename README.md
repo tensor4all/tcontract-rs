@@ -34,6 +34,9 @@ requirement, so this document does not repeat the number. Consumers must
 resolve the same strided release to share `StridedView` and
 `threadteam::Exec`. Only `threadteam` starts tasks on a thread pool:
 `cargo deny check bans` rejects a direct `rayon` dependency anywhere else here.
+The faer strategy gets internal parallelism only from a `threadteam` team: a token
+that carries one passes `faer::Par::Team`, any other token runs faer as `Par::Seq`
+(batch lanes still fork through `threadteam`).
 
 Arrows mean "depends on" and are drawn from `cargo tree` (normal and build
 dependencies; `tcontract-testkit` is a dev-dependency of `tcontract` and
