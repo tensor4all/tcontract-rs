@@ -81,6 +81,7 @@ impl BenchThreads {
         let team = (requested > 1).then(|| {
             threadteam::Pool::builder()
                 .threads(requested)
+                .acquire_timeout(std::time::Duration::from_secs(10))
                 .build()
                 .unwrap_or_else(|e| fail(&format!("pool: {e}")))
                 .into_team(requested)
