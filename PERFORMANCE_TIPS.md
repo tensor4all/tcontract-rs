@@ -183,15 +183,15 @@ Audit hints:
   performance warnings must be justified or converted deliberately at an
   explicit boundary.
 - Take faer parallelism from the `tcontract-exec` context passed to the
-  operation only; never choose `faer::Par::rayon` or thread counts inside operation
-  helpers.
+  operation only; never choose a `faer::Par` or thread count inside operation
+  helpers; `faer::Par::rayon` does not exist in this stack.
 - Scratch and batching follow the batched-matrix rule in Dense Layout And
   Linear Algebra.
 
 Audit hints:
 
 - Detect: packing into temporary dense matrices before a faer call;
-  `faer::Par::rayon(...)`/`Par::Seq` chosen inside an op helper; `MemBuffer`
+  a `faer::Par` (`Seq`, `Team`) chosen inside an op helper other than the one adapter; `MemBuffer`
   scratch allocated per decomposition, solve, or batch iteration.
 - Fix: zero-copy `MatRef`/`MatMut` after validation, parallelism from `Exec`,
   scratch sized once per operation.
@@ -429,14 +429,16 @@ Audit hints:
   in the same order and do not interleave.
 - faer parallelism is derived from the token. A token that carries a team
   (`threadteam::Exec::carries_team`) hands faer its team as `Par::Team` (through
-  `Exec::team`, which returns the carried team without acquisition); any other
-  token keeps `Exec::external`, which hands the budget as a plain width that the
-  adapter turns into `faer::Par` (`Seq` for one, `Par::rayon(w)` otherwise). Never
-  pick `Par` inside a helper.
+  `Exec::team`, which returns the carried team without acquisition); a token
+  without a team runs faer as `Par::Seq` on the calling thread and never enters a
+  pool for it. Batch lanes still fork through `threadteam`, so batch-level
+  parallelism stays on a plain token; only faer-internal parallelism needs a team.
+  There is no `Par::rayon` route. The batch query declares what will run
+  (`with_item_parallel(carries_team)`). Never pick `Par` inside a helper.
 - One budget governs batch-level and inner parallelism: `lanes * item_threads`
   from the shared batch decision never exceeds it (`tcontract_exec::batch`). A
   route that can nest runs each item with the `item_threads` it was granted
-  inside its lane (a lane's fork share is handed to faer through `external`); a route whose kernel cannot
+  inside its lane (a lane's fork share is a child team token, handed to faer as `Par::Team`); a route whose kernel cannot
   refuses that decision typed before any write (the packed driver's co-scheduled
   teams, `contract_batched`). No route silently discards the item width — see
   the route contract on `BatchDecision`.

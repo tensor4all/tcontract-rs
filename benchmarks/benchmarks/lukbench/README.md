@@ -85,9 +85,10 @@ benchmarks/scripts/pinned.sh "$cpus"       -- target/release/lukbench run --thre
   Priming is time-based, not a call count: a fixed number of warm-up calls
   removes a different share of the clock ramp in every arm, most in the fastest
   one.
-- **One thread or a borrowed host pool.** `--threads 1` is
-  `BenchThreads`'s serial `Exec` with no pool entry; `--threads N` borrows the
-  host's pool through `Exec::rayon`. Every process goes through `pinned.sh`;
+- **One thread or a host team.** `--threads 1` is
+  `BenchThreads`'s serial `Exec` with no pool entry; `--threads N` builds a `threadteam`
+  pool, turns it into a team and runs through the team's token (faer gets
+  `Par::Team`). Every process goes through `pinned.sh`;
   do not run another benchmark or build alongside it.
 - **`--size` is accepted and ignored.** This corpus has no size knob — the
   extents are the issue's, not a function of a nominal tensor size. The flag

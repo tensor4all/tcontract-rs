@@ -544,7 +544,13 @@ fn faer_auto(
     item_ns: f64,
     total_ns: f64,
 ) -> BatchDecision {
-    let inner = widths(item_ns, query.item_sections);
+    // A route without item parallelism (a faer item on a token without a team)
+    // has no inner width: the items take the lanes.
+    let inner = if query.item_parallel {
+        widths(item_ns, query.item_sections)
+    } else {
+        1
+    };
     if inner > 1 {
         return one_lane(inner);
     }
