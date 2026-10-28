@@ -35,8 +35,11 @@ resolve the same strided release to share `StridedView` and
 `threadteam::Exec`. Only `threadteam` starts tasks on a thread pool:
 `cargo deny check bans` rejects a direct `rayon` dependency anywhere else here.
 The faer strategy gets internal parallelism only from a `threadteam` team: a token
-that carries one passes `faer::Par::Team`, any other token runs faer as `Par::Seq`
-(batch lanes still fork through `threadteam`).
+of more than one slot that carries one passes `faer::Par::Team`, any other token
+runs faer as `Par::Seq` (batch lanes still fork through `threadteam`). That mapping
+is `tcontract_exec::with_faer_par` (feature `faer` of `tcontract-exec`), shared with
+tlinalg and tenferro; the GEMM-axis fusion rule is `tcontract::api::fuse_axes` /
+`sort_by_stride`, shared with cpueinsum-blas.
 
 Arrows mean "depends on" and are drawn from `cargo tree` (normal and build
 dependencies; `tcontract-testkit` is a dev-dependency of `tcontract` and
@@ -56,6 +59,7 @@ flowchart TB
     CT --> GK
     CT --> EX
     CT --> FA
+    EX -. "feature faer" .-> FA
     CT --> ST
     TK --> CT
     TK --> GK

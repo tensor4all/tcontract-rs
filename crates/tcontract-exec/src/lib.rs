@@ -24,6 +24,8 @@
 pub mod batch;
 mod error;
 mod exec;
+#[cfg(feature = "faer")]
+mod faer;
 pub mod host;
 mod pool;
 mod workspace;
@@ -31,6 +33,8 @@ mod workspace;
 pub use batch::{BatchDecision, BatchPolicy, BatchQuery, BatchStrategy, WorkModel};
 pub use error::ExecError;
 pub use exec::Exec;
+#[cfg(feature = "faer")]
+pub use faer::with_faer_par;
 pub use host::HostClass;
 pub use pool::Pool;
 pub use workspace::{

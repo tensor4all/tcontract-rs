@@ -29,12 +29,12 @@ strided-view = { version = "0.7.0" }
 strided-perm = { version = "0.8.0" }
 strided-kernel = { version = "0.8.0" }
 tcontract-kernel = { version = "0.3.0", path = "crates/tcontract-kernel", default-features = false }
-tcontract-exec = { version = "0.7.0", path = "crates/tcontract-exec" }
+tcontract-exec = { version = "0.7.1", path = "crates/tcontract-exec" }
 tcontract-capi = { version = "0.1.0", path = "crates/tcontract-capi" }
 # Path-only on purpose: `tcontract` only dev-depends on it, and a version here
 # makes `cargo package` resolve the never-published testkit from crates.io and fail.
 tcontract-testkit = { path = "crates/tcontract-testkit" }
-tcontract = { version = "0.7.0", path = "crates/tcontract" }
+tcontract = { version = "0.7.1", path = "crates/tcontract" }
 
 approx = "0.5"
 criterion = "0.5"

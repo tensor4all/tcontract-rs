@@ -1,6 +1,6 @@
 [package]
 name = "tcontract"
-version = "0.7.0"
+version = "0.7.1"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
@@ -16,7 +16,7 @@ strided-basic = { workspace = true, features = ["parallel"] }
 strided-view = { workspace = true }
 thiserror = { workspace = true }
 tinyvec = { workspace = true }
-tcontract-exec = { workspace = true }
+tcontract-exec = { workspace = true, features = ["faer"] }
 threadteam = { workspace = true }
 tcontract-kernel = { workspace = true, features = ["std"] }
 

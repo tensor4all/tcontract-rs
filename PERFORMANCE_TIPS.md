@@ -427,10 +427,11 @@ Audit hints:
   the team's and the work still stays within the budget; nothing is
   silently serialized and nothing is an error. Concurrent teams on one pool queue
   in the same order and do not interleave.
-- faer parallelism is derived from the token. A token that carries a team
+- faer parallelism is derived from the token (`tcontract_exec::with_faer_par`). A
+  token of more than one slot that carries a team
   (`threadteam::Exec::carries_team`) hands faer its team as `Par::Team` (through
   `Exec::team`, which returns the carried team without acquisition); a token
-  without a team runs faer as `Par::Seq` on the calling thread and never enters a
+  of one slot, or without a team, runs faer as `Par::Seq` on the calling thread and never enters a
   pool for it. Batch lanes still fork through `threadteam`, so batch-level
   parallelism stays on a plain token; only faer-internal parallelism needs a team.
   There is no `Par::rayon` route. The batch query declares what will run

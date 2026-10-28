@@ -33,10 +33,10 @@
 //!   (same mapping, same origin) is the in-place case above.
 
 use std::num::NonZeroUsize;
-use tcontract_exec::{BatchQuery, Exec, ExecError};
+use tcontract_exec::{with_faer_par, BatchQuery, Exec, ExecError};
 use tcontract_kernel::Element;
 
-use crate::api::{CSpec, OperandId, Problem, RoleAxis, Scalar};
+use crate::api::{fuse_axes, sort_by_stride, CSpec, OperandId, Problem, RoleAxis, Scalar};
 
 /// One fused group: `(extent, stride)` in each of A, B and D.
 #[derive(Clone, Copy, Debug)]
@@ -60,30 +60,6 @@ pub(crate) struct FaerPlan {
     conj_d: bool,
 }
 
-/// Whether `order` fuses the group in operand `o`: the strides of the
-/// non-unit axes must chain (`s_next == s_prev * extent_prev`). Returns the
-/// fused `(extent, stride)`.
-fn fuse(group: &[RoleAxis], order: &[usize], o: OperandId) -> Option<(usize, isize)> {
-    let mut ext = 1usize;
-    let mut first: Option<isize> = None;
-    let mut expect = 0isize;
-    for &e in order {
-        let d = group[e].extent();
-        if d == 1 {
-            continue;
-        }
-        let s = group[e].stride(o);
-        match first {
-            None => first = Some(s),
-            Some(_) if s != expect => return None,
-            Some(_) => {}
-        }
-        expect = s.checked_mul(isize::try_from(d).ok()?)?;
-        ext = ext.checked_mul(d)?;
-    }
-    Some((ext, first.unwrap_or(1)))
-}
-
 /// Run `f` on `0..n` in a stack buffer when `n` is small (planning allocates
 /// nothing for the usual ranks) and in a heap buffer otherwise.
 fn with_indices<R>(n: usize, f: impl FnOnce(&mut [usize]) -> R) -> R {
@@ -102,9 +78,13 @@ fn with_indices<R>(n: usize, f: impl FnOnce(&mut [usize]) -> R) -> R {
 /// carrier would choose and then the natural one. The candidates are tried
 /// one at a time in one reused buffer.
 fn fuse_group(group: &[RoleAxis], carriers: &[OperandId]) -> Option<Fused> {
-    let fits = |order: &[usize]| carriers.iter().all(|&o| fuse(group, order, o).is_some());
+    let fits = |order: &[usize]| {
+        carriers
+            .iter()
+            .all(|&o| fuse_axes(group, order, o).is_some())
+    };
     let fused = |order: &[usize]| {
-        let get = |o: OperandId| fuse(group, order, o);
+        let get = |o: OperandId| fuse_axes(group, order, o);
         let (extent, a) = get(OperandId::A).unwrap_or((1, 1));
         // Every carrier agrees on the extent; the absent operands keep stride one.
         Fused {
@@ -119,7 +99,7 @@ fn fuse_group(group: &[RoleAxis], carriers: &[OperandId]) -> Option<Fused> {
         for &o in carriers {
             // From the natural order, stable: equal strides keep that order.
             reset(order);
-            order.sort_by_key(|&e| group[e].stride(o).unsigned_abs());
+            sort_by_stride(group, o, order);
             if fits(order) {
                 return Some(fused(order));
             }
@@ -354,35 +334,6 @@ impl FaerPlan {
 /// Dispatches one faer GEMM performs, declared to the token's width rule: one parallel
 /// region per product (the team route publishes it once).
 const FAER_GEMM_SECTIONS: u32 = 1;
-
-/// Runs `f` with the parallelism faer should use for `token`.
-///
-/// A token that carries a team (minted by a `threadteam::Team`, or a child of one)
-/// hands faer its own team as `Par::Team`: faer's regions run on the reserved
-/// members as team sections, at the dispatch cost the floors were derived from. A
-/// token without a team runs faer with `Par::Seq` on the calling thread and never
-/// enters a pool: only a team gives faer internal parallelism. Batch lanes still
-/// fork through `threadteam` before this point, so batch-level parallelism stays.
-fn with_faer_par<R: Send>(
-    mut token: threadteam::Exec<'_>,
-    f: impl FnOnce(faer::Par<'_>) -> R + Send,
-) -> R {
-    if token.carries_team() {
-        let mut f = Some(f);
-        // A team token returns its carried team at once, without acquisition.
-        let ran = token.team(|team| {
-            let f = f.take().expect("the closure runs once");
-            f(faer::Par::Team(team))
-        });
-        // A refusal is unreachable for a token that carries a team; run serially.
-        if let Ok(value) = ran {
-            return value;
-        }
-        let f = f.take().expect("a refused team did not run the closure");
-        return f(faer::Par::Seq);
-    }
-    f(faer::Par::Seq)
-}
 
 /// Raw pointers moved into a pool closure.
 #[derive(Clone, Copy)]
