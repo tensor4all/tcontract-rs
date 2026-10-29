@@ -294,3 +294,10 @@ Design: [cpu-exec-placement](https://github.com/tensor4all/strided-rs/blob/main/
 | A one-slot team token? | **Decided:** runs faer as `Par::Seq`, as tenferro-linalg already did and as tlinalg's workspace query (`faer_shape`) already assumed. | `with_faer_par` doctest |
 | `HostClass`? | **Decided:** `tcontract_exec::HostClass` is `threadteam::HostClass` re-exported (same variants, detection and names); the hand-synced copy is gone. The type identity changes: a downstream trait implemented for both would now conflict (none found). | `crates/tcontract-exec/src/host.rs` |
 | Versions? | **Decided:** `tcontract-exec` and `tcontract` 0.7.1 (additive). Publishing needs the maintainer's approval of the release chain. | `Cargo.toml` |
+
+## 2026-10-29 t4a-faer 0.26
+
+| Question | Ruling | Evidence or next check |
+| --- | --- | --- |
+| Which faer? | **Decided:** the workspace requires `t4a-faer` 0.26.0 (features unchanged: `std`, `rayon`, `threadteam`). No source change: the code uses only `Par::Team`, `Par::Seq`, the matmul entry points and `faer::traits`, all present in 0.26.0. | `Cargo.toml`, `Cargo.lock` |
+| Versions? | **Decided:** `tcontract-exec` and `tcontract` 0.8.0, not 0.7.2. `tcontract_exec::with_faer_par` (feature `faer`) has `faer::Par` in its signature, and `tcontract`'s public API takes `tcontract_exec` types, so a faer 0.x change is a breaking change for their users (maintainer rule 2026-10-29: a breaking public API change is a minor bump). A range requirement (`>=0.25, <0.27`) was not used: it would allow two faer identities in one tree, against the entry above. Publishing is approved by the maintainer (2026-10-29). | `Cargo.toml` |
