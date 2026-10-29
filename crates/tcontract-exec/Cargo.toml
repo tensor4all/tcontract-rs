@@ -1,6 +1,6 @@
 [package]
 name = "tcontract-exec"
-version = "0.7.0"
+version = "0.7.1"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
@@ -9,8 +9,16 @@ description = "Execution resources for the tcontract stack: the per-call Exec bu
 readme = "README.md"
 
 [dependencies]
+# `faer`: `with_faer_par`, the one mapping from a placement token to `faer::Par`.
+faer = { workspace = true, optional = true }
 threadteam = { workspace = true }
 thiserror = { workspace = true }
+
+[features]
+faer = ["dep:faer"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dev-dependencies]
 threadteam = { workspace = true, features = ["ledger"] }

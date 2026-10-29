@@ -4,6 +4,7 @@
 mod backend;
 mod dot_general;
 mod error;
+mod fusion;
 mod labels;
 pub(crate) mod problem;
 pub(crate) mod scalar;
@@ -17,6 +18,7 @@ pub use dot_general::{DotGeneral, DotShape};
 pub use error::{
     AliasError, ConfigError, Error, LayoutError, OperandId, Result, ShapeError, Unsupported,
 };
+pub use fusion::{fuse_axes, sort_by_stride};
 pub use labels::Labels;
 pub use problem::{
     CRef, CSpec, ContractionRef, DType, LayoutRef, LayoutSpec, Op, OperandSpec, Problem,

@@ -285,3 +285,12 @@ Design: [cpu-exec-placement](https://github.com/tensor4all/strided-rs/blob/main/
 | Where does placement live now? | **Decided:** the crate `strided-exec` became `threadteam` 0.1.0 (repository tensor4all/threadteam-rs), same API with `strided_exec::` becoming `threadteam::`. The entries above keep the old name as written at the time. | `Cargo.toml`, `deny.toml` |
 | Versions? | **Decided:** `tcontract-exec` and `tcontract` 0.6.0, then 0.7.0 (plain tokens run faer serially) (the public `Exec` and `Pool` expose the token type, so the rename is breaking); `tcontract-kernel` stays 0.3.0 and `tcontract-capi` 0.1.0 (ABI unchanged). strided-basic and strided-perm 0.8.0, strided-view 0.7.0. | `Cargo.toml` |
 | Release step? | **Decided:** merge only after threadteam 0.1.0 and strided 0.8.0 are on crates.io; the release deletes the `[patch.crates-io]` section of the root `Cargo.toml`. | PR description |
+
+## 2026-10-29 Shared helpers (tensor4all/tcontract-rs#148)
+
+| Question | Ruling | Evidence or next check |
+| --- | --- | --- |
+| Where do the shared helpers live? | **Decided (maintainer, #148):** `with_faer_par` in `tcontract-exec` (optional feature `faer`, off by default) replaces the copies in tcontract, tlinalg and tenferro-linalg; the GEMM-axis fusion rule is `tcontract::api::fuse_axes` and `sort_by_stride`. Each backend keeps its own policy for a group that does not fuse: the faer strategy declines it, cpueinsum-blas packs it. | `crates/tcontract-exec/src/faer.rs`, `crates/tcontract/src/api/fusion.rs` |
+| A one-slot team token? | **Decided:** runs faer as `Par::Seq`, as tenferro-linalg already did and as tlinalg's workspace query (`faer_shape`) already assumed. | `with_faer_par` doctest |
+| `HostClass`? | **Decided:** `tcontract_exec::HostClass` is `threadteam::HostClass` re-exported (same variants, detection and names); the hand-synced copy is gone. The type identity changes: a downstream trait implemented for both would now conflict (none found). | `crates/tcontract-exec/src/host.rs` |
+| Versions? | **Decided:** `tcontract-exec` and `tcontract` 0.7.1 (additive). Publishing needs the maintainer's approval of the release chain. | `Cargo.toml` |

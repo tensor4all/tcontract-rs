@@ -1,10 +1,9 @@
 //! Host class and the serial GEMM rate of each class.
 //!
 //! The rate the width and batch rules use is keyed by the kernel dispatch the
-//! machine takes, not by the CPU model. `HostClass` and `HostClass::detect` are
-//! the same enum and the same detection as `threadteam::HostClass`, `strided`'s
-//! and `faer`'s cost tables, and are kept in sync with them by hand; the
-//! `tcontract` crate reuses this copy.
+//! machine takes, not by the CPU model. The class is `threadteam::HostClass`,
+//! re-exported here: one enum and one detection for the dispatch costs and the
+//! rates below.
 //!
 //! | class | ns per flop | multiply-adds per ns | source |
 //! | --- | --- | --- | --- |
@@ -17,76 +16,7 @@
 //! by about 1.66x and leaves their ratio stable within a few percent
 //! (`raw-exec3-boost`, `tables-*-exec3-boost.md`).
 
-use std::sync::OnceLock;
-
-/// The class of the machine, keyed by the kernel dispatch it will take.
-///
-/// Kept in sync with `threadteam::HostClass`. Detected once per process by
-/// [`HostClass::detect`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HostClass {
-    /// `x86_64` with AVX-512F at run time (`x86_64-avx512`).
-    X86_64Avx512,
-    /// `x86_64` with AVX2 and FMA, without AVX-512F (`x86_64-avx2`).
-    X86_64Avx2,
-    /// Any other `x86_64` (`x86_64-scalar`).
-    X86_64Scalar,
-    /// `aarch64` on macOS (`aarch64-apple`).
-    Aarch64Apple,
-    /// Any other `aarch64` (`aarch64`).
-    Aarch64,
-    /// Everything else (`generic`).
-    Generic,
-}
-
-impl HostClass {
-    /// The class of this host, detected at the first call and cached
-    /// (`OnceLock`; `is_x86_feature_detected!` on x86_64).
-    pub fn detect() -> Self {
-        static CLASS: OnceLock<HostClass> = OnceLock::new();
-        *CLASS.get_or_init(Self::detect_uncached)
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    fn detect_uncached() -> Self {
-        if std::arch::is_x86_feature_detected!("avx512f") {
-            HostClass::X86_64Avx512
-        } else if std::arch::is_x86_feature_detected!("avx2")
-            && std::arch::is_x86_feature_detected!("fma")
-        {
-            HostClass::X86_64Avx2
-        } else {
-            HostClass::X86_64Scalar
-        }
-    }
-
-    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-    fn detect_uncached() -> Self {
-        HostClass::Aarch64Apple
-    }
-
-    #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
-    fn detect_uncached() -> Self {
-        HostClass::Aarch64
-    }
-
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    fn detect_uncached() -> Self {
-        HostClass::Generic
-    }
-
-    /// The class name used in the docs and the tables.
-    pub const fn name(self) -> &'static str {
-        match self {
-            HostClass::X86_64Avx512 => "x86_64-avx512",
-            HostClass::X86_64Avx2 => "x86_64-avx2",
-            HostClass::X86_64Scalar => "x86_64-scalar",
-            HostClass::Aarch64Apple => "aarch64-apple",
-            HostClass::Aarch64 => "aarch64",
-            HostClass::Generic => "generic",
-        }
-    }
-}
+pub use threadteam::HostClass;
 
 /// Estimated serial time per real flop of a GEMM item on a host class (the
 /// table in the module documentation).
