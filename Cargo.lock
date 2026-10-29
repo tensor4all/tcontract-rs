@@ -956,9 +956,9 @@ dependencies = [
 
 [[package]]
 name = "t4a-faer"
-version = "0.25.0"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b44b862d9af74968e8e730d9a4b8c347327131d0e7425ccff803a14034a9a77"
+checksum = "0f83795abfe6b77769728a65c30c86f9301f59e4cbad2fdbf09d7fcbfa1aabe1"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -972,7 +972,6 @@ dependencies = [
  "pulp",
  "rayon",
  "reborrow",
- "spindle",
  "t4a-faer-traits",
  "t4a-private-gemm-x86",
  "threadteam",
@@ -980,9 +979,9 @@ dependencies = [
 
 [[package]]
 name = "t4a-faer-traits"
-version = "0.24.0"
+version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b20254002b5028791c3b97cf7baebce6ea5f3541977348da1c109d16c1dc889"
+checksum = "1e518a21025297df2986819d8691cc590e473dc8676316895bfeecddffad0d52"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -997,9 +996,9 @@ dependencies = [
 
 [[package]]
 name = "t4a-private-gemm-x86"
-version = "0.1.26"
+version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "718e4349dce54baef0be67f410529bee5e9190b78d525e2456450f506d24a66a"
+checksum = "1cf8bd6ed6e33736dc1b242a6521e234a5d968a14faa634b15ee086ea39ef995"
 dependencies = [
  "crossbeam",
  "defer",
@@ -1013,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1064,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "t4a-faer",
  "thiserror",
