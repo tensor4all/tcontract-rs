@@ -23,24 +23,24 @@ rust-version = "1.89"
 # requirement would instead force a coordinated release of tcontract, cpueinsum
 # and tlinalg for every strided patch (tensor4all/tenferro-rs#2214).
 # Placement lives in `threadteam`: every fan-out entry takes an `Exec` token.
-strided-basic = { version = "0.8.0", default-features = false }
-threadteam = { version = "0.1.0" }
+strided-basic = { version = "0.9.0", default-features = false }
+threadteam = { version = "0.2.0" }
 strided-view = { version = "0.7.0" }
-strided-perm = { version = "0.8.0" }
-strided-kernel = { version = "0.8.0" }
+strided-perm = { version = "0.9.0" }
+strided-kernel = { version = "0.9.0" }
 tcontract-kernel = { version = "0.3.0", path = "crates/tcontract-kernel", default-features = false }
-tcontract-exec = { version = "0.8.0", path = "crates/tcontract-exec" }
+tcontract-exec = { version = "0.9.0", path = "crates/tcontract-exec" }
 tcontract-capi = { version = "0.1.0", path = "crates/tcontract-capi" }
 # Path-only on purpose: `tcontract` only dev-depends on it, and a version here
 # makes `cargo package` resolve the never-published testkit from crates.io and fail.
 tcontract-testkit = { path = "crates/tcontract-testkit" }
-tcontract = { version = "0.8.0", path = "crates/tcontract" }
+tcontract = { version = "0.9.0", path = "crates/tcontract" }
 
 approx = "0.5"
 criterion = "0.5"
 # One faer identity across the stack: tenferro and tlinalg use the same t4a-faer
 # range. How faer schedules a width is decided in t4a-faer (tensor4all/faer#59).
-faer = { package = "t4a-faer", version = "0.26.0", default-features = false, features = ["std", "rayon", "threadteam"] }
+faer = { package = "t4a-faer", version = "0.27.0", default-features = false, features = ["std", "rayon", "threadteam"] }
 num-complex = "0.4"
 num-traits = "0.2"
 pulp = "0.22"
