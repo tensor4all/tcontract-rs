@@ -148,6 +148,7 @@ pub mod cfg_avx2_f64 {
         planar = [(1, 5), (2, 2)],
         onem = [(2, 6), (3, 4), (1, 8)],
         threem = [(1, 4), (2, 2)],
+        edges = yes,
     );
 }
 
@@ -183,5 +184,6 @@ pub mod cfg_avx2_f32 {
         planar = [(1, 5), (2, 2)],
         onem = [(2, 6), (3, 4), (1, 8)],
         threem = [(1, 4), (2, 2)],
+        edges = yes,
     );
 }

@@ -298,6 +298,339 @@ macro_rules! simd_kernels {
             ) {
                 threem::<MV, NR>(kc, a, b, ab)
             }
+
+            /// Live-extent variants of [`real`] and [`planar`].
+            ///
+            /// A partial micro-tile — the last `MR` block of a row panel or the
+            /// last `NR` block of a column panel — costs a whole register tile
+            /// under the full kernels: `ceil(n/NR)*NR/n` of the arithmetic for a
+            /// fraction of the work. The variants here run the K loop only for
+            /// its live vectors and columns, read the packed slivers at the
+            /// **full** family strides (`MV*L` reals per k for A and `NR` for B;
+            /// doubled for the two planes of a planar panel) so that packing is
+            /// untouched, and then initialise the rest of the declared
+            /// `MR x NR` tile with zeros — no K-loop work there, but the
+            /// full-initialisation contract of [`KernelFamily`](crate::KernelFamily)
+            /// holds, which is what lets the collect-grid path
+            /// (`pack::permute::permute_grid_rows`, which reads every column of
+            /// every tile) keep permuting whole tiles before clipped emission.
+            ///
+            /// The entry point dispatches on the live extent to a
+            /// monomorphised body: `ceil(m_live/L)` vector registers by
+            /// `n_live` columns.
+            ///
+            /// Wired into the family ABI for the x86 menus only (`configs!` with
+            /// `edges = yes`); a target whose families do not expose them would
+            /// otherwise compile them and never run them, so they are not built
+            /// there.
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            pub mod edge {
+                use super::*;
+
+                /// Widest live row extent, in vector registers, the dispatch
+                /// chains below cover. `real_tramp` asserts that the shape it is
+                /// instantiated for is inside the box, and
+                /// `edge_entries_match_reference_at_every_live_extent` exercises
+                /// every shape that has an entry, so a menu entry outside it
+                /// fails loudly instead of dispatching to the wrong body.
+                ///
+                /// ponytail: the chains enumerate one fixed box (three vector
+                /// registers by twelve columns) rather than each shape's own
+                /// extent, because `macro_rules!` cannot repeat over a
+                /// const-generic bound. The price is a few dead arms per narrow
+                /// shape, which `real_edge`/`planar_edge` turn into a no-op
+                /// rather than an out-of-range access; the ceiling is a shape
+                /// wider than the box, caught by the assert.
+                pub const MV_MAX: usize = 3;
+                /// Widest live column extent the chains cover; see [`MV_MAX`].
+                pub const NR_MAX: usize = 12;
+
+                /// Live-extent [`real`](super::real).
+                ///
+                /// Computes `MVL x NRL` of the declared `MR x NR` tile (from
+                /// zero) and zeroes the rest of that tile.
+                ///
+                /// # Safety
+                /// The CPU must support this module's target features. `a` must
+                /// be valid for `MV*L*kc` reads, `b` for `NR*kc` reads and `ab`
+                /// for `MV*L*NR` writes — the full tile's extents, because the
+                /// strides are the full tile's. Accesses are unaligned.
+                $(#[target_feature(enable = $feat)])+
+                pub unsafe fn real_edge<
+                    const MV: usize,
+                    const NR: usize,
+                    const MVL: usize,
+                    const NRL: usize,
+                >(
+                    kc: usize,
+                    a: *const $t,
+                    b: *const $t,
+                    ab: *mut $t,
+                ) {
+                    // The dispatch chain has one arm per register block of its
+                    // widest shape, so a shape narrower than that instantiates
+                    // arms it can never reach. Returning here keeps every
+                    // compiled instantiation inside the declared tile even if
+                    // one were reached; for a reachable arm this folds away.
+                    if MVL > MV || NRL > NR {
+                        return;
+                    }
+                    let mr = MV * L;
+                    let mut acc = [[$zero(); MVL]; NRL];
+                    for p in 0..kc {
+                        let ap = a.add(p * mr);
+                        let bp = b.add(p * NR);
+                        let mut av = [$zero(); MVL];
+                        for u in 0..MVL {
+                            av[u] = $load(ap.add(u * L));
+                        }
+                        for j in 0..NRL {
+                            let bv = $set1(*bp.add(j));
+                            for u in 0..MVL {
+                                acc[j][u] = $fmadd(av[u], bv, acc[j][u]);
+                            }
+                        }
+                    }
+                    // The live block, at the declared column stride `MR`.
+                    for j in 0..NRL {
+                        for u in 0..MVL {
+                            $store(ab.add(j * mr + u * L), acc[j][u]);
+                        }
+                    }
+                    // The dead slots, without K-loop work: first the vectors
+                    // past `MVL` of each live column, then the dead columns.
+                    for j in 0..NRL {
+                        for u in MVL..MV {
+                            $store(ab.add(j * mr + u * L), $zero());
+                        }
+                    }
+                    for j in NRL..NR {
+                        for u in 0..MV {
+                            $store(ab.add(j * mr + u * L), $zero());
+                        }
+                    }
+                }
+
+                /// Live-extent [`planar`](super::planar).
+                ///
+                /// Computes `MVL x NRL` complex elements of the declared
+                /// `MR x NR` tile (from zero) and zeroes the rest of it, in both
+                /// planes.
+                ///
+                /// # Safety
+                /// The CPU must support this module's target features. `a` must
+                /// be valid for `2*MV*L*kc` reads, `b` for `2*NR*kc` reads and
+                /// `ab` for `2*MV*L*NR` writes. Accesses are unaligned.
+                $(#[target_feature(enable = $feat)])+
+                pub unsafe fn planar_edge<
+                    const MV: usize,
+                    const NR: usize,
+                    const MVL: usize,
+                    const NRL: usize,
+                >(
+                    kc: usize,
+                    a: *const $t,
+                    b: *const $t,
+                    ab: *mut $t,
+                ) {
+                    // As `real_edge`: a dead arm of the dispatch chain is a
+                    // no-op rather than an out-of-range access.
+                    if MVL > MV || NRL > NR {
+                        return;
+                    }
+                    let mr = MV * L;
+                    let plane = mr * NR;
+                    let mut cr = [[$zero(); MVL]; NRL];
+                    let mut ci = [[$zero(); MVL]; NRL];
+                    for p in 0..kc {
+                        let are = a.add(p * 2 * mr);
+                        let aim = are.add(mr);
+                        let bre = b.add(p * 2 * NR);
+                        let bim = bre.add(NR);
+                        let mut ar = [$zero(); MVL];
+                        let mut ai = [$zero(); MVL];
+                        for u in 0..MVL {
+                            ar[u] = $load(are.add(u * L));
+                            ai[u] = $load(aim.add(u * L));
+                        }
+                        for j in 0..NRL {
+                            let br = $set1(*bre.add(j));
+                            let bi = $set1(*bim.add(j));
+                            for u in 0..MVL {
+                                cr[j][u] = $fmadd(ar[u], br, cr[j][u]);
+                                cr[j][u] = $fnmadd(ai[u], bi, cr[j][u]);
+                                ci[j][u] = $fmadd(ar[u], bi, ci[j][u]);
+                                ci[j][u] = $fmadd(ai[u], br, ci[j][u]);
+                            }
+                        }
+                    }
+                    for j in 0..NRL {
+                        for u in 0..MVL {
+                            $store(ab.add(j * mr + u * L), cr[j][u]);
+                            $store(ab.add(plane + j * mr + u * L), ci[j][u]);
+                        }
+                    }
+                    // The dead slots, in both planes.
+                    for j in 0..NRL {
+                        for u in MVL..MV {
+                            $store(ab.add(j * mr + u * L), $zero());
+                            $store(ab.add(plane + j * mr + u * L), $zero());
+                        }
+                    }
+                    for j in NRL..NR {
+                        for u in 0..MV {
+                            $store(ab.add(j * mr + u * L), $zero());
+                            $store(ab.add(plane + j * mr + u * L), $zero());
+                        }
+                    }
+                }
+
+                /// The row half of the real chain: `MVL` vectors of `nrl`
+                /// columns.
+                ///
+                /// # Safety
+                /// As [`real_edge`], and `MVL <= MV`, `nrl <= NR`.
+                $(#[target_feature(enable = $feat)])+
+                unsafe fn real_cols<const MV: usize, const NR: usize, const MVL: usize>(
+                    kc: usize,
+                    a: *const $t,
+                    b: *const $t,
+                    ab: *mut $t,
+                    nrl: usize,
+                ) {
+                    match nrl {
+                        1 => unsafe { real_edge::<MV, NR, MVL, 1>(kc, a, b, ab) },
+                        2 => unsafe { real_edge::<MV, NR, MVL, 2>(kc, a, b, ab) },
+                        3 => unsafe { real_edge::<MV, NR, MVL, 3>(kc, a, b, ab) },
+                        4 => unsafe { real_edge::<MV, NR, MVL, 4>(kc, a, b, ab) },
+                        5 => unsafe { real_edge::<MV, NR, MVL, 5>(kc, a, b, ab) },
+                        6 => unsafe { real_edge::<MV, NR, MVL, 6>(kc, a, b, ab) },
+                        7 => unsafe { real_edge::<MV, NR, MVL, 7>(kc, a, b, ab) },
+                        8 => unsafe { real_edge::<MV, NR, MVL, 8>(kc, a, b, ab) },
+                        9 => unsafe { real_edge::<MV, NR, MVL, 9>(kc, a, b, ab) },
+                        10 => unsafe { real_edge::<MV, NR, MVL, 10>(kc, a, b, ab) },
+                        11 => unsafe { real_edge::<MV, NR, MVL, 11>(kc, a, b, ab) },
+                        // `real_tramp` clamps `nrl` to `NR <= NR_MAX`.
+                        _ => unsafe { real_edge::<MV, NR, MVL, NR_MAX>(kc, a, b, ab) },
+                    }
+                }
+
+                /// The row half of the planar chain; as [`real_cols`].
+                ///
+                /// # Safety
+                /// As [`planar_edge`], and `MVL <= MV`, `nrl <= NR`.
+                $(#[target_feature(enable = $feat)])+
+                unsafe fn planar_cols<const MV: usize, const NR: usize, const MVL: usize>(
+                    kc: usize,
+                    a: *const $t,
+                    b: *const $t,
+                    ab: *mut $t,
+                    nrl: usize,
+                ) {
+                    match nrl {
+                        1 => unsafe { planar_edge::<MV, NR, MVL, 1>(kc, a, b, ab) },
+                        2 => unsafe { planar_edge::<MV, NR, MVL, 2>(kc, a, b, ab) },
+                        3 => unsafe { planar_edge::<MV, NR, MVL, 3>(kc, a, b, ab) },
+                        4 => unsafe { planar_edge::<MV, NR, MVL, 4>(kc, a, b, ab) },
+                        5 => unsafe { planar_edge::<MV, NR, MVL, 5>(kc, a, b, ab) },
+                        6 => unsafe { planar_edge::<MV, NR, MVL, 6>(kc, a, b, ab) },
+                        7 => unsafe { planar_edge::<MV, NR, MVL, 7>(kc, a, b, ab) },
+                        8 => unsafe { planar_edge::<MV, NR, MVL, 8>(kc, a, b, ab) },
+                        9 => unsafe { planar_edge::<MV, NR, MVL, 9>(kc, a, b, ab) },
+                        10 => unsafe { planar_edge::<MV, NR, MVL, 10>(kc, a, b, ab) },
+                        11 => unsafe { planar_edge::<MV, NR, MVL, 11>(kc, a, b, ab) },
+                        _ => unsafe { planar_edge::<MV, NR, MVL, NR_MAX>(kc, a, b, ab) },
+                    }
+                }
+
+                /// Real entry: `m_live` rows by `n_live` columns of the shape's
+                /// declared tile, in whatever tile format the family has.
+                ///
+                /// # Safety
+                /// As [`real_edge`]. The extents are clamped to the shape, so a
+                /// caller cannot address outside the declared panels or tile;
+                /// an extent outside `1..=MR`/`1..=NR` is a caller error, not a
+                /// supported mode.
+                $(#[target_feature(enable = $feat)])+
+                pub unsafe fn real_tramp<const MV: usize, const NR: usize>(
+                    kc: usize,
+                    a: *const $t,
+                    b: *const $t,
+                    ab: *mut $t,
+                    m_live: usize,
+                    n_live: usize,
+                ) {
+                    assert!(MV <= MV_MAX && NR <= NR_MAX);
+                    let mvl = m_live.div_ceil(L).clamp(1, MV);
+                    let nrl = n_live.clamp(1, NR);
+                    match mvl {
+                        1 => unsafe { real_cols::<MV, NR, 1>(kc, a, b, ab, nrl) },
+                        2 => unsafe { real_cols::<MV, NR, 2>(kc, a, b, ab, nrl) },
+                        _ => unsafe { real_cols::<MV, NR, MV_MAX>(kc, a, b, ab, nrl) },
+                    }
+                }
+
+                /// Planar entry; as [`real_tramp`], with the planar kernel's
+                /// extents.
+                ///
+                /// # Safety
+                /// As [`planar_edge`], including the clamping of the extents.
+                $(#[target_feature(enable = $feat)])+
+                pub unsafe fn planar_tramp<const MV: usize, const NR: usize>(
+                    kc: usize,
+                    a: *const $t,
+                    b: *const $t,
+                    ab: *mut $t,
+                    m_live: usize,
+                    n_live: usize,
+                ) {
+                    assert!(MV <= MV_MAX && NR <= NR_MAX);
+                    let mvl = m_live.div_ceil(L).clamp(1, MV);
+                    let nrl = n_live.clamp(1, NR);
+                    match mvl {
+                        1 => unsafe { planar_cols::<MV, NR, 1>(kc, a, b, ab, nrl) },
+                        2 => unsafe { planar_cols::<MV, NR, 2>(kc, a, b, ab, nrl) },
+                        _ => unsafe { planar_cols::<MV, NR, MV_MAX>(kc, a, b, ab, nrl) },
+                    }
+                }
+
+                // ---- plain-fn trampolines, as for the full kernels ----------
+                //
+                // A `#[target_feature]` function cannot be coerced to a
+                // function pointer, so [`Ukr`](crate::Ukr)-style dispatch needs
+                // one plain wrapper per entry.
+
+                /// Function-pointer form of [`real_tramp`].
+                ///
+                /// # Safety
+                /// As [`real_tramp`], including the target-feature requirement —
+                /// the wrapper drops the attribute, not the obligation.
+                pub unsafe fn tramp_real<const MV: usize, const NR: usize>(
+                    kc: usize,
+                    a: *const $t,
+                    b: *const $t,
+                    ab: *mut $t,
+                    m_live: usize,
+                    n_live: usize,
+                ) {
+                    real_tramp::<MV, NR>(kc, a, b, ab, m_live, n_live)
+                }
+
+                /// Function-pointer form of [`planar_tramp`].
+                ///
+                /// # Safety
+                /// As [`planar_tramp`], including the target-feature requirement.
+                pub unsafe fn tramp_planar<const MV: usize, const NR: usize>(
+                    kc: usize,
+                    a: *const $t,
+                    b: *const $t,
+                    ab: *mut $t,
+                    m_live: usize,
+                    n_live: usize,
+                ) {
+                    planar_tramp::<MV, NR>(kc, a, b, ab, m_live, n_live)
+                }
+            }
         }
     };
 }
@@ -305,6 +638,26 @@ macro_rules! simd_kernels {
 // ---------------------------------------------------------------------------
 // Configuration builders
 // ---------------------------------------------------------------------------
+
+/// The live-extent entry of one menu slot, or `None` when the menu has none.
+///
+/// Split out of [`configs!`] because a `macro_rules!` arm cannot branch on a
+/// token at expansion time: `edges = yes|no` picks the arm, and the `no` arm is
+/// the same call shape so that the two spellings stay in step.
+macro_rules! edge_entry {
+    (yes, real, $m:ident, $mv:literal, $nr:literal) => {
+        Some($m::edge::tramp_real::<$mv, $nr>)
+    };
+    (yes, planar, $m:ident, $mv:literal, $nr:literal) => {
+        Some($m::edge::tramp_planar::<$mv, $nr>)
+    };
+    (no, $kind:ident, $m:ident, $mv:literal, $nr:literal) => {{
+        // A menu without edge variants: the shape exists so that this arm has
+        // the same call shape as the enabled one.
+        let _ = ($mv, $nr);
+        None
+    }};
+}
 
 /// Assemble the [`Ukr`] descriptors for one instruction set / type from a
 /// *menu* of register blocks per method, the default first.
@@ -329,7 +682,8 @@ macro_rules! configs {
      real   = [$(($rmv:literal, $rnr:literal)),+ $(,)?],
      planar = [$(($pmv:literal, $pnr:literal)),+ $(,)?],
      onem   = [$(($omv:literal, $onr:literal)),+ $(,)?],
-     threem = [$(($tmv:literal, $tnr:literal)),+ $(,)?] $(,)?) => {
+     threem = [$(($tmv:literal, $tnr:literal)),+ $(,)?],
+     edges  = $edges:ident $(,)?) => {
         /// Logical `(MR, NR)` with a real kernel, default first.
         ///
         /// The menu is keyed by **position**, not by `MR`: two entries may share
@@ -491,6 +845,54 @@ macro_rules! configs {
                 cplx_config_at(method, i)
             } else {
                 real_config_at(i)
+            }
+        }
+
+        /// The live-extent ("edge") entry of the real kernel at menu position
+        /// `i`, or `None` past the end and when this menu has none.
+        ///
+        /// Its signature is [`TileEdgeFn`](crate::TileEdgeFn): the same packed
+        /// panels and the same declared tile as [`real_config_at`], with the
+        /// live row and column extents as two extra arguments.
+        pub fn real_edge_at(i: usize) -> Option<crate::TileEdgeFn<$t>> {
+            let mut n = 0usize;
+            $(
+                if i == n { return edge_entry!($edges, real, $m, $rmv, $rnr); }
+                n += 1;
+            )+
+            let _ = n;
+            None
+        }
+
+        /// The live-extent entry for `method` at menu position `i`.
+        ///
+        /// Only the native planar kernel has one. 1m's k loop is the real
+        /// kernel's at twice the logical k and 3m's is three planes of it — both
+        /// are wrappers around a *different* geometry, so an inherited real edge
+        /// entry would bypass the transformation rather than accelerate it. They
+        /// keep the full-tile entry.
+        pub fn cplx_edge_at(method: ComplexMethod, i: usize) -> Option<crate::TileEdgeFn<$t>> {
+            if method == ComplexMethod::Planar {
+                let mut n = 0usize;
+                $(
+                    if i == n { return edge_entry!($edges, planar, $m, $pmv, $pnr); }
+                    n += 1;
+                )+
+                let _ = n;
+            }
+            None
+        }
+
+        /// The live-extent entry at a chosen menu position in either domain.
+        pub fn edge_at(
+            complex: bool,
+            method: ComplexMethod,
+            i: usize,
+        ) -> Option<crate::TileEdgeFn<$t>> {
+            if complex {
+                cplx_edge_at(method, i)
+            } else {
+                real_edge_at(i)
             }
         }
 

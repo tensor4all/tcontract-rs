@@ -7,7 +7,7 @@ use tcontract_kernel::{
     Blocking, Families, KernelChoice, KernelHandle, Method, ResolvedGemm, SelectError,
 };
 
-use crate::plan::{PackedPlan, PlanConfig};
+use crate::plan::{PackedPlan, PlanConfig, RowBlock};
 
 /// The complex scheme the default menu uses when the config names none.
 const DEFAULT_METHOD: Method = Method::Native;
@@ -27,6 +27,28 @@ fn default_menu<T: Families>(
     let isa = tcontract_kernel::menu_isa(cfg.isa);
     // Real types ignore the complex method, so one cache entry serves them.
     tcontract_kernel::builtin_menu::<T>(isa, T::IS_COMPLEX.then_some(method))
+}
+
+/// The same menu in its compiled order. An explicit row-block request
+/// (`base`, `mr=`, `idx=`) names a compiled entry, so it must not see the
+/// tuning class's permutation of the menu (issue #156).
+fn default_compiled_menu<T: Families>(
+    cfg: &PlanConfig,
+) -> &'static [&'static tcontract_kernel::KernelFamily<T::Real>] {
+    let method = cfg.method.unwrap_or(DEFAULT_METHOD);
+    let isa = tcontract_kernel::menu_isa(cfg.isa);
+    tcontract_kernel::builtin_compiled_menu::<T>(isa, T::IS_COMPLEX.then_some(method))
+}
+
+/// Which menu a row-block request reads: `Auto` picks among the tuning class's
+/// ordered menu, while every explicit request addresses the compiled menu by
+/// position or `MR`. The class order therefore changes only Auto's default and
+/// its tie-break, never what `idx=0`/`base`/`mr=` mean.
+fn menu_for_row_block<'a, M>(mode: RowBlock, ordered: &'a [M], compiled: &'a [M]) -> &'a [M] {
+    match mode {
+        RowBlock::Auto => ordered,
+        RowBlock::Base | RowBlock::Pin(_) | RowBlock::Index(_) => compiled,
+    }
 }
 
 /// Resolve the family, blocking and partition of `p` for storage type `T`, at
@@ -54,7 +76,9 @@ pub(crate) fn resolve<T: Families>(
     let auto = matches!(cfg.kernel, KernelChoice::Auto);
     let chosen;
     let choice = if auto {
-        let menu = default_menu::<T>(cfg);
+        let ordered = default_menu::<T>(cfg);
+        let compiled = default_compiled_menu::<T>(cfg);
+        let menu = menu_for_row_block(p.row_block_mode, ordered, compiled);
         let shapes: Vec<(usize, usize)> = menu.iter().map(|f| (f.mr, f.nr)).collect();
         let shape = p.row_block(&shapes).map(|i| shapes[i]);
         let family = menu
@@ -163,3 +187,6 @@ fn check_family<T: Families>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

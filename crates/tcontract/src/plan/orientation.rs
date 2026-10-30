@@ -44,16 +44,21 @@ impl Orient {
 /// `Index` re-runs the whole grid the rule was derived from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RowBlock {
-    /// The kernel set's default shape — the Phase 3 choice.
+    /// The kernel set's compiled default shape — the Phase 3 choice.
     Base,
-    /// The planner's row-block rule (`row_block`). The default.
+    /// The planner's row-block rule (`row_block`). The default. Auto starts from
+    /// the host tuning class's ordered menu, so the class's measured shape is its
+    /// default and its alternates keep the class's order.
     #[default]
     Auto,
     /// A specific logical `MR`, where the kernel set has one.
     Pin(usize),
-    /// A position on the menu, which is comparable across element types and
-    /// methods in a way a bare `MR` is not — `mr=16` names different shapes in
-    /// `f32` and `f64`, `idx=1` names "the first alternate" in both.
+    /// A **compiled** menu position: the ISA module's order, default first. It is
+    /// comparable across element types and methods in a way a bare `MR` is not —
+    /// `mr=16` names different shapes in `f32` and `f64`, `idx=1` names "the first
+    /// alternate" in both. The tuning class's ordering is deliberately not
+    /// visible here (issue #156): `idx=0` is the ISA module's compiled default even
+    /// on a host whose class prefers another shape.
     Index(usize),
 }
 

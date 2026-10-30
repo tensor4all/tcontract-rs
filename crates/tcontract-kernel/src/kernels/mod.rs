@@ -143,6 +143,7 @@ fn append_config<R: RealSlot>(
     required: CpuFeatures,
     priority: u16,
     cfg: KernelConfig<R>,
+    edge: Option<TileEdgeFn<R>>,
 ) {
     // Configs are process-constant compiled menus; effective-width blocking
     // is resolved separately when a plan selects a descriptor.
@@ -215,6 +216,7 @@ fn append_config<R: RealSlot>(
         tile_bound: u.tile,
         c_pref: CPref::Col,
         ukr: UkrFn::Tile(u.func),
+        edge,
         b_access: BAccess::Packed,
         c_update: CUpdate::ScratchTile,
         blocks: Blocksizes {
@@ -245,6 +247,7 @@ fn scalar_families<R: RealSlot>() -> List<R> {
         CpuFeatures::NONE,
         10,
         reference::scalar::config_real::<R, 4, 4>(),
+        None,
     );
     for method in ComplexMethod::ALL {
         append_config(
@@ -254,6 +257,7 @@ fn scalar_families<R: RealSlot>() -> List<R> {
             CpuFeatures::NONE,
             10,
             reference::scalar::config_cplx::<R, 4, 4>(method),
+            None,
         );
     }
     out
@@ -278,6 +282,10 @@ fn append_menu<R: RealSlot>(
             // INVARIANT: indices come from this compiled menu; existing
             // row_block_menus_are_well_formed tests cover config_at coverage.
             let cfg = (menu.config_at)(complex, method, i).expect("compiled menu has a config");
+            // The live-extent entry travels with the descriptor, and only the
+            // native planar and real kernels have one: `edge_at` answers `None`
+            // for 1m and 3m, whose wrappers must not be bypassed.
+            let edge = (menu.edge_at)(complex, method, i);
             append_config(
                 out,
                 label,
@@ -285,6 +293,7 @@ fn append_menu<R: RealSlot>(
                 required,
                 priority.saturating_sub(u16::try_from(i).unwrap_or(u16::MAX)),
                 cfg,
+                edge,
             );
         }
     }

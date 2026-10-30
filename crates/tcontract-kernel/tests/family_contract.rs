@@ -16,6 +16,7 @@ const fn fam(mr: usize, nr: usize) -> KernelFamily<f64> {
         tile_bound: mr * nr,
         c_pref: CPref::Any,
         ukr: UkrFn::Tile(portable::real_tile::<f64, 4, 4>),
+        edge: None,
         b_access: BAccess::Packed,
         c_update: CUpdate::ScratchTile,
         blocks: Blocksizes {

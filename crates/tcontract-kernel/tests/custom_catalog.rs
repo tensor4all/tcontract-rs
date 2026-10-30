@@ -23,6 +23,7 @@ macro_rules! family {
             tile_bound: $mr * $mr,
             c_pref: CPref::Any,
             ukr: UkrFn::Tile(portable::real_tile::<f64, $mr, $mr>),
+            edge: None,
             b_access: BAccess::Packed,
             c_update: CUpdate::ScratchTile,
             blocks: Blocksizes {

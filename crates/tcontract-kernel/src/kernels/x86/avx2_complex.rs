@@ -119,6 +119,8 @@ macro_rules! family {
             tile_bound: 2 * $mr * NR,
             c_pref: CPref::Col,
             ukr: UkrFn::Tile($tile),
+            // The interleaved kernel has no live-extent variant.
+            edge: None,
             b_access: BAccess::Packed,
             c_update: CUpdate::ScratchTile,
             // Conservative seeds from the packed footprints (c64 4x4: a

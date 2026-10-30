@@ -193,6 +193,9 @@ macro_rules! families {
             tile_bound: 16,
             c_pref: CPref::Any,
             ukr: UkrFn::Tile(real_tile::<$r, 4, 4>),
+            // The portable reference loops already take the live extent in
+            // their direct arm and have no vectorised tile to shorten.
+            edge: None,
             b_access: BAccess::Packed,
             c_update: CUpdate::ScratchTile,
             blocks: Blocksizes {

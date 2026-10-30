@@ -45,6 +45,57 @@ fn auto_head_is_the_head_of_the_default_menu() {
     );
 }
 
+/// The **compiled** menu is still the menu the dispatch offers, entry for entry:
+/// the tuning class (#156) only reorders the menu Auto chooses from, so a
+/// `RowBlock` index still names the compiled position it always did.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[test]
+fn the_default_menu_order_is_the_dispatch_menu_order() {
+    fn shapes<R: Real>(menu: &[&KernelFamily<R>]) -> Vec<(usize, usize)> {
+        menu.iter().map(|f| (f.mr, f.nr)).collect()
+    }
+
+    use tcontract_kernel::kernels::x86;
+    let isa = menu_isa(KernelForce::Auto);
+    let xisa = match isa {
+        Isa::Avx512 => x86::Isa::Avx512,
+        Isa::Avx2 => x86::Isa::Avx2,
+        _ => return, // a pinned scalar host has no vectorised menu to compare
+    };
+    let configs64 = x86::isa_configs_f64(xisa);
+    assert_eq!(
+        shapes(builtin_compiled_menu::<f64>(isa, None)),
+        (configs64.row_blocks)(false, ComplexMethod::Planar),
+        "f64 real compiled menu"
+    );
+    assert_eq!(
+        shapes(builtin_compiled_menu::<C64>(isa, Some(Method::Native))),
+        (configs64.row_blocks)(true, ComplexMethod::Planar),
+        "c64 native compiled menu"
+    );
+    let configs32 = x86::isa_configs_f32(xisa);
+    assert_eq!(
+        shapes(builtin_compiled_menu::<f32>(isa, None)),
+        (configs32.row_blocks)(false, ComplexMethod::Planar),
+        "f32 real compiled menu"
+    );
+    assert_eq!(
+        shapes(builtin_compiled_menu::<C32>(isa, Some(Method::Native))),
+        (configs32.row_blocks)(true, ComplexMethod::Planar),
+        "c32 native compiled menu"
+    );
+    // The tuning class is a process constant and the menus are cached per
+    // `(isa, method)`, so a second lookup must answer with the same slices.
+    assert!(core::ptr::eq(
+        builtin_menu::<f64>(isa, None),
+        builtin_menu::<f64>(isa, None)
+    ));
+    assert!(core::ptr::eq(
+        builtin_compiled_menu::<f64>(isa, None),
+        builtin_compiled_menu::<f64>(isa, None)
+    ));
+}
+
 #[test]
 fn every_available_family_matches_a_packed_product_oracle() {
     fn check<T: Families>(tol: f64) {

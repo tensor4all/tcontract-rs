@@ -238,14 +238,18 @@ pub(crate) fn call_workspace_req<T: Element>(
             (blocked_mc, grid)
         }
     };
-    // The packed A block: the serial MC or the blocked path's rounded rows.
+    // The packed A block: the serial MC or the blocked path's rounded rows. Its
+    // depth is one live K slab, `min(kc, k)`, exactly as `execute_once` sizes it, so
+    // the bound stays exact instead of charging the cache block on a contraction
+    // shallower than it (tcontract-rs#156).
     let mc = rg.mc.max(blocked_mc);
-    let a_bytes = panel_len(mc, mr, kc, fam.a_pack) * element;
+    let kd = kc.min(k);
+    let a_bytes = panel_len(mc, mr, kd, fam.a_pack) * element;
     // The shared B panel at the widest grid: the largest slice is one column
     // group, and lanes round the slice up to a cache line.
     let group_cap = nc.div_ceil(nr);
     let b_group =
-        panel_len(group_cap * nr, nr, kc, fam.b_pack).next_multiple_of((64 / element).max(1));
+        panel_len(group_cap * nr, nr, kd, fam.b_pack).next_multiple_of((64 / element).max(1));
     let b_bytes = if direct_b {
         0
     } else {

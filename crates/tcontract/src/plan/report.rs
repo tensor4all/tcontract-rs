@@ -1,6 +1,6 @@
 //! [`PlanReport`]: what a plan decided, fixed when it is built.
 
-use tcontract_kernel::{ComplexScheme, Origin, PartitionPolicy};
+use tcontract_kernel::{ComplexScheme, Origin, PartitionPolicy, TuningClass};
 
 use super::PlanStats;
 use crate::driver::DynamicReport;
@@ -59,6 +59,13 @@ pub enum Reason {
 pub struct PackedReport {
     /// The resolved kernel family's stable identifier.
     pub family_id: &'static str,
+    /// The host tuning class the default menu was ordered by: the selected
+    /// family's `ISA` does not say how wide the datapath under it is, and
+    /// AVX-512 on a 256-bit datapath (Zen 4, Zen 5 mobile) is a different
+    /// register-block row from AVX-512 on a full-width one
+    /// (`tcontract_kernel::TuningClass`, issue #156). [`TuningClass::Other`]
+    /// means no class-specific ordering applied.
+    pub tuning_class: TuningClass,
     /// Provenance of the family.
     pub origin: Origin,
     /// The family's complex scheme, or none for real storage.

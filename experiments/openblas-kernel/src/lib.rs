@@ -94,6 +94,7 @@ pub static OPENBLAS_FAMILY: KernelFamily<f64> = KernelFamily {
     tile_bound: MR * NR,
     c_pref: CPref::Col,
     ukr: UkrFn::Tile(tile_ukr),
+    edge: None,
     b_access: BAccess::Packed,
     c_update: CUpdate::ScratchTile,
     blocks: Blocksizes {
