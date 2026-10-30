@@ -627,9 +627,17 @@ where
     // routes were rejected before taking a workspace or writing anything.
     let spmd = pm > 1;
     // INVARIANT: the plan validated serial's maximal NC, and p >= 1.
-    let at_width = rg
-        .with_threads(p)
-        .expect("validated effective-width blocking");
+    //
+    // At one participant the blocking is already the one the plan resolved:
+    // `resolve::resolve` retargets to the serial width (`with_threads(1)`) when the
+    // plan is built, so re-deriving it here would recompute the same `(mc, kc, nc)`
+    // on every serial call. Only a wider call re-derives.
+    let at_width = match p {
+        1 => rg,
+        _ => rg
+            .with_threads(p)
+            .expect("validated effective-width blocking"),
+    };
     let blocking = Blocking {
         mc: at_width.mc,
         kc: at_width.kc,
@@ -764,12 +772,22 @@ where
     // also a small win: a group's slice is contiguous, so groups do not share
     // cache lines at their boundaries.
     //
-    // The stride between slices is the *worst-case* sliver size, `kc` deep and
+    // The stride between slices is the *worst-case* sliver size, `kd` deep and
     // not `pc_len` deep, precisely so that two groups sitting on different `pc`
     // blocks at the same moment still cannot overlap.
-    let ap_len = panel_len(mc, mr, kc, fam.a_pack);
+    //
+    // `kd` is `min(kc, k)`, for the reason `mc` and `nc` above are clamped to the
+    // problem: a packed panel holds **one K slab**, and `pack_a_rows` /
+    // `pack_b_slivers` are handed `pc_len <= min(kc, k)` columns of it
+    // (`b_sliver` is `b_per_k * pc_len` in `static_grid`/`dynamic`). Sizing by the
+    // cache block alone over-allocates by `kc / k` on a shallow contraction (8x at
+    // `k = 32`, `kc = 256`), which for a call without a workspace is the difference
+    // between a small heap block and a fresh `mmap` plus page faults on every call;
+    // measured, that was most of the small-shape per-call floor of tcontract-rs#156.
+    let kd = kc.min(k);
+    let ap_len = panel_len(mc, mr, kd, fam.a_pack);
     let group_cap = nc.div_ceil(nr).div_ceil(pn);
-    let b_group = panel_len(group_cap * nr, nr, kc, fam.b_pack);
+    let b_group = panel_len(group_cap * nr, nr, kd, fam.b_pack);
     // Under batch-axis claiming every lane packs its own `B` into one slice of
     // the buffer, so the slices are cache-line aligned to keep lanes apart.
     let (panels, b_group) = match lanes > 1 {
@@ -856,7 +874,15 @@ where
     let (scatter_buf, bars) = match lease.as_ref() {
         Some(l) => (l.scatter(), l.barriers()),
         None => {
-            local_bars = (0..pn).map(|_| Barrier::new(pm)).collect();
+            // INVARIANT: a barrier is only ever read under `pm > 1` - `run_strip`
+            // takes `&bars[g]` only then, and `run_dynamic` (the only other reader)
+            // needs `dyn_jobs`, which `execution_geometry` grants at `pm > 1` and
+            // only for the barrier-bearing route. A serial call therefore builds
+            // none.
+            local_bars = match pm {
+                0 | 1 => Vec::new(),
+                _ => (0..pn).map(|_| Barrier::new(pm)).collect(),
+            };
             (local_scatter.as_slice(), local_bars.as_slice())
         }
     };
@@ -961,6 +987,15 @@ where
 
     if p == 1 {
         note_call();
+        // ponytail: a serial call still takes the workspace's team set (for the
+        // packed `B` panel and the block scatters) and checks its worker slot out
+        // of the owner's map, which is two lock/pop/push round trips and measured
+        // ~200 ns of the ~1 us n = 8 call. Moving the panel into the worker slot
+        // would remove it and change what `WorkspaceReq::b_bytes` and
+        // `retained_panel_bytes` mean (a per-worker panel instead of a team one),
+        // so it belongs with the workspace accounting, not here. The rest of the
+        // setup (geometry, blocking, panel sizing, `Ctx`) is ~300 ns and is
+        // already rebuilt only once per call; see the tcontract-rs#156 report.
         with_buffers(&mut |ap, tile| {
             // SAFETY: `execute`'s contract, and these buffers are exclusive to
             // this call for its duration.
