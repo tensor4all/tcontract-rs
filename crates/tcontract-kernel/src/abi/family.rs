@@ -184,6 +184,18 @@ pub struct Caps {
 /// writing, and initialize every element required by the tile format and
 /// logical geometry before returning (not unused extra `tile_bound` capacity).
 pub type TileUkrFn<R> = unsafe fn(kc: usize, a: *const R, b: *const R, tile: *mut R);
+/// Live-extent scratch-tile kernel: overwrite the entire declared tile with A·B
+/// restricted to `m_live x n_live`, from zero.
+///
+/// The panels are the family's **full** packed panels — the strides are the
+/// declared tile's, so the slivers are read exactly as [`TileUkrFn`] reads them —
+/// and the tile is the family's full `mr x nr` accumulator tile. Only the
+/// `m_live x n_live` live block needs K-loop work; every other slot of the
+/// declared tile must still be initialized (zeroed is the natural choice) before
+/// returning, because the write-back and the collect-grid permutation read the
+/// declared tile, not the live extent. `m_live <= mr` and `n_live <= nr`.
+pub type TileEdgeFn<R> =
+    unsafe fn(kc: usize, a: *const R, b: *const R, tile: *mut R, m_live: usize, n_live: usize);
 /// Direct kernel: `d = alpha_d*d + beta_ab*(A*B)` on an m×n tile.
 /// A is packed with unit row stride; B and D use the supplied strides.
 /// With alpha_d zero D may be uninitialized: the kernel must not read it or
@@ -256,6 +268,14 @@ pub struct DriverFamily<R: 'static> {
     pub b_access: BAccess,
     /// The kernel arm.
     pub kernel: UkrFn<R>,
+    /// Live-extent entry for the tile arm, if this family has one.
+    ///
+    /// `None` for every family whose kernel is not a plain real or native
+    /// planar micro-kernel: the induced 1m/4m wrappers, the native 1m and 3m
+    /// methods, the native interleaved complex kernel, the NEON and the scalar
+    /// menus. A Direct family never has one; its own kernel already takes the
+    /// live extent.
+    pub edge: Option<TileEdgeFn<R>>,
     /// Value copied into [`UkrAux::opaque`] for each call.
     pub opaque: *const (),
     /// Induced families' inner real kernel, or none.
@@ -351,6 +371,19 @@ pub struct KernelFamily<R: 'static> {
     pub c_pref: CPref,
     /// Kernel pointer.
     pub ukr: UkrFn<R>,
+    /// Live-extent entry for the [`CUpdate::ScratchTile`] arm, or none.
+    ///
+    /// The same panels and the same declared tile as `ukr`'s tile arm, with the
+    /// live row/column extents as extra arguments, so a partial micro-tile need
+    /// not compute a whole register block (see [`TileEdgeFn`]).
+    ///
+    /// `None` unless the family's arithmetic is a plain real or native planar
+    /// micro-kernel of this crate's x86 menus: an induced family's `ukr` is the
+    /// *inner* real kernel and calling it directly here would bypass the 1m/4m
+    /// transformation, so induced descriptors, the native 1m and 3m methods, the
+    /// native interleaved complex kernel and the scalar/NEON menus all keep the
+    /// full-tile entry.
+    pub edge: Option<TileEdgeFn<R>>,
     /// B access policy.
     pub b_access: BAccess,
     /// Output update contract.
@@ -515,6 +548,7 @@ impl<R: Real> KernelFamily<R> {
             tile_fmt,
             b_access: self.b_access,
             kernel: self.ukr,
+            edge: self.edge,
             opaque: self.opaque,
             inner: self.inner,
             method: self.complex.map(|s| s.method),

@@ -204,6 +204,7 @@ pub mod cfg_neon_f64 {
         planar = [(2, 6), (2, 5), (1, 12)],
         onem = [(2, 8), (4, 6), (3, 8)],
         threem = [(1, 8), (2, 3), (2, 4)],
+        edges = no,
     );
 }
 
@@ -236,6 +237,7 @@ pub mod cfg_neon_f32 {
         planar = [(2, 6), (2, 5), (1, 12)],
         onem = [(4, 6), (3, 8), (6, 4)],
         threem = [(1, 8), (2, 3), (2, 4)],
+        edges = no,
     );
 }
 
@@ -307,6 +309,10 @@ pub struct IsaConfigs<T> {
     pub cplx: fn(ComplexMethod) -> KernelConfig<T>,
     pub row_blocks: fn(bool, ComplexMethod) -> &'static [(usize, usize)],
     pub config_at: fn(bool, ComplexMethod, usize) -> Option<KernelConfig<T>>,
+    /// Always `None` on this architecture: the live-extent ("edge") variants
+    /// are generated and wired into the family ABI for the x86 menus only, so a
+    /// NEON family keeps the full-tile entry until one is measured here.
+    pub edge_at: fn(bool, ComplexMethod, usize) -> Option<crate::TileEdgeFn<T>>,
 }
 
 /// As x86's, written by hand: the derive would demand `T: Debug` for a struct
@@ -334,6 +340,7 @@ macro_rules! dispatch {
                     cplx: $cfg::cplx_config,
                     row_blocks: $cfg::row_blocks,
                     config_at: $cfg::config_at,
+                    edge_at: $cfg::edge_at,
                 },
             }
         }

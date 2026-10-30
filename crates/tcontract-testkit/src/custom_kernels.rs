@@ -3,8 +3,8 @@
 //! This module plays the part of a user of tcontract: it depends on the public
 //! kernel contract only, implements its kernels itself, and never calls the
 //! process-wide `register`. Its kernels are deliberately tiny scalar loops;
-//! they exist to prove the selection, ownership and diagnostics contracts,
-//! not to be fast.
+//! they exist to prove the selection, ownership, diagnostics and driver-dispatch
+//! contracts, not to be fast.
 //!
 //! The ABI each kernel implements is the documented one of
 //! [`tcontract_kernel::TileUkrFn`]: A packed `MR` reals per k-step, B packed
@@ -13,9 +13,11 @@
 //!
 //! What safe downstream code cannot do with a handle is pinned by the
 //! `compile_fail` doctests of `tcontract_kernel::KernelCatalog`.
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use tcontract_kernel::{
     portable, Axis, BAccess, Blocksizes, CPref, CUpdate, Caps, ComplexScheme, CpuFeatures, Isa,
-    KernelFamily, KernelImpl, Layout, Method, Origin, TileFormat, UkrFn,
+    KernelFamily, KernelImpl, Layout, Method, Origin, Real, TileFormat, UkrFn,
 };
 
 /// How this crate reports itself in diagnostics.
@@ -69,6 +71,9 @@ macro_rules! real_family {
             tile_bound: $mr * $nr,
             c_pref: CPref::Any,
             ukr: UkrFn::Tile(tile_kernel::<$r, $mr, $nr>),
+            // A downstream family without live-extent variants: the driver
+            // falls back to the full-tile entry.
+            edge: None,
             b_access: BAccess::Packed,
             c_update: CUpdate::ScratchTile,
             blocks: Blocksizes {
@@ -112,8 +117,70 @@ macro_rules! complex_family {
 real_family!(F64_2X2, f64, "custom.f64.2x2", 2, 2, 64);
 real_family!(F64_3X4, f64, "custom.f64.3x4", 3, 4, 63);
 real_family!(F32_2X2, f32, "custom.f32.2x2", 2, 2, 64);
+real_family!(F64_4X4, f64, "custom.f64.4x4", 4, 4, 64);
 complex_family!(C64_2X2, F64_2X2, f64, "custom.c64.native.2x2", 2, 2);
 complex_family!(C32_2X2, F32_2X2, f32, "custom.c32.native.2x2", 2, 2);
+
+/// Live-extent calls the counting entry below has served, for the driver's
+/// dispatch test.
+///
+/// One counter per process, and one test binary uses this family, so a test can
+/// `swap(0)` it, run one contraction and read the count.
+pub static EDGE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// The `(m_live, n_live)` of the last live-extent call, as `m_live << 8 | n_live`.
+pub static EDGE_LAST: AtomicUsize = AtomicUsize::new(0);
+
+/// A live-extent entry that counts its calls and then computes only the live
+/// block, so a caller can prove the driver took the edge branch rather than the
+/// full-tile one (`crates/tcontract/src/driver/tile.rs`).
+///
+/// # Safety
+/// As [`tile_kernel`]: `a`/`b` cover `kc * MR`/`kc * NR` readable reals and
+/// `tile` covers `MR * NR` writable reals, not aliasing either; the declared
+/// tile is fully initialized, which the driver's write-back reads.
+unsafe fn counting_edge<R: Real, const MR: usize, const NR: usize>(
+    kc: usize,
+    a: *const R,
+    b: *const R,
+    tile: *mut R,
+    m_live: usize,
+    n_live: usize,
+) {
+    assert!(
+        m_live <= MR && n_live <= NR,
+        "the live extent {m_live}x{n_live} is inside the {MR}x{NR} tile"
+    );
+    EDGE_CALLS.fetch_add(1, Ordering::Relaxed);
+    EDGE_LAST.store((m_live << 8) | n_live, Ordering::Relaxed);
+    // INVARIANT: one plane (`TileFormat::Real`), so the declared tile is exactly
+    // `MR * NR` reals; every slot outside the live block is zeroed because the
+    // driver reads the whole tile back.
+    // SAFETY: the entry's contract; only the live block of the packed slivers is
+    // read, and the declared tile is written everywhere before returning.
+    unsafe {
+        for slot in 0..MR * NR {
+            *tile.add(slot) = R::ZERO;
+        }
+        for j in 0..n_live {
+            for i in 0..m_live {
+                let mut sum = R::ZERO;
+                for p in 0..kc {
+                    sum += *a.add(p * MR + i) * *b.add(p * NR + j);
+                }
+                *tile.add(j * MR + i) = sum;
+            }
+        }
+    }
+}
+
+/// The 4x4 kernel with a live-extent entry, for the driver's dispatch test: a
+/// partial micro-tile must call the entry and a whole one must not.
+static F64_4X4_EDGE: KernelFamily<f64> = KernelFamily {
+    id: "custom.f64.edge.4x4",
+    edge: Some(counting_edge::<f64, 4, 4>),
+    ..F64_4X4
+};
 
 /// Direct-update kernel reading B in place, built from the contract's public
 /// reference loop, so the direct-B guards run under a downstream descriptor.
@@ -140,6 +207,12 @@ static F64_DIRECT_B: KernelFamily<f64> = KernelFamily {
 /// Two real f64 kernels with different tile shapes.
 pub fn f64_families() -> &'static [&'static KernelFamily<f64>] {
     static LIST: [&KernelFamily<f64>; 2] = [&F64_2X2, &F64_3X4];
+    &LIST
+}
+/// One real f64 kernel whose live-extent entry counts its calls, for the
+/// driver's edge-dispatch test.
+pub fn f64_edge_families() -> &'static [&'static KernelFamily<f64>] {
+    static LIST: [&KernelFamily<f64>; 1] = [&F64_4X4_EDGE];
     &LIST
 }
 /// A direct-update f64 kernel that reads B in place when it can.

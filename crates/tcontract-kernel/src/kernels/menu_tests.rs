@@ -435,6 +435,213 @@ mod tests {
         }
     }
 
+    // ---- live-extent ("edge") entries --------------------------------
+
+    /// Lanes per vector register, read from the kernel module itself rather
+    /// than recomputed: the vector-dead lanes of a live column are the ones a
+    /// partial micro-tile computes but never emits, so the test needs the same
+    /// `L` the kernel was generated with.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn lanes(isa: x86::Isa, real_bytes: usize) -> usize {
+        match (isa, real_bytes) {
+            (x86::Isa::Avx512, 8) => x86::avx512_f64::L,
+            (x86::Isa::Avx512, _) => x86::avx512_f32::L,
+            (x86::Isa::Avx2, 8) => x86::avx2_f64::L,
+            (x86::Isa::Avx2, _) => x86::avx2_f32::L,
+        }
+    }
+
+    /// A tile poisoned with a value the kernel can only remove by writing:
+    /// every input is finite and every padded panel lane is zero, so a live
+    /// slot ends at a finite number and a slot the kernel never touched stays
+    /// NaN.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn poisoned<T: Real>(len: usize) -> Vec<T> {
+        vec![T::from_f64(f64::NAN); len]
+    }
+
+    /// Every live extent of one shape, against the reference, from a poisoned
+    /// tile: the live block matches, the vector-dead lanes and the dead columns
+    /// of the declared tile are exactly zero, and nothing is left uninitialised.
+    ///
+    /// This is the full-initialisation half of the [`TileEdgeFn`] contract, and
+    /// it is what the collect-grid path relies on: `permute_grid_rows` reads
+    /// every column of every tile, so a live-only write would move
+    /// uninitialised memory around.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn check_edge_cfg<T: KernelSet>(
+        cfg: KernelConfig<T>,
+        edge: TileEdgeFn<T>,
+        lanes: usize,
+        tol: f64,
+    ) {
+        let (mr, nr) = (cfg.ukr.mr, cfg.ukr.nr);
+        let complex = cfg.ukr.tile_fmt != TileFormat::Real;
+        // Deterministic, finite, and distinct per lane so a transposed or
+        // mis-strided read cannot pass.
+        let av = |kc: usize| -> Vec<Vec<(f64, f64)>> {
+            (0..kc)
+                .map(|p| {
+                    (0..mr)
+                        .map(|i| {
+                            (
+                                (((p * mr + i) * 31 % 17) as f64 - 8.0) / 6.0,
+                                (((p * mr + i) * 13 % 11) as f64 - 5.0) / 3.0,
+                            )
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+        let bv = |kc: usize| -> Vec<Vec<(f64, f64)>> {
+            (0..kc)
+                .map(|p| {
+                    (0..nr)
+                        .map(|j| {
+                            (
+                                (((p * nr + j) * 41 % 13) as f64 - 6.0) / 4.0,
+                                (((p * nr + j) * 7 % 19) as f64 - 9.0) / 5.0,
+                            )
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+        for m_live in 1..=mr {
+            for n_live in 1..=nr {
+                // `kc = 0` and `kc = 1` cover the empty contraction and the
+                // smallest K loop; 29 is coprime with every extent above.
+                for kc in [0usize, 1, 29] {
+                    let mut a_vals = av(kc);
+                    let mut b_vals = bv(kc);
+                    if m_live < mr {
+                        // The driver packs the block's live rows and
+                        // zero-fills the rest of the sliver (`pack_panel`);
+                        // the vector lanes past `m_live` are what the kernel
+                        // then computes and does not emit.
+                        for row in a_vals.iter_mut() {
+                            for v in row.iter_mut().skip(m_live) {
+                                *v = (0.0, 0.0);
+                            }
+                        }
+                    }
+                    for row in b_vals.iter_mut() {
+                        for v in row.iter_mut().skip(n_live) {
+                            *v = (0.0, 0.0);
+                        }
+                    }
+                    let a = pack_for::<T>(cfg.ukr.a_pack, mr, &a_vals);
+                    let b = pack_for::<T>(cfg.ukr.b_pack, nr, &b_vals);
+                    assert_eq!(a.len(), cfg.ukr.a_per_k * kc);
+                    assert_eq!(b.len(), cfg.ukr.b_per_k * kc);
+                    let mut got = poisoned::<T>(cfg.ukr.tile);
+                    // SAFETY: the panels are the declared sizes for this `kc`
+                    // and the tile is the declared one; the extents are a live
+                    // sub-block of it.
+                    unsafe { edge(kc, a.as_ptr(), b.as_ptr(), got.as_mut_ptr(), m_live, n_live) };
+                    // The last vector of a live column has no declared slot
+                    // past it that the kernel could zero without extra work:
+                    // it is `ceil(m_live/L)*L` lanes wide.
+                    let vector_live = m_live.div_ceil(lanes) * lanes;
+                    for j in 0..nr {
+                        for i in 0..mr {
+                            let (gr, gi) = tile_value(&got, cfg.ukr.tile_fmt, mr, nr, i, j);
+                            let what = format!(
+                                "{} [{}x{} kc={kc} live={m_live}x{n_live}] at ({i},{j})",
+                                cfg.ukr.name, mr, nr
+                            );
+                            if j >= n_live || i >= vector_live {
+                                assert_eq!((gr, gi), (0.0, 0.0), "dead slot: {what}");
+                                continue;
+                            }
+                            if i >= m_live {
+                                // Computed from the zero padding and never
+                                // emitted; it only has to be initialised.
+                                assert!(
+                                    !gr.is_nan() && !gi.is_nan(),
+                                    "uninitialised padding lane: {what}"
+                                );
+                                continue;
+                            }
+                            // A real family reads the real parts only; a
+                            // complex one combines them.
+                            let (mut wr, mut wi) = (0.0f64, 0.0f64);
+                            for p in 0..kc {
+                                let (ar, ai) = a_vals[p][i];
+                                let (br, bi) = b_vals[p][j];
+                                if complex {
+                                    wr += ar * br - ai * bi;
+                                    wi += ar * bi + ai * br;
+                                } else {
+                                    wr += ar * br;
+                                }
+                            }
+                            assert!(
+                                (gr - wr).abs() <= tol * wr.abs().max(1.0),
+                                "re: {what}: {gr} vs {wr}"
+                            );
+                            assert!(
+                                (gi - wi).abs() <= tol * wi.abs().max(1.0),
+                                "im: {what}: {gi} vs {wi}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every live extent of every real and native-planar menu entry, on every
+    /// ISA this CPU can run; and `None` for 1m and 3m, whose k loop is a
+    /// *different* geometry behind a wrapper and must keep the full-tile entry.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn check_edges<T: KernelSet>(s: x86::IsaConfigs<T>, tol: f64) {
+        let lanes = lanes(s.isa, core::mem::size_of::<T>());
+        for i in 0..(s.row_blocks)(false, ComplexMethod::default()).len() {
+            let cfg = (s.config_at)(false, ComplexMethod::default(), i).unwrap();
+            let edge = (s.edge_at)(false, ComplexMethod::default(), i).unwrap_or_else(|| {
+                panic!(
+                    "{} real menu entry {i} has no live-extent entry",
+                    s.isa.name()
+                )
+            });
+            check_edge_cfg::<T>(cfg, edge, lanes, tol);
+        }
+        for m in ComplexMethod::ALL {
+            for i in 0..(s.row_blocks)(true, m).len() {
+                let cfg = (s.config_at)(true, m, i).unwrap();
+                let edge = (s.edge_at)(true, m, i);
+                if m == ComplexMethod::Planar {
+                    let edge = edge.unwrap_or_else(|| {
+                        panic!(
+                            "{} planar menu entry {i} has no live-extent entry",
+                            s.isa.name()
+                        )
+                    });
+                    check_edge_cfg::<T>(cfg, edge, lanes, tol);
+                } else {
+                    assert!(
+                        edge.is_none(),
+                        "{} {} {}x{} inherited a real/planar live-extent entry",
+                        s.isa.name(),
+                        m.name(),
+                        cfg.ukr.mr,
+                        cfg.ukr.nr
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn edge_entries_match_reference_at_every_live_extent() {
+        for &isa in x86::available_isas() {
+            check_edges::<f64>(x86::isa_configs_f64(isa), 1e-12);
+            check_edges::<f32>(x86::isa_configs_f32(isa), 1e-4);
+        }
+    }
+
     /// The `Ukr` contract is what makes the kernels interchangeable, so a new
     /// instruction set must not quietly bring a different packing convention
     /// with it: the driver, the packing traversal and the write-back are shared

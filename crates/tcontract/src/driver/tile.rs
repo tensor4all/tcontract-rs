@@ -260,19 +260,38 @@ pub(super) unsafe fn compute_block<T>(
             let _phase = crate::phase::scope(2);
             match fam.kernel {
                 UkrFn::Tile(_) => {
-                    // SAFETY: full packed panels and tile per
-                    // family contract; an induced family
-                    // scales the inner kernel's k itself.
-                    unsafe {
-                        tcontract_kernel::induced::tile_call(
-                            &fam,
-                            pc_len,
-                            apan,
-                            bpan,
-                            tile_ptr,
-                            scratch_ptr,
-                        )
-                    };
+                    // A partial micro-tile - the last row block or the last
+                    // column block of a panel - runs the family's live-extent
+                    // entry when it has one, so it does not pay for a whole
+                    // register block: same packed panels, same declared tile,
+                    // dead slots zeroed by the kernel. The entry is `None` for
+                    // the induced 1m/4m wrappers, the native 1m/3m methods and
+                    // the interleaved complex kernel, which keep the full-tile
+                    // call below; a Direct family is a different arm entirely.
+                    match fam.edge {
+                        Some(edge) if mrem < mr || nrem < nr => {
+                            // SAFETY: the packed panels and the declared
+                            // `mr x nr` tile are the ones the family contract
+                            // covers, and `mrem`/`nrem` are the live extent of
+                            // this tile (`1..=mr`, `1..=nr`).
+                            unsafe { edge(pc_len, apan, bpan, tile_ptr, mrem, nrem) }
+                        }
+                        _ => {
+                            // SAFETY: full packed panels and tile per
+                            // family contract; an induced family
+                            // scales the inner kernel's k itself.
+                            unsafe {
+                                tcontract_kernel::induced::tile_call(
+                                    &fam,
+                                    pc_len,
+                                    apan,
+                                    bpan,
+                                    tile_ptr,
+                                    scratch_ptr,
+                                )
+                            }
+                        }
+                    }
                 }
                 UkrFn::Direct(func) => {
                     // A direct tile overlaps the accumulator it

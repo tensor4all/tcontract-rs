@@ -89,6 +89,12 @@ pub fn one_m<R: Real>(real: &'static KernelFamily<R>) -> Option<&'static KernelF
         tile_bound: mr * 2 * real.nr,
         ukr: UkrFn::Tile(func),
         c_update: CUpdate::ScratchTile,
+        // NOT inherited from `real`: `ukr` above is the *inner* real kernel,
+        // which the wrapper calls with a doubled k (1m) or on four copied real
+        // panels (4m). A live-extent entry taken from `real` would be called
+        // directly on this family's own logical geometry and panels, skipping
+        // that transformation.
+        edge: None,
         inner: Some(real),
         allow_auto: false,
         ..*real
@@ -125,6 +131,8 @@ pub fn four_m<R: Real>(real: &'static KernelFamily<R>) -> Option<&'static Kernel
         tile_bound: 4 * real.mr * real.nr,
         ukr: UkrFn::Tile(func),
         c_update: CUpdate::ScratchTile,
+        // As in `one_m`: the arm is the inner real kernel behind a wrapper.
+        edge: None,
         inner: Some(real),
         allow_auto: false,
         ..*real

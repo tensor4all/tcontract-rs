@@ -200,6 +200,9 @@ pub struct IsaConfigs<T> {
     pub cplx: fn(ComplexMethod) -> KernelConfig<T>,
     pub row_blocks: fn(bool, ComplexMethod) -> &'static [(usize, usize)],
     pub config_at: fn(bool, ComplexMethod, usize) -> Option<KernelConfig<T>>,
+    /// The live-extent ("edge") entry of the kernel at that menu position, or
+    /// `None` for a method that has none. See [`crate::TileEdgeFn`].
+    pub edge_at: fn(bool, ComplexMethod, usize) -> Option<crate::TileEdgeFn<T>>,
 }
 
 /// Written by hand for two reasons: the derive would demand `T: Debug` for a
@@ -231,6 +234,7 @@ macro_rules! dispatch {
                     cplx: $cfg512::cplx_config,
                     row_blocks: $cfg512::row_blocks,
                     config_at: $cfg512::config_at,
+                    edge_at: $cfg512::edge_at,
                 },
                 Isa::Avx2 => IsaConfigs {
                     isa,
@@ -238,6 +242,7 @@ macro_rules! dispatch {
                     cplx: $cfg2::cplx_config,
                     row_blocks: $cfg2::row_blocks,
                     config_at: $cfg2::config_at,
+                    edge_at: $cfg2::edge_at,
                 },
             }
         }
