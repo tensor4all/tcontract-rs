@@ -383,6 +383,43 @@ pub fn print_environment() {
         );
         println!();
     }
+    // Which microarchitecture class the kernel menus are ordered for, next to
+    // the family and ISA they resolve to. `avx512f` alone does not say how wide
+    // the datapath under the instructions is (Zen 4 and Zen 5 mobile run them
+    // on 256-bit datapaths), so a run's evidence has to name the class it was
+    // tuned for, and whether that class has a measurement of its own yet (issue
+    // #156). "Compiled order" is not a weaker "measured": AVX2 and an
+    // unclassified host have no measurement behind their menu order at all.
+    {
+        use tcontract_kernel::{
+            builtin_menu, menu_isa, KernelForce, Method, TuningClass, C32, C64,
+        };
+        let class = TuningClass::detect();
+        let isa = menu_isa(KernelForce::Auto);
+        let head = |id: Option<&'static str>| id.unwrap_or("none");
+        println!(
+            "tuning class: {} (menu isa {:?}; {}), default menu f64={} f32={} c64={} c32={}",
+            class.name(),
+            isa,
+            if class.ordering_is_provisional() {
+                "compiled order, no measurement on this class"
+            } else {
+                "measured order"
+            },
+            head(builtin_menu::<f64>(isa, None).first().map(|f| f.id)),
+            head(builtin_menu::<f32>(isa, None).first().map(|f| f.id)),
+            head(
+                builtin_menu::<C64>(isa, Some(Method::Native))
+                    .first()
+                    .map(|f| f.id)
+            ),
+            head(
+                builtin_menu::<C32>(isa, Some(Method::Native))
+                    .first()
+                    .map(|f| f.id)
+            ),
+        );
+    }
     // The cache geometry the analytical blocking model reads, and which source
     // answered. A blocking parameter that came out of a probe should be
     // traceable to it, and a fallback to the built-in defaults — which would

@@ -37,6 +37,13 @@ fn a_plan_resolves_and_reports_its_kernel() {
         .expect("the planner chose the packed driver");
     assert!(!report.family_id.is_empty());
     assert!(report.mr > 0 && report.nr > 0 && report.kc > 0);
+    // The family id names the ISA; the tuning class names the datapath width
+    // the default menu was ordered by, which the id cannot carry (#156).
+    assert_eq!(
+        report.tuning_class,
+        tcontract_kernel::TuningClass::detect(),
+        "the report names the process's tuning class"
+    );
 
     // A forced family is the one reported.
     let forced = PlanConfig {

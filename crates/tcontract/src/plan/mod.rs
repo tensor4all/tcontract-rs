@@ -50,7 +50,7 @@ use core::marker::PhantomData;
 use core::num::NonZeroUsize;
 use strided_view::{StridedView, StridedViewMut};
 use tcontract_exec::Exec;
-use tcontract_kernel::{Element, KernelCatalog, ResolvedGemm, SelectError};
+use tcontract_kernel::{Element, KernelCatalog, ResolvedGemm, SelectError, TuningClass};
 
 pub(crate) use analysis::PackedPlan;
 pub use analysis::{Axis, PlanStats};
@@ -1010,6 +1010,7 @@ fn packed_report<T: Scalar>(pk: &Packed<T>) -> PackedReport {
         regular_rows: regular(rows, rg.mr),
         regular_cols: regular(cols, rg.nr),
         family_id: fam.id,
+        tuning_class: TuningClass::detect(),
         origin: fam.origin,
         complex: fam.complex,
         mr: rg.mr,

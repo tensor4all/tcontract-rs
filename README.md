@@ -211,6 +211,21 @@ supply their own kernels through a caller-scoped catalog
 (`Plan::new_with_selector`). The full old-to-new id table is in the
 [migration guide](docs/migration-2026-10.md).
 
+Which of a family's register blocks the default menu starts from, and which
+alternatives it offers next, is keyed by a *tuning class*:
+`tcontract_kernel::TuningClass` carries the datapath width under AVX-512, which
+the ISA flag cannot (`intel512`, `amd512` for Zen 5 desktop and Turin, `amd256`
+for Zen 4 and Zen 5 mobile, `avx2`, `neon`, `other`). It is detected once per
+process from the CPUID vendor, family and model plus the usable `avx512f` bit,
+it never changes a family id or overrides `kernel`/`isa`, and it is reported as
+`plan.report().packed.tuning_class` and by `tcbench info`. The class order only
+shapes what `Auto` starts from: `base`, `mr=` and `idx=` still address the
+compiled menu, so `idx=0` is the ISA module's compiled default. The Amd256
+AVX-512 menus now have their own measurement — `f32` real starts from `32x8`,
+while `f64` real, `c64` native and `c32` native keep their compiled defaults —
+but the class-wide `amd256` row (AVX2, 1m and 3m menus) and `amd512` remain
+**provisional** until measured (issue #156).
+
 ## Build and test
 
 Rust 1.89 or newer. CI runs on Linux (x86-64) and macOS (arm64); the aarch64
