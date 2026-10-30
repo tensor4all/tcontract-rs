@@ -301,3 +301,10 @@ Design: [cpu-exec-placement](https://github.com/tensor4all/strided-rs/blob/main/
 | --- | --- | --- |
 | Which faer? | **Decided:** the workspace requires `t4a-faer` 0.26.0 (features unchanged: `std`, `rayon`, `threadteam`). No source change: the code uses only `Par::Team`, `Par::Seq`, the matmul entry points and `faer::traits`, all present in 0.26.0. | `Cargo.toml`, `Cargo.lock` |
 | Versions? | **Decided:** `tcontract-exec` and `tcontract` 0.8.0, not 0.7.2. `tcontract_exec::with_faer_par` (feature `faer`) has `faer::Par` in its signature, and `tcontract`'s public API takes `tcontract_exec` types, so a faer 0.x change is a breaking change for their users (maintainer rule 2026-10-29: a breaking public API change is a minor bump). A range requirement (`>=0.25, <0.27`) was not used: it would allow two faer identities in one tree, against the entry above. Publishing is approved by the maintainer (2026-10-29). | `Cargo.toml` |
+
+## 2026-10-30 threadteam 0.2 and t4a-faer 0.27
+
+| Question | Ruling | Evidence or next check |
+| --- | --- | --- |
+| Which dependencies? | **Decided:** threadteam 0.2 (the 0.1 API plus `spin_polls`), t4a-faer 0.27 (threadteam 0.2 in its public API) and strided 0.9 (strided-basic, -perm, -kernel on threadteam 0.2, tensor4all/strided-rs#343). No source change: the workspace builds and tests unchanged. The stack keeps one threadteam: strided, faer and tcontract all take the same `threadteam::Exec`. | `Cargo.toml`, `Cargo.lock` |
+| Versions? | **Decided:** `tcontract-exec` and `tcontract` 0.9.0: their public `Exec` and `Pool` carry the threadteam token type, and `with_faer_par` a `faer::Par`, so both dependency changes are breaking for their users. Publishing approved by the maintainer (2026-10-30). | `Cargo.toml` |
