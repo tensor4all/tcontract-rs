@@ -186,8 +186,11 @@ pub struct PlanConfig {
     /// Bounded packing inside the packed driver is not a materialization.
     pub no_materialize: bool,
     /// Accepted for compatibility; no longer consulted. Every plan serves a
-    /// fresh, uninitialized output: the Faer route zero-fills `D` in one output
-    /// pass before the product, so no packed alternative is prepared.
+    /// fresh, uninitialized output, so no packed alternative is prepared: the
+    /// Faer route hands an uninitialized `D` to faer's overwrite-only entry
+    /// (`matmul_with_conj_uninit`, see the `strategy::faer` module docs), which
+    /// writes every element without reading it, and the packed driver fills
+    /// only the tiles it serves.
     pub fresh_output: bool,
     /// Complex scheme. `None` keeps the baseline default; a forced family must
     /// agree. Forces the packed driver when set.

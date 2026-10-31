@@ -34,6 +34,24 @@
 //! * a fresh (uninitialized) destination is served by faer's overwrite-only
 //!   entry ([`FaerWrite::Fresh`]) instead of a zero-fill followed by the
 //!   replace path, so no separate initialization pass over D is needed.
+//!
+//! # Allocation
+//!
+//! What a call allocates on the product path is faer's, not this crate's, and
+//! it depends on which kernel the target gets (tcontract-rs#162):
+//!
+//! * **x86_64 with AVX2 or AVX-512, the four storage types**: t4a-faer's
+//!   native kernels (`t4a-private-gemm-x86`) pack into a per-thread slab reused
+//!   across calls, so a warm execute allocates nothing.
+//!   `tests/faer_alloc_upper_bound.rs` pins that with a counting allocator.
+//! * **Every other target, and every other scalar type**: faer falls back to
+//!   `gemm-common`'s `gemm`, which allocates one RHS packing buffer per call
+//!   once the product is large enough to pack (40-78 KB observed on aarch64
+//!   macOS; 8 bytes more for `gemm`'s GEMV form). The buffer lives inside
+//!   `gemm_basic_generic`, so it cannot be moved into an `Exec` workspace
+//!   without forking `gemm-common`, which would mean owning a numerical path
+//!   upstream does not test. That fallback residual is accepted as a known
+//!   limitation of the non-SIMD targets rather than worked around here.
 
 use std::num::NonZeroUsize;
 use tcontract_exec::{with_faer_par, BatchQuery, Exec, ExecError};
