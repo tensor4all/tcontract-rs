@@ -469,6 +469,33 @@ pub struct ProblemRef<'a> {
 }
 
 impl Problem {
+    /// The heap this problem owns: operand layouts and role tables that spilled
+    /// their inline storage.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        use crate::heap::tiny;
+        let layout = |o: &OperandSpec| tiny(&o.layout.dims) + tiny(&o.layout.strides);
+        let Self {
+            dtype: _,
+            a,
+            b,
+            c,
+            d,
+            lowered,
+        } = self;
+        let Lowered {
+            roles: Roles { m, n, k, h },
+            spans: _,
+            c_matches_d: _,
+            k_empty: _,
+            out_empty: _,
+        } = lowered;
+        let c = match c {
+            CSpec::Separate(c) => layout(c),
+            CSpec::Absent | CSpec::Output(_) => 0,
+        };
+        layout(a) + layout(b) + c + layout(d) + tiny(m) + tiny(n) + tiny(k) + tiny(h)
+    }
+
     /// Lower a borrowed [`ProblemRef`].
     ///
     /// # Errors

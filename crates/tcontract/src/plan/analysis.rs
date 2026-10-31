@@ -137,6 +137,23 @@ impl PlanStats {
     pub fn macs(&self) -> u64 {
         (self.batch as u64) * (self.m as u64) * (self.n as u64) * (self.k as u64)
     }
+
+    /// The heap of the folded-axis vectors.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        use crate::heap::vec;
+        let Self {
+            m: _,
+            n: _,
+            k: _,
+            batch: _,
+            m_axes,
+            n_axes,
+            k_axes,
+            h_axes,
+            is_pure_gemm: _,
+        } = self;
+        vec(m_axes) + vec(n_axes) + vec(k_axes) + vec(h_axes)
+    }
 }
 
 /// The packed plan: everything that depends only on shapes, strides and roles,
@@ -201,6 +218,40 @@ fn role_axes(role: &[RoleAxis], key: impl Fn(&Axis) -> (u64, u64)) -> Vec<Axis> 
 }
 
 impl PackedPlan {
+    /// The heap of the scatter vectors and the folded-axis report.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        use crate::heap::vec;
+        let Self {
+            a_m,
+            a_k,
+            b_k,
+            b_n,
+            c_m,
+            c_n,
+            d_m,
+            d_n,
+            h_a,
+            h_b,
+            h_c,
+            h_d,
+            d_m_run: _,
+            d_n_run: _,
+            conj_a: _,
+            conj_b: _,
+            conj_c: _,
+            conj_d: _,
+            orient: _,
+            row_block_mode: _,
+            l3_domains: _,
+            stats,
+        } = self;
+        [a_m, a_k, b_k, b_n, c_m, c_n, d_m, d_n, h_a, h_b, h_c, h_d]
+            .into_iter()
+            .map(vec)
+            .sum::<usize>()
+            + stats.heap_bytes()
+    }
+
     /// Analyse a validated problem.
     ///
     /// This is where every shape-dependent decision of the packed route is
