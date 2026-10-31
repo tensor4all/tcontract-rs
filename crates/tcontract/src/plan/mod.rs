@@ -55,7 +55,10 @@ use tcontract_kernel::{Element, KernelCatalog, ResolvedGemm, SelectError, Tuning
 pub(crate) use analysis::PackedPlan;
 pub use analysis::{Axis, PlanStats};
 pub use config::{CacheModel, FaerLimit, Partition, PlanConfig, Writeback};
-pub use execution::{ExecutionRoute, OutputContract, PackedRoute, SliceAccumulationSource};
+pub use execution::{
+    execute_uninit_with, ExecutionRoute, OutputContract, PackedRoute, SliceAccumulationSource,
+    UninitOutputError,
+};
 pub use orientation::{Orient, RowBlock};
 pub use report::{Algorithm, PackedReport, PlanReport, Reason};
 

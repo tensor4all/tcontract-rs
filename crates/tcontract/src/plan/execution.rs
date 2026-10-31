@@ -8,6 +8,122 @@ use crate::strategy::elementwise::CRead;
 use tcontract_exec::{Exec, WorkspaceReq};
 use tcontract_kernel::Element;
 
+/// Failure to initialize and publish a complete destination.
+///
+/// Errors never contain destination storage. See [`execute_uninit_with`] for
+/// the initialization contract and an executable example.
+///
+/// # Examples
+/// ```
+/// use tcontract::UninitOutputError;
+/// let error = UninitOutputError::Execution("kernel failed");
+/// assert!(matches!(error, UninitOutputError::Execution("kernel failed")));
+/// ```
+#[derive(Debug, thiserror::Error)]
+pub enum UninitOutputError<E> {
+    /// The callback failed; some destination slots may have been written.
+    #[error("fresh output execution failed: {0}")]
+    Execution(#[source] E),
+    /// Initialized sub-slices do not exactly cover the original destination.
+    #[error("initialized output slices must exactly cover the destination")]
+    Coverage,
+}
+
+/// Execute a fresh-output operation and publish its complete initialized slice.
+///
+/// `execute` receives only `MaybeUninit` storage. It must return initialized
+/// destination sub-slices obtained from safe full-write operations, such as
+/// [`Plan::execute_uninit_slices`], plus an arbitrary result (for example a
+/// scheduler route). Sub-slices may arrive in any order; empty slices are ignored.
+/// This helper neither fills nor copies the destination.
+///
+/// # Errors
+///
+/// Returns [`UninitOutputError::Execution`] when the callback fails, preserving
+/// its error, or [`UninitOutputError::Coverage`] when the returned initialized
+/// slices leave holes, overlap, or name other storage. Both errors contain no
+/// output slice. Callback writes are not rolled back. Callers that promise
+/// unchanged output on invalid geometry, beta, bounds or routes must validate
+/// those conditions **before** invoking a writing callback.
+///
+/// # Safety
+///
+/// This is a safe API: documented promises alone cannot establish initialization.
+/// Valid initialized mutable sub-slices, checked to cover exactly the original
+/// allocation, prove that every destination slot holds a valid `T` on success.
+/// No initialized reference to unwritten storage is constructed. The higher-ranked
+/// callback borrow prevents destination references escaping through its result
+/// or error. Panic unwinding also publishes no initialized destination.
+///
+/// # Examples
+/// ```
+/// use core::mem::MaybeUninit;
+/// use tcontract::execute_uninit_with;
+/// let mut storage = [MaybeUninit::<f64>::uninit(); 3];
+/// let (out, route) = execute_uninit_with(&mut storage, |slots| {
+///     let (left, right) = slots.split_at_mut(1);
+///     // Safe writes stand in for independent full-write kernels.
+///     let left = core::slice::from_mut(left[0].write(2.0));
+///     let (r0, r1) = right.split_at_mut(1);
+///     let r0 = core::slice::from_mut(r0[0].write(3.0));
+///     let r1 = core::slice::from_mut(r1[0].write(4.0));
+///     Ok::<_, core::convert::Infallible>((vec![r1, left, r0], "serial"))
+/// })?;
+/// assert_eq!(out, &[2.0, 3.0, 4.0]);
+/// assert_eq!(route, "serial");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+/// Destination storage cannot escape through the auxiliary result:
+/// ```compile_fail
+/// use core::mem::MaybeUninit;
+/// use tcontract::execute_uninit_with;
+/// let mut storage = [MaybeUninit::<f64>::uninit()];
+/// let _ = execute_uninit_with(&mut storage, |slots| {
+///     Ok::<_, ()>((Vec::new(), slots))
+/// });
+/// ```
+/// Nor through a callback error:
+/// ```compile_fail
+/// use core::mem::MaybeUninit;
+/// use tcontract::execute_uninit_with;
+/// let mut storage = [MaybeUninit::<f64>::uninit()];
+/// let _ = execute_uninit_with(&mut storage, |slots| {
+///     Err::<(Vec<&mut [f64]>, ()), _>(slots)
+/// });
+/// ```
+pub fn execute_uninit_with<'d, T: Scalar, R, E>(
+    out: &'d mut [MaybeUninit<T>],
+    execute: impl for<'a> FnOnce(
+        &'a mut [MaybeUninit<T>],
+    ) -> core::result::Result<(Vec<&'a mut [T]>, R), E>,
+) -> core::result::Result<(&'d mut [T], R), UninitOutputError<E>> {
+    let ptr = out.as_mut_ptr().cast::<T>();
+    let len = out.len();
+    let (mut initialized, result) = execute(out).map_err(UninitOutputError::Execution)?;
+    initialized.sort_unstable_by_key(|slice| slice.as_ptr());
+    let mut covered = 0;
+    for slice in &initialized {
+        if slice.is_empty() {
+            continue;
+        }
+        if slice.len() > len - covered || slice.as_ptr() != ptr.wrapping_add(covered) {
+            return Err(UninitOutputError::Coverage);
+        }
+        covered += slice.len();
+    }
+    if covered != len {
+        return Err(UninitOutputError::Coverage);
+    }
+    drop(initialized);
+    // Reborrow after the callback: its mutable borrows invalidate the old tag.
+    let ptr = out.as_mut_ptr().cast::<T>();
+    // SAFETY: valid initialized sub-slices proved exact, nonoverlapping coverage
+    // above. Their borrows have ended; this pointer is freshly derived from the
+    // original unique output, including for an empty output.
+    let out = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+    Ok((out, result))
+}
+
 /// The storage guarantee of a destination, not a provider selection.
 ///
 /// # Examples

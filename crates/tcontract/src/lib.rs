@@ -74,9 +74,9 @@ pub use backend::TcontractBackend;
 pub use batch::{contract_batched, BatchItem};
 pub use driver::{Assignment, DynSnapshot, DynStats, DynamicReport};
 pub use plan::{
-    Algorithm, Axis, CacheModel, ExecutionRoute, FaerLimit, Orient, OutputContract, PackedReport,
-    PackedRoute, Partition, Plan, PlanConfig, PlanReport, PlanStats, Reason, RowBlock,
-    SliceAccumulationSource, Writeback,
+    execute_uninit_with, Algorithm, Axis, CacheModel, ExecutionRoute, FaerLimit, Orient,
+    OutputContract, PackedReport, PackedRoute, Partition, Plan, PlanConfig, PlanReport, PlanStats,
+    Reason, RowBlock, SliceAccumulationSource, UninitOutputError, Writeback,
 };
 pub use select::{Chooser, KernelCandidate, OperandMeta, Selection, SelectionContext};
 pub use tcontract_exec::host::ns_per_flop;

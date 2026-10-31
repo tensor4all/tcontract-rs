@@ -120,6 +120,22 @@ fn main() -> Result<()> {
 }
 ```
 
+## Fresh output and grouped publication
+
+`Plan::execute_uninit_slices` accepts `&mut [MaybeUninit<T>]` and returns an
+initialized slice only after the contraction succeeds with exact physical
+coverage. It never forms initialized output references before writing.
+
+Adapters executing several disjoint jobs can use
+[`execute_uninit_with`](crates/tcontract/src/plan/execution.rs). Its callback
+runs the existing fresh-output kernels and returns their initialized sub-slices;
+tcontract checks that those slices exactly cover the original destination, then
+publishes the complete initialized slice. The helper performs no fill or copy.
+Errors and panics publish no initialized destination; partial kernel writes are
+not rolled back. An adapter promising unchanged output for invalid beta,
+geometry, bounds or routes must validate those conditions before any job writes.
+The helper's runnable and compile-fail doctests demonstrate the boundary.
+
 ## A contraction from C
 
 `crates/tcontract-capi/tests/c/standard_consumer.c`: includes only the pinned
