@@ -1,7 +1,8 @@
 //! The sealed storage-scalar vocabulary.
 
-use faer::linalg::matmul::matmul_with_conj;
-use faer::{Accum, Conj, MatMut, MatRef};
+use core::mem::MaybeUninit;
+use faer::linalg::matmul::{matmul_with_conj, matmul_with_conj_uninit};
+use faer::{Accum, Conj, MatMut, MatRef, MatUninitMut};
 use tcontract_kernel::{Element, Families};
 
 use crate::api::DType;
@@ -144,6 +145,29 @@ pub trait FaerGemm: Sized {
         alpha: Self,
         par: faer::Par<'_>,
     );
+
+    /// `D = alpha * op(A) * op(B)` where `D`'s elements may be uninitialized:
+    /// nothing of `D` is read and every element is written before the call
+    /// returns.
+    ///
+    /// # Safety
+    ///
+    /// As [`FaerGemm::matmul`] with `accumulate` false, except that `d`'s
+    /// elements need not be initialized.
+    #[allow(clippy::too_many_arguments)] // INVARIANT: the GEMM argument set.
+    unsafe fn matmul_uninit(
+        mnk: (usize, usize, usize),
+        d: *mut Self,
+        d_strides: (isize, isize),
+        a: *const Self,
+        a_strides: (isize, isize),
+        conj_a: bool,
+        b: *const Self,
+        b_strides: (isize, isize),
+        conj_b: bool,
+        alpha: Self,
+        par: faer::Par<'_>,
+    );
 }
 
 macro_rules! faer_gemm {
@@ -174,6 +198,38 @@ macro_rules! faer_gemm {
                 let conj = |c: bool| if c { Conj::Yes } else { Conj::No };
                 let accum = if accumulate { Accum::Add } else { Accum::Replace };
                 matmul_with_conj(dm, accum, am, conj(conj_a), bm, conj(conj_b), alpha, par);
+            }
+
+            unsafe fn matmul_uninit(
+                (m, n, k): (usize, usize, usize),
+                d: *mut Self,
+                (drs, dcs): (isize, isize),
+                a: *const Self,
+                (ars, acs): (isize, isize),
+                conj_a: bool,
+                b: *const Self,
+                (brs, bcs): (isize, isize),
+                conj_b: bool,
+                alpha: Self,
+                par: faer::Par<'_>,
+            ) {
+                // SAFETY: the caller's contract; only the destination's element
+                // type changes, to `MaybeUninit`.
+                let (am, bm, dm) = unsafe {
+                    (
+                        MatRef::<$t>::from_raw_parts(a, m, k, ars, acs),
+                        MatRef::<$t>::from_raw_parts(b, k, n, brs, bcs),
+                        MatUninitMut::<$t>::from_raw_parts_mut(
+                            d as *mut MaybeUninit<$t>,
+                            m,
+                            n,
+                            drs,
+                            dcs,
+                        ),
+                    )
+                };
+                let conj = |c: bool| if c { Conj::Yes } else { Conj::No };
+                matmul_with_conj_uninit(dm, am, conj(conj_a), bm, conj(conj_b), alpha, par);
             }
         }
     )*};

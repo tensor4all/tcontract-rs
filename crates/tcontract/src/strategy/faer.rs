@@ -31,6 +31,9 @@
 //!   and C are never copied or packed and `PlanReport::materialized` stays
 //!   all false. With `beta == 0` C is not read. A separate C that is D itself
 //!   (same mapping, same origin) is the in-place case above.
+//! * a fresh (uninitialized) destination is served by faer's overwrite-only
+//!   entry ([`FaerWrite::Fresh`]) instead of a zero-fill followed by the
+//!   replace path, so no separate initialization pass over D is needed.
 
 use std::num::NonZeroUsize;
 use tcontract_exec::{with_faer_par, BatchQuery, Exec, ExecError};
@@ -45,6 +48,20 @@ struct Fused {
     a: isize,
     b: isize,
     d: isize,
+}
+
+/// What the product may assume about the destination when it starts, decided
+/// by the executor from the caller's output contract and the C mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FaerWrite {
+    /// The destination already holds the whole C term, `op_D(beta * op_C(C))`;
+    /// the product is added into it.
+    Accumulate,
+    /// The destination is initialized and its prior contents may be discarded.
+    Replace,
+    /// The destination's elements may be uninitialized: nothing of them is read
+    /// and every element is written before the call returns.
+    Fresh,
 }
 
 /// The fused batched GEMM: `[M, K]`, `[K, N]`, `[M, N]` matrices over `count`
@@ -200,17 +217,20 @@ impl FaerPlan {
     ///
     /// `a`, `b` and `d` are the elements at logical index zero of non-empty
     /// layouts matching the plan's problem (K non-empty); `d` is exclusive and
-    /// injective and does not alias `a` or `b`. With `accumulate`, `d` already holds the whole C term,
-    /// `op_D(beta * op_C(C))` (the caller's output pass), and only
-    /// `op_D(alpha * op_A(A) * op_B(B))` is added ; without it `d` is
-    /// overwritten.
+    /// injective and does not alias `a` or `b`. `write` is what may be assumed
+    /// about `d`: with [`FaerWrite::Accumulate`] `d` already holds the whole C
+    /// term, `op_D(beta * op_C(C))` (the caller's output pass), and only
+    /// `op_D(alpha * op_A(A) * op_B(B))` is added; with
+    /// [`FaerWrite::Replace`] `d` is initialized and overwritten; with
+    /// [`FaerWrite::Fresh`] `d`'s elements may be uninitialized and are all
+    /// written without being read first.
     pub(crate) unsafe fn run<T: Scalar>(
         &self,
         exec: &mut Exec<'_>,
         alpha: T,
         a: *const T,
         b: *const T,
-        accumulate: bool,
+        write: FaerWrite,
         d: *mut T,
     ) -> Result<(), ExecError> {
         let (mut ca, mut cb) = (self.conj_a, self.conj_b);
@@ -248,7 +268,7 @@ impl FaerPlan {
                     ca,
                     bp.get().offset(i * self.h.b),
                     cb,
-                    accumulate,
+                    write,
                     dp.get().offset(i * self.h.d),
                     par,
                 )
@@ -306,27 +326,66 @@ impl FaerPlan {
         ca: bool,
         b: *const T,
         cb: bool,
-        accumulate: bool,
+        write: FaerWrite,
         d: *mut T,
         par: faer::Par,
     ) {
         let (m, n, k) = (self.m.extent, self.n.extent, self.k.extent);
         // SAFETY: the caller's contract; views are read-only / exclusive as faer requires.
         unsafe {
-            T::matmul(
-                accumulate,
-                (m, n, k),
-                d,
+            let (d_strides, a_strides, b_strides) = (
                 (self.m.d, self.n.d),
-                a,
                 (self.m.a, self.k.a),
-                ca,
-                b,
                 (self.k.b, self.n.b),
-                cb,
-                alpha,
-                par,
-            )
+            );
+            match write {
+                // The overwrite-only entry: faer's kernel writes every element
+                // of the destination in its first depth block and never loads
+                // the old value, so an uninitialized `d` needs no fill here. On
+                // targets and element types without that kernel it zero-fills
+                // internally and multiplies as `Replace` would.
+                FaerWrite::Fresh => T::matmul_uninit(
+                    (m, n, k),
+                    d,
+                    d_strides,
+                    a,
+                    a_strides,
+                    ca,
+                    b,
+                    b_strides,
+                    cb,
+                    alpha,
+                    par,
+                ),
+                FaerWrite::Replace => T::matmul(
+                    false,
+                    (m, n, k),
+                    d,
+                    d_strides,
+                    a,
+                    a_strides,
+                    ca,
+                    b,
+                    b_strides,
+                    cb,
+                    alpha,
+                    par,
+                ),
+                FaerWrite::Accumulate => T::matmul(
+                    true,
+                    (m, n, k),
+                    d,
+                    d_strides,
+                    a,
+                    a_strides,
+                    ca,
+                    b,
+                    b_strides,
+                    cb,
+                    alpha,
+                    par,
+                ),
+            }
         };
     }
 }

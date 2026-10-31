@@ -70,7 +70,7 @@ use crate::driver;
 use crate::resolve;
 use crate::select::Chooser;
 use crate::strategy::elementwise::{CRead, ElementPlan, Expr, Inputs};
-use crate::strategy::faer::{self as faer_strategy, FaerPlan};
+use crate::strategy::faer::{self as faer_strategy, FaerPlan, FaerWrite};
 use tcontract_exec::host::ns_per_flop;
 
 /// Dispatches one execution of a plan performs, declared to the token's width rule:
@@ -975,42 +975,27 @@ impl<T: Scalar> Plan<T> {
             //
             // A fresh (uninitialized) D is write-only by contract: a separate C
             // with a nonzero `beta` initializes it through the output pass, and
-            // every other write-only form (no C, or any C at `beta == 0`)
-            // zero-fills it through the same pass. Faer's Replace path may form
-            // references over D before it stores, so that fill is what makes an
-            // uninitialized D sound. It costs one write of D, which the product
-            // then overwrites; the packed driver that served fresh outputs
-            // before was measured 4x slower than faer on a small-M GEMM
-            // (tenferro-rs#2233 decode_proj, M=8, K=N=1024: 2.4 ms against
-            // 0.57 ms).
-            let accumulate = match c {
+            // every other write-only form (no C, or any C at `beta == 0`) is
+            // handed to faer's overwrite-only entry
+            // (`matmul_with_conj_uninit`, t4a-faer 0.27), which never reads D's
+            // old value and never forms a reference to it before writing. That
+            // entry skips its own initialization pass on x86_64 with AVX2 or
+            // AVX-512, so a fresh call no longer pays the serial output-sized
+            // fill this branch used to run before the product (an 8-18 MB
+            // output took 0.3-1.4 ms serially on a 96-core node, comparable to
+            // the product itself at high thread counts; tcontract-rs#166). The
+            // packed driver that served fresh outputs before was measured 4x
+            // slower than faer on a small-M GEMM (tenferro-rs#2233 decode_proj,
+            // M=8, K=N=1024: 2.4 ms against 0.57 ms), so faer still serves them.
+            let write = match c {
                 CRead::Separate(cp) if beta != zero && !core::ptr::eq(cp, d) => {
                     // SAFETY: the caller's contract (C disjoint from D).
                     unsafe { self.output.run(&mut exec, expr, Inputs::None, c, d) }?;
-                    true
+                    FaerWrite::Accumulate
                 }
-                _ if fresh => {
-                    // The fill runs on the calling thread: it is an output-sized
-                    // store, small next to the product, and keeping it out of
-                    // the pool leaves the product as the call's one pool entry
-                    // (the contract `tcontract-capi` observes through its pool
-                    // statistics).
-                    let zero_expr = Expr { beta: zero, ..expr };
-                    // SAFETY: the caller's write-only contract; the output pass
-                    // stores through raw pointers and reads nothing of D.
-                    unsafe {
-                        self.output.run(
-                            &mut Exec::serial(),
-                            zero_expr,
-                            Inputs::None,
-                            CRead::None,
-                            d,
-                        )
-                    }?;
-                    false
-                }
-                CRead::None => false,
-                _ if beta == zero => false,
+                _ if fresh => FaerWrite::Fresh,
+                CRead::None => FaerWrite::Replace,
+                _ if beta == zero => FaerWrite::Replace,
                 _ => {
                     let identity = beta == <T as Element>::one() && !conj_c && !conj_d;
                     if !identity {
@@ -1020,12 +1005,12 @@ impl<T: Scalar> Plan<T> {
                                 .run(&mut exec, expr, Inputs::None, CRead::InPlace, d)
                         }?;
                     }
-                    true
+                    FaerWrite::Accumulate
                 }
             };
             // SAFETY: the caller's contract; the fusion was proven copy-free
             // over exactly this problem's layouts.
-            unsafe { f.run(&mut exec, alpha, a, b, accumulate, d)? };
+            unsafe { f.run(&mut exec, alpha, a, b, write, d)? };
             return Ok(());
         }
         match &self.strategy {
