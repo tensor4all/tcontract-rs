@@ -2,10 +2,11 @@
 //! upper bound (#121 item 3).
 //!
 //! The gemm-common packing scratch (`MemBuffer` and the `mc / MR` mask) is a
-//! residual the faer fork owns; #121 item 3 defers removing it up the publish
-//! chain. Until then this binary measures the count per execute and fails when
-//! it grows past the pinned bound, so the deferral cannot quietly become a
-//! regression.
+//! residual of faer's non-SIMD fallback; #121 item 3 defers removing it up the
+//! publish chain, and #162 accepted it as a known limitation of the targets
+//! that take that fallback. This binary measures the count per execute, fails
+//! when it grows past the pinned bound, and on x86_64 with AVX2 asserts the
+//! stronger contract the native kernels give: zero.
 use std::alloc::{GlobalAlloc, Layout as AllocLayout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
@@ -77,4 +78,18 @@ fn faer_execute_stays_within_the_pinned_allocation_bound() {
         allocs <= FAER_ALLOC_UPPER_BOUND,
         "faer execute allocated {allocs} times, above the pinned {FAER_ALLOC_UPPER_BOUND}"
     );
+    // The bound above is the fallback's residual. Where the native kernels run
+    // there is no packing scratch at all, and a warm execute allocates nothing
+    // (#162): that is the contract this test exists to keep from regressing.
+    // The same feature test t4a-faer itself makes before it takes the native
+    // kernels (`src/linalg/matmul/mod.rs`, AVX-512 or AVX2 + FMA).
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx512f")
+        || (std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma"))
+    {
+        assert_eq!(
+            allocs, 0,
+            "faer execute on the x86_64 native kernels allocated {allocs} times, not zero"
+        );
+    }
 }
