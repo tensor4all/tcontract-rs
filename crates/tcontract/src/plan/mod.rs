@@ -133,6 +133,8 @@ pub struct Plan<T: Scalar> {
     output: ElementPlan,
     report: PlanReport,
     diagnostics: Diagnostics,
+    /// [`Plan::retained_bytes`], counted once at construction.
+    retained: usize,
     _t: PhantomData<fn() -> T>,
 }
 
@@ -274,7 +276,7 @@ impl<T: Scalar> Plan<T> {
             Strategy::Faer(_) => (Algorithm::Faer, None),
             Strategy::Elementwise(_) => (Algorithm::Elementwise, None),
         };
-        Ok(Self {
+        let mut plan = Self {
             output: ElementPlan::output(problem),
             report: PlanReport {
                 algorithm,
@@ -285,8 +287,36 @@ impl<T: Scalar> Plan<T> {
             diagnostics: Diagnostics::new("tcontract", algorithm.name()),
             problem: owned,
             strategy,
+            retained: 0,
             _t: PhantomData,
-        })
+        };
+        plan.retained = plan.count_retained();
+        Ok(plan)
+    }
+
+    /// The bytes this plan's construction left allocated (see
+    /// [`Plan::retained_bytes`]).
+    fn count_retained(&self) -> usize {
+        let Self {
+            problem,
+            strategy,
+            output,
+            report,
+            diagnostics: _,
+            retained: _,
+            _t,
+        } = self;
+        let strategy = match strategy {
+            Strategy::Packed(p) => core::mem::size_of::<Packed<T>>() + p.plan.heap_bytes(),
+            Strategy::Faer(_) => 0,
+            Strategy::Elementwise(e) => e.heap_bytes(),
+        };
+        let report = report.packed.as_ref().map_or(0, |p| p.stats.heap_bytes());
+        core::mem::size_of::<Self>()
+            + problem.heap_bytes()
+            + strategy
+            + output.heap_bytes()
+            + report
     }
 
     fn plan_packed(
@@ -311,6 +341,42 @@ impl<T: Scalar> Plan<T> {
     /// route; `execution_route` reports that actual execution choice.
     pub fn report(&self) -> &PlanReport {
         &self.report
+    }
+
+    /// The memory this plan keeps alive, in bytes: `size_of::<Plan<T>>()` plus
+    /// every heap allocation the plan owns -- the problem's spilled layouts and
+    /// role tables, the packed strategy's box, scatter vectors and folded axes,
+    /// the elementwise passes' spilled axis metadata and compiled output replay,
+    /// and the report's folded axes. Each allocation is counted at its capacity,
+    /// as the allocator sized it.
+    ///
+    /// Excluded: the operand and output buffers, which the caller owns, and the
+    /// execution workspace (packing panels, scratch tiles), which belongs to the
+    /// executor or pool that runs the plan. A budget that charges those
+    /// separately does not count them twice.
+    ///
+    /// Counted once when the plan is built, so this is a field read: `O(1)` and
+    /// allocation-free. A plan is immutable, so the count stays exact.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
+    /// use tcontract::{Plan, PlanConfig};
+    /// let l = |d: &[usize], s: &[isize]| OperandSpec::new(LayoutSpec::new(d, s, 0).unwrap());
+    /// let problem = Problem::from_labels(
+    ///     DType::F64,
+    ///     l(&[2, 3], &[1, 2]),
+    ///     l(&[3, 4], &[1, 3]),
+    ///     CSpec::Absent,
+    ///     l(&[2, 4], &[1, 2]),
+    ///     &Labels::new(&[0, 2], &[2, 1], &[0, 1]),
+    /// ).unwrap();
+    /// let plan = Plan::<f64>::new(&problem, &PlanConfig::default()).unwrap();
+    /// assert!(plan.retained_bytes() >= core::mem::size_of::<Plan<f64>>());
+    /// ```
+    pub fn retained_bytes(&self) -> usize {
+        self.retained
     }
 
     /// The validated problem this plan was built from.

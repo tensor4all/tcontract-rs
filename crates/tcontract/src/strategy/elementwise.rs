@@ -214,6 +214,25 @@ pub struct ElementPlan {
 }
 
 impl ElementPlan {
+    /// The heap of spilled axis metadata and of the compiled `beta` replay.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        use crate::heap::{tiny, update_plan};
+        let Self {
+            dims,
+            strides,
+            total: _,
+            beta_update,
+        } = self;
+        let update = match beta_update {
+            Some(_) => {
+                let st = self.strides();
+                update_plan(dims, st[3], st[2])
+            }
+            None => 0,
+        };
+        tiny(dims) + tiny(strides) + update
+    }
+
     fn from_axes(axes: impl Iterator<Item = (usize, [isize; 4])> + Clone) -> Self {
         let axes = axes.filter(|a| a.0 != 1);
         let n = axes.clone().count();
