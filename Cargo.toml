@@ -23,11 +23,11 @@ rust-version = "1.89"
 # requirement would instead force a coordinated release of tcontract, cpueinsum
 # and tlinalg for every strided patch (tensor4all/tenferro-rs#2214).
 # Placement lives in `threadteam`: every fan-out entry takes an `Exec` token.
-strided-basic = { version = "0.9.0", default-features = false }
+strided-basic = { version = "0.10.0", default-features = false }
 threadteam = { version = "0.3.0" }
 strided-view = { version = "0.7.0" }
-strided-perm = { version = "0.9.0" }
-strided-kernel = { version = "0.9.0" }
+strided-perm = { version = "0.10.0" }
+strided-kernel = { version = "0.10.0" }
 tcontract-kernel = { version = "0.3.0", path = "crates/tcontract-kernel", default-features = false }
 tcontract-exec = { version = "0.9.1", path = "crates/tcontract-exec" }
 tcontract-capi = { version = "0.1.0", path = "crates/tcontract-capi" }
