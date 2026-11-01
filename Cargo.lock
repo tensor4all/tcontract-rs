@@ -868,7 +868,7 @@ dependencies = [
  "num-traits",
  "strided-perm",
  "strided-view",
- "threadteam",
+ "threadteam 0.2.0",
  "tinyvec",
 ]
 
@@ -880,7 +880,7 @@ checksum = "0b0868512be6a75ee46d01ae0cf06c53ac03239ae8c8550b6b088b26457fecb5"
 dependencies = [
  "strided-view",
  "thiserror",
- "threadteam",
+ "threadteam 0.2.0",
  "tinyvec",
 ]
 
@@ -956,9 +956,9 @@ dependencies = [
 
 [[package]]
 name = "t4a-faer"
-version = "0.27.0"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e18d24747a84703dfb2bb759d19660ad03fd46859d01f4178f89bd041a208fe2"
+checksum = "bd74031bea6eeb7424c9d827d3dc5e7c53c34b87a6ec14a1555922c65e5dd8d7"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -974,7 +974,7 @@ dependencies = [
  "reborrow",
  "t4a-faer-traits",
  "t4a-private-gemm-x86",
- "threadteam",
+ "threadteam 0.3.0",
 ]
 
 [[package]]
@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1025,7 +1025,7 @@ dependencies = [
  "tcontract-kernel",
  "tcontract-testkit",
  "thiserror",
- "threadteam",
+ "threadteam 0.3.0",
  "tinyvec",
 ]
 
@@ -1045,7 +1045,7 @@ dependencies = [
  "tcontract-capi",
  "tcontract-exec",
  "tcontract-kernel",
- "threadteam",
+ "threadteam 0.3.0",
 ]
 
 [[package]]
@@ -1058,16 +1058,16 @@ dependencies = [
  "tcontract-exec",
  "tcontract-kernel",
  "tcontract-testkit",
- "threadteam",
+ "threadteam 0.3.0",
 ]
 
 [[package]]
 name = "tcontract-exec"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "t4a-faer",
  "thiserror",
- "threadteam",
+ "threadteam 0.3.0",
 ]
 
 [[package]]
@@ -1125,6 +1125,18 @@ name = "threadteam"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23210e76b7702020e91c6b39b1ea83e3e207153d866b261f354eed71f5dcefa3"
+dependencies = [
+ "libc",
+ "loom",
+ "rayon",
+ "thiserror",
+]
+
+[[package]]
+name = "threadteam"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5dd6b40e18f897d036c79963512a194e6f8dbe76e29386ca4ccf6c9d1663f5c"
 dependencies = [
  "libc",
  "loom",
