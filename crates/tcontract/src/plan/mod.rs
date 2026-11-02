@@ -48,6 +48,7 @@ pub(crate) mod test_support;
 use core::marker::PhantomData;
 
 use core::num::NonZeroUsize;
+use core::time::Duration;
 use strided_view::{StridedView, StridedViewMut};
 use tcontract_exec::Exec;
 use tcontract_kernel::{Element, KernelCatalog, ResolvedGemm, SelectError, TuningClass};
@@ -71,12 +72,19 @@ use crate::resolve;
 use crate::select::Chooser;
 use crate::strategy::elementwise::{CRead, ElementPlan, Expr, Inputs};
 use crate::strategy::faer::{self as faer_strategy, FaerPlan, FaerWrite};
-use tcontract_exec::host::ns_per_flop;
+use tcontract_exec::host::muladds_per_ns;
 
 /// Dispatches one execution of a plan performs, declared to the token's width rule:
 /// the packed driver publishes its grid once (a team or fork), one faer GEMM is one
 /// parallel region, and an elementwise pass is one region over the output.
 const PLAN_SECTIONS: u32 = 1;
+
+/// A non-negative nanosecond count as a `Duration`; one beyond what `Duration` holds saturates
+/// instead of panicking. Both callers divide a finite non-negative work count by a positive finite
+/// rate, so the count is never negative or NaN.
+fn ns_duration(ns: f64) -> Duration {
+    Duration::try_from_secs_f64(ns * 1e-9).unwrap_or(Duration::MAX)
+}
 
 #[derive(Debug)]
 struct Packed<T: Scalar> {
@@ -382,6 +390,118 @@ impl<T: Scalar> Plan<T> {
     /// The validated problem this plan was built from.
     pub fn problem(&self) -> &Problem {
         &self.problem
+    }
+
+    /// The multiply-add count of one execution: the work this plan's own width rule prices.
+    ///
+    /// This is [`Problem::macs`] weighted for the scalar — one real multiply-add is one unit, a
+    /// complex one four, because a complex multiply-add is four real ones — in `f64` rather than
+    /// `u128` so it can be divided by a rate directly. It is a fact about the problem, not about a
+    /// machine: no rate, width or calibration changes it, and it selects no strategy. It counts the
+    /// *contraction*, so an empty contraction (`k == 0`) or an empty output is zero even though
+    /// execution still runs an output pass — the same quantity the width rule prices.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
+    /// use tcontract::{Plan, PlanConfig};
+    /// let l = |d: &[usize], s: &[isize]| OperandSpec::new(LayoutSpec::new(d, s, 0).unwrap());
+    /// let problem = Problem::from_labels(
+    ///     DType::F64,
+    ///     l(&[2, 3], &[1, 2]),
+    ///     l(&[3, 4], &[1, 3]),
+    ///     CSpec::Absent,
+    ///     l(&[2, 4], &[1, 2]),
+    ///     &Labels::new(&[0, 2], &[2, 1], &[0, 1]),
+    /// ).unwrap();
+    /// let plan = Plan::<f64>::new(&problem, &PlanConfig::default()).unwrap();
+    /// // 2 * 4 * 3 multiply-adds, whatever the width, the budget or the date.
+    /// assert_eq!(plan.muladds(), 24.0);
+    /// ```
+    pub fn muladds(&self) -> f64 {
+        self.problem.macs() as f64 * if T::IS_COMPLEX { 4.0 } else { 1.0 }
+    }
+
+    /// Estimated wall time of one execution at `width` participants, at the rate `muladds_per_ns`.
+    ///
+    /// This prices the same work the width rule's serial estimate does — [`Plan::muladds`] over a
+    /// rate — at the rate you supply, divided by `width`, plus the token's dispatch cost. That is the objective the shared width rule minimises
+    /// (`tcontract_exec::Exec::width_for`: `sections * D(k) + estimate / k`), so an estimate at one
+    /// width and at another relate the way the rule assumes — **ideal division**, not a fitted
+    /// speedup curve. A contraction's work is GEMM-shaped, which is why the rule's assumption is the
+    /// crate's model and not an addition to it. Passing
+    /// [`tcontract_exec::host::muladds_per_ns`] prices the compute exactly as the width rule does.
+    ///
+    /// # The rate
+    ///
+    /// `muladds_per_ns` is the caller's argument: a rate is a measurement of a host in a clock
+    /// state, and which measurement describes the machine this estimate is about is the caller's
+    /// decision, not a constant this crate could pick for it. Deliberately not a default from the
+    /// executor's [`BatchPolicy`](tcontract_exec::BatchPolicy): that field is what this crate's own
+    /// batch and width rules price work at, and a caller asking for a second opinion — or for the
+    /// rate another crate calibrated — has to be able to say which one it means. Two sources fit
+    /// the unit:
+    ///
+    /// * [`tcontract_exec::host::muladds_per_ns`] — the host-class table this crate's own width
+    ///   rule is calibrated against. The default choice.
+    /// * A measured rate of the same unit, e.g. `tlinalg::estimate::Rates::gemm()` after
+    ///   `Rates::calibrate()`: `tlinalg` owns a per-host calibration of a f64 GEMM, and sharing its
+    ///   number is what makes a contraction and a factorization comparable in one unit
+    ///   (tensor4all/tcontract-rs#163).
+    ///
+    /// # What it is not
+    ///
+    /// The number is for the algorithm this plan holds ([`Plan::report`]); it does not re-plan or
+    /// re-select a strategy at `width`, and no strategy would differ here. It is **advisory** — a
+    /// model's output, not a measurement of your call — and nothing in this crate reads it: the
+    /// width this plan actually runs at is chosen from the same work and the token's dispatch
+    /// costs, independently of this call. It is that objective, not a replay of the decision: the
+    /// width rule additionally applies the token's payback gate, and a forced batch policy narrows
+    /// the budget before the width is asked for.
+    ///
+    /// `width` is clamped to `1..=exec.budget()`. A rate that is not a positive finite number is
+    /// refused with [`Duration::MAX`], and a sum that overflows saturates there too.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
+    /// use tcontract::{Plan, PlanConfig};
+    /// use tcontract_exec::Exec;
+    /// let l = |d: &[usize], s: &[isize]| OperandSpec::new(LayoutSpec::new(d, s, 0).unwrap());
+    /// let problem = Problem::from_labels(
+    ///     DType::F64,
+    ///     l(&[64, 64], &[1, 64]),
+    ///     l(&[64, 64], &[1, 64]),
+    ///     CSpec::Absent,
+    ///     l(&[64, 64], &[1, 64]),
+    ///     &Labels::new(&[0, 2], &[2, 1], &[0, 1]),
+    /// ).unwrap();
+    /// let plan = Plan::<f64>::new(&problem, &PlanConfig::default()).unwrap();
+    /// let exec = Exec::serial();
+    /// let rate = tcontract_exec::host::muladds_per_ns();
+    /// // A serial context has one slot, so the width is clamped to one and dispatches nothing,
+    /// // and at one multiply-add per nanosecond the estimate is the work count itself.
+    /// assert_eq!(plan.estimate(4, rate, &exec), plan.estimate(1, rate, &exec));
+    /// assert_eq!(
+    ///     plan.estimate(1, 1.0, &exec),
+    ///     std::time::Duration::from_nanos(plan.muladds() as u64),
+    /// );
+    /// ```
+    pub fn estimate(&self, width: usize, muladds_per_ns: f64, exec: &Exec<'_>) -> Duration {
+        if !muladds_per_ns.is_finite() || muladds_per_ns <= 0.0 {
+            return Duration::MAX;
+        }
+        let width = width.clamp(1, exec.budget());
+        let share = ns_duration(self.muladds() / muladds_per_ns / width as f64);
+        if width < 2 {
+            return share;
+        }
+        let dispatch = exec
+            .token_ref()
+            .dispatch_cost(NonZeroUsize::new(width).unwrap_or(NonZeroUsize::MIN));
+        share.checked_add(dispatch).unwrap_or(Duration::MAX)
     }
 
     fn check_layout(&self, which: OperandId, dims: &[usize], strides: &[isize]) -> Result<()> {
@@ -840,11 +960,17 @@ impl<T: Scalar> Plan<T> {
         out
     }
 
+    /// The serial estimate of one execution in nanoseconds, at this crate's host-class rate: the
+    /// number the width rule is asked about, and the one [`Plan::estimate`] divides by a width.
+    /// A forced batch policy may narrow the budget before the rule is asked (see `batch_budget`).
+    fn serial_ns(&self) -> f64 {
+        self.muladds() / muladds_per_ns()
+    }
+
     /// The width the work estimate asks for at the executor's budget: the token's
-    /// rule (`Exec::width_for`) over the serial estimate and the declared sections.
+    /// rule (`Exec::width_for`) over [`Plan::serial_ns`] and the declared sections.
     fn width(&self, exec: &Exec<'_>) -> usize {
-        let flops = 2.0 * self.problem.macs() as f64 * if T::IS_COMPLEX { 4.0 } else { 1.0 };
-        exec.width_for(flops * ns_per_flop(), PLAN_SECTIONS)
+        exec.width_for(self.serial_ns(), PLAN_SECTIONS)
     }
 
     /// The context the driver sees: `Auto` narrows the budget over the whole
