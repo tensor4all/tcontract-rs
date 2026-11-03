@@ -150,13 +150,9 @@ tiny files that scatter one concept across many modules.
 
 ## Unit Test Organization
 
-Keep production source files focused on production code. No inline
-`#[cfg(test)]` blocks in normal modules unless the file is a genuinely tiny
-leaf module and the test is trivially small. Prefer module-local test
-directories such as `src/<module>/tests/*.rs`, leaving only
-`#[cfg(test)] mod tests;` in the source file. Reserve crate-root `tests/` for
-integration tests. Do not use `include!` to inject test files. Imported code
-keeps its existing layout until it is otherwise changed.
+The normative rule is the shared `tensor4all-agent-rules`
+`rules/rust/index.md` § Unit Test Organization. Imported code keeps its
+existing layout until it is otherwise changed.
 
 ## Generic Over Scalar Type
 
