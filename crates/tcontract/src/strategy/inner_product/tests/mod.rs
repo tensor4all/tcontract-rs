@@ -327,6 +327,67 @@ fn accumulate_adds_to_the_existing_output() {
     let _ = Write::Overwrite;
 }
 
+/// `alpha` is a runtime argument, not a planning one: one plan serves any
+/// scalar, and the product is scaled by it.
+#[test]
+fn scales_by_a_runtime_alpha() {
+    for hc in [true, false] {
+        let (h, k) = (20usize, 7usize);
+        let (dims, strides, la, lb) = layout(h, k, hc);
+        let n: usize = dims.iter().product();
+        let a: Vec<f64> = (0..n).map(|i| val(i, 1)).collect();
+        let b: Vec<f64> = (0..n).map(|i| val(i, 2)).collect();
+        let plan = Plan::<f64>::from_problem(
+            problem(DType::F64, &dims, &strides, h, &la, &lb),
+            &PlanConfig::default(),
+        )
+        .unwrap();
+        let eval = |alpha: f64| {
+            let mut d = vec![0.0f64; h];
+            let av = StridedView::<f64, Identity>::new(&a, &dims, &strides, 0).unwrap();
+            let bv = StridedView::<f64, Identity>::new(&b, &dims, &strides, 0).unwrap();
+            let mut dv = StridedViewMut::new(&mut d, &[h], &[1], 0).unwrap();
+            plan.execute_into(&mut Exec::serial(), alpha, &av, &bv, &mut dv)
+                .unwrap();
+            d
+        };
+        let (one, three) = (eval(1.0), eval(3.0));
+        for i in 0..h {
+            assert!((three[i] - 3.0 * one[i]).abs() <= 1e-12, "hc={hc} item {i}");
+        }
+    }
+}
+
+/// The overwrite contract never reads the destination: a poisoned one comes out
+/// clean, and a genuinely uninitialized one is written before it is read.
+#[test]
+fn overwrite_never_reads_the_destination() {
+    for hc in [true, false] {
+        let (h, k) = (18usize, 5usize);
+        let (dims, strides, la, lb) = layout(h, k, hc);
+        let n: usize = dims.iter().product();
+        let a: Vec<f64> = vec![1.0; n];
+        let b: Vec<f64> = vec![1.0; n];
+        let plan = Plan::<f64>::from_problem(
+            problem(DType::F64, &dims, &strides, h, &la, &lb),
+            &PlanConfig::default(),
+        )
+        .unwrap();
+        let expected = k as f64;
+        let mut poisoned = vec![f64::NAN; h];
+        {
+            let av = StridedView::<f64, Identity>::new(&a, &dims, &strides, 0).unwrap();
+            let bv = StridedView::<f64, Identity>::new(&b, &dims, &strides, 0).unwrap();
+            let mut dv = StridedViewMut::new(&mut poisoned, &[h], &[1], 0).unwrap();
+            plan.execute_into(&mut Exec::serial(), 1.0, &av, &bv, &mut dv)
+                .unwrap();
+        }
+        for (i, value) in poisoned.iter().enumerate() {
+            assert_eq!(*value, expected, "hc={hc} item {i} kept the old value");
+        }
+    }
+}
+
 /// `<layout, h, k, output bits>` from the faer route on `origin/main`.
 const FAER_BASELINE_F64: &[(&str, usize, usize, &[u64])] = &[
     ("hc", 1, 1, &[0xbf90baa85909aee5]),

@@ -20,10 +20,15 @@
 //! * the batch axis is the unit-stride axis in A, B and D: one pass per
 //!   contracted element over the output axis (`fma`, or `zip_update3_into`
 //!   when `alpha` is not one). Every output still accumulates in ascending k,
-//!   so the result is a sequential dot with fused rounding;
+//!   so this traversal matches a sequential *fused* dot; it does not reproduce
+//!   the faer route's own accumulation bit for bit, which the tests bound;
 //! * otherwise one `zip_reduce` per batch item over the contracted axis, which
 //!   is contiguous when K has unit stride and a gather when it does not. Its
 //!   fold uses strided-rs' lane scheme, so the sum is reassociated into a tree.
+//!
+//! Both traversals therefore differ from the previous faer route in rounding,
+//! not only in addition order: a fused multiply-add rounds once where faer's
+//! matvec and a separately rounded multiply-then-add round twice.
 //!
 //! Both traversals are strided-basic calls: this module owns no kernel, only
 //! the loop over a fused group and the update semantics of the C contract.
@@ -246,13 +251,13 @@ impl InnerProductPlan {
             let item: T = zip_reduce(&av, &bv, |x, y| x * y, |acc, t| acc + t, zero, exec.token())
                 .map_err(Error::backend)?;
             // SAFETY: `d` is exclusive and injective, so this item's element is
-            // written by no other pass; the write-only form never reads `d`.
+            // written by no other item; under the overwrite contract it is
+            // written without being read, so uninitialized storage is allowed.
             unsafe {
                 let slot = d.offset(i as isize * self.h.d);
-                *slot = if i == 0 && write == Write::Overwrite {
-                    alpha * item
-                } else {
-                    *slot + alpha * item
+                *slot = match write {
+                    Write::Overwrite => alpha * item,
+                    Write::Accumulate => *slot + alpha * item,
                 };
             }
         }

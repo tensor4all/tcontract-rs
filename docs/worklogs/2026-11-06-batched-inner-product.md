@@ -83,6 +83,23 @@ pass stays at its serial cost while `(a*b).sum` gains 1.5-2x): `4096,4096` is
 * **`h = 8`** is handled by the per-item reduction (`PER_K_MIN_ITEMS = 16`),
   which brings it to 1.16x of `(a*b).sum`; without that guard it was 3.98 ms
   against 3.74 ms before, i.e. the only cell the new route lost.
+* **Numerical agreement is a bound, not identity.** faer's matvec uses SIMD
+  fused multiply-adds, `fma` fuses too but over a different reduction, and
+  `zip_reduce` reassociates across lanes; so the new route matches neither a
+  separately rounded dot nor faer bit for bit. Measured on the fixture: <= 2 ulp
+  (one pass per k), <= 1.5e-15 relative (`zip_reduce`). The test bound
+  `64 * eps * sum|a_j b_j|` is absolute and scaled by the sum of absolute
+  products, which is the right shape for two rounded answers; it is not a
+  relative-error claim for a cancelling sum, and cancellation-sensitive
+  fixtures are a follow-up.
+* **Forced batch policies are not honored yet.** The route runs the fused pass
+  on the token (strided-rs decides the width) and the per-item reduction
+  serially; a caller forcing `BatchStrategy::Inner` or `Split` gets no item
+  threads instead of a refusal. Resolving the policy before the first write,
+  as `VendorLoopRoute` does for a serial vendor loop, is the next change.
+* **No benchmark rows.** The crate's paired 1T/4T `tcontract-bench` rows for
+  this route are not added yet; the numbers above are the tenferro-level
+  consumer measurement.
 * **The three smallest cells** (`64,4` in both layouts, `1024,4` and `1024,16`
   in `ip`) are 0.8-1.4x: 2-25 µs calls where both routes are dispatch-bound and
   the run-to-run spread covers the difference.
