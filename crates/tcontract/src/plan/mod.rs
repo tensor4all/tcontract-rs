@@ -72,6 +72,7 @@ use crate::resolve;
 use crate::select::Chooser;
 use crate::strategy::elementwise::{CRead, ElementPlan, Expr, Inputs};
 use crate::strategy::faer::{self as faer_strategy, FaerPlan, FaerWrite};
+use crate::strategy::inner_product::{self, InnerProductPlan, Write as InnerProductWrite};
 use tcontract_exec::host::muladds_per_ns;
 
 /// Dispatches one execution of a plan performs, declared to the token's width rule:
@@ -101,6 +102,7 @@ enum Strategy<T: Scalar> {
     Packed(Box<Packed<T>>),
     Faer(FaerPlan),
     Elementwise(ElementPlan),
+    InnerProduct(InnerProductPlan),
 }
 
 /// A prepared contraction for fixed layouts, reusable across executions.
@@ -250,7 +252,16 @@ impl<T: Scalar> Plan<T> {
         }
         config.validate()?;
         let packed = config.requires_packed() || selection.is_some();
-        let faer = if packed || problem.all_batch() {
+        // Rule 5 is structural: a step with no matrix left (`m = n = 1`) has no
+        // GEMM to hand to faer, so it is offered to the batched inner product
+        // before the faer fusion is tried. Everything it declines keeps the
+        // rule chain below unchanged.
+        let inner = if packed || problem.all_batch() {
+            None
+        } else {
+            inner_product::plan(problem)
+        };
+        let faer = if packed || problem.all_batch() || inner.is_some() {
             None
         } else {
             faer_strategy::plan(problem)
@@ -259,6 +270,8 @@ impl<T: Scalar> Plan<T> {
             Reason::Forced
         } else if problem.all_batch() {
             Reason::AllBatch
+        } else if inner.is_some() {
+            Reason::InnerProduct
         } else {
             match &faer {
                 None => Reason::NotFusable,
@@ -277,12 +290,16 @@ impl<T: Scalar> Plan<T> {
             }
             (Reason::AllBatch, _) => Strategy::Elementwise(ElementPlan::product(problem)),
             (Reason::Fused, Some(f)) => Strategy::Faer(f),
-            _ => Strategy::Packed(Box::new(Self::plan_packed(problem, config, None)?)),
+            _ => match inner {
+                Some(ip) => Strategy::InnerProduct(ip),
+                None => Strategy::Packed(Box::new(Self::plan_packed(problem, config, None)?)),
+            },
         };
         let (algorithm, packed_report) = match &strategy {
             Strategy::Packed(p) => (Algorithm::Packed, Some(packed_report(p))),
             Strategy::Faer(_) => (Algorithm::Faer, None),
             Strategy::Elementwise(_) => (Algorithm::Elementwise, None),
+            Strategy::InnerProduct(_) => (Algorithm::InnerProduct, None),
         };
         let mut plan = Self {
             output: ElementPlan::output(problem),
@@ -318,6 +335,7 @@ impl<T: Scalar> Plan<T> {
             Strategy::Packed(p) => core::mem::size_of::<Packed<T>>() + p.plan.heap_bytes(),
             Strategy::Faer(_) => 0,
             Strategy::Elementwise(e) => e.heap_bytes(),
+            Strategy::InnerProduct(_) => 0,
         };
         let report = report.packed.as_ref().map_or(0, |p| p.stats.heap_bytes());
         core::mem::size_of::<Self>()
@@ -1139,6 +1157,42 @@ impl<T: Scalar> Plan<T> {
             unsafe { f.run(&mut exec, alpha, a, b, write, d)? };
             return Ok(());
         }
+        if let Strategy::InnerProduct(ip) = &self.strategy {
+            let mut exec = self.batch_context(exec);
+            // A separate C that is not D itself first writes `op_D(beta *
+            // op_C(C))` into D (the same output-sized pass the faer route uses;
+            // not an operand copy). D itself needs that pass only when `beta` and
+            // the conjugations are not the identity. With no C term, or `beta ==
+            // 0`, the product-only form overwrites D and reads nothing.
+            let c = match c {
+                CRead::Separate(cp) if core::ptr::eq(cp, d as *const T) => CRead::InPlace,
+                other => other,
+            };
+            let write = match c {
+                CRead::Separate(cp) if beta != zero && !core::ptr::eq(cp, d as *const T) => {
+                    // SAFETY: the caller's contract (C disjoint from D).
+                    unsafe { self.output.run(&mut exec, expr, Inputs::None, c, d) }?;
+                    InnerProductWrite::Accumulate
+                }
+                CRead::None => InnerProductWrite::Overwrite,
+                _ if beta == zero => InnerProductWrite::Overwrite,
+                _ => {
+                    let identity = beta == <T as Element>::one() && !conj_c && !conj_d;
+                    if !identity {
+                        // SAFETY: the caller's contract; in-place update of D.
+                        unsafe {
+                            self.output
+                                .run(&mut exec, expr, Inputs::None, CRead::InPlace, d)
+                        }?;
+                    }
+                    InnerProductWrite::Accumulate
+                }
+            };
+            // SAFETY: the caller's contract; the product was proven copy-free
+            // over exactly this problem's layouts at planning.
+            unsafe { ip.run::<T>(&mut exec, alpha, a, b, d, write)? };
+            return Ok(());
+        }
         match &self.strategy {
             Strategy::Packed(pk) => {
                 let mut exec = self.batch_context(exec);
@@ -1158,6 +1212,7 @@ impl<T: Scalar> Plan<T> {
                 };
             }
             Strategy::Faer(_) => unreachable!("served above"),
+            Strategy::InnerProduct(_) => unreachable!("served above"),
             Strategy::Elementwise(e) => {
                 // SAFETY: the caller's contract.
                 unsafe { e.run(exec, expr, Inputs::Product(a, b), c, d) }?;

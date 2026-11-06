@@ -57,16 +57,8 @@ use std::num::NonZeroUsize;
 use tcontract_exec::{with_faer_par, BatchQuery, Exec, ExecError};
 use tcontract_kernel::Element;
 
-use crate::api::{fuse_axes, sort_by_stride, CSpec, OperandId, Problem, RoleAxis, Scalar};
-
-/// One fused group: `(extent, stride)` in each of A, B and D.
-#[derive(Clone, Copy, Debug)]
-struct Fused {
-    extent: usize,
-    a: isize,
-    b: isize,
-    d: isize,
-}
+use crate::api::{CSpec, OperandId, Problem, Scalar};
+use crate::strategy::fuse::{fuse_group, Fused};
 
 /// What the product may assume about the destination when it starts, decided
 /// by the executor from the caller's output contract and the C mode.
@@ -93,55 +85,6 @@ pub(crate) struct FaerPlan {
     conj_a: bool,
     conj_b: bool,
     conj_d: bool,
-}
-
-/// Run `f` on `0..n` in a stack buffer when `n` is small (planning allocates
-/// nothing for the usual ranks) and in a heap buffer otherwise.
-fn with_indices<R>(n: usize, f: impl FnOnce(&mut [usize]) -> R) -> R {
-    const INLINE: usize = 16;
-    if n <= INLINE {
-        let mut buf = [0usize; INLINE];
-        let order = &mut buf[..n];
-        order.iter_mut().enumerate().for_each(|(i, x)| *x = i);
-        f(order)
-    } else {
-        f(&mut (0..n).collect::<Vec<_>>())
-    }
-}
-
-/// Fuse one group over the operands that carry it, trying the order each
-/// carrier would choose and then the natural one. The candidates are tried
-/// one at a time in one reused buffer.
-fn fuse_group(group: &[RoleAxis], carriers: &[OperandId]) -> Option<Fused> {
-    let fits = |order: &[usize]| {
-        carriers
-            .iter()
-            .all(|&o| fuse_axes(group, order, o).is_some())
-    };
-    let fused = |order: &[usize]| {
-        let get = |o: OperandId| fuse_axes(group, order, o);
-        let (extent, a) = get(OperandId::A).unwrap_or((1, 1));
-        // Every carrier agrees on the extent; the absent operands keep stride one.
-        Fused {
-            extent,
-            a,
-            b: get(OperandId::B).map_or(1, |x| x.1),
-            d: get(OperandId::D).map_or(1, |x| x.1),
-        }
-    };
-    with_indices(group.len(), |order| {
-        let reset = |order: &mut [usize]| order.iter_mut().enumerate().for_each(|(i, x)| *x = i);
-        for &o in carriers {
-            // From the natural order, stable: equal strides keep that order.
-            reset(order);
-            sort_by_stride(group, o, order);
-            if fits(order) {
-                return Some(fused(order));
-            }
-        }
-        reset(order);
-        fits(order).then(|| fused(order))
-    })
 }
 
 /// Output elements up to which a separate C's output pass stays in cache and
