@@ -136,7 +136,7 @@ fn offset_span(dims: &[usize], strides: &[isize]) -> (isize, isize) {
 ///
 /// Every offset the layout generates from `origin` is a live element, nothing
 /// writes it during `'a` except through an identical in-place mapping.
-unsafe fn read_view<'a, T, Op>(
+pub(crate) unsafe fn read_view<'a, T, Op>(
     origin: *const T,
     dims: &'a [usize],
     strides: &'a [isize],
@@ -154,7 +154,7 @@ unsafe fn read_view<'a, T, Op>(
 /// # Safety
 ///
 /// As [`read_view`], and the layout is injective and exclusively owned.
-unsafe fn write_view<'a, T>(
+pub(crate) unsafe fn write_view<'a, T>(
     origin: *mut T,
     dims: &'a [usize],
     strides: &'a [isize],
@@ -175,7 +175,7 @@ unsafe fn write_view<'a, T>(
 ///
 /// As [`write_view`]; the storage need not be initialized, but the layout must
 /// still be injective and exclusively owned for `'a`.
-unsafe fn write_view_uninit<'a, T>(
+pub(crate) unsafe fn write_view_uninit<'a, T>(
     origin: *mut T,
     dims: &'a [usize],
     strides: &'a [isize],

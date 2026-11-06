@@ -178,6 +178,9 @@ pub enum ExecutionRoute {
     Elementwise,
     /// Prepared copy-free Faer contraction, potentially with a C output pass.
     Faer,
+    /// Prepared batched inner product: one pass over the batch axis per
+    /// contracted element, or one reduction per batch item.
+    InnerProduct,
     /// Prepared packed contraction and its exact scheduling width.
     Packed {
         /// Scheduling shape.
@@ -288,6 +291,7 @@ impl<T: Scalar> Plan<T> {
         let pk = match (&self.strategy, output) {
             (Strategy::Packed(pk), _) => pk.as_ref(),
             (Strategy::Faer(_), _) => return Ok(ExecutionRoute::Faer),
+            (Strategy::InnerProduct(_), _) => return Ok(ExecutionRoute::InnerProduct),
             (Strategy::Elementwise(_), _) => return Ok(ExecutionRoute::Elementwise),
         };
         let budget = self.batch_budget(exec);

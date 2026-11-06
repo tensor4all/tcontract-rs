@@ -3,3 +3,5 @@
 
 pub(crate) mod elementwise;
 pub(crate) mod faer;
+pub(crate) mod fuse;
+pub(crate) mod inner_product;

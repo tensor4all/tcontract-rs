@@ -16,6 +16,9 @@ pub enum Algorithm {
     Faer,
     /// One strided elementwise pass over an all-batch (Hadamard) problem.
     Elementwise,
+    /// A batched inner product: no matrix multiply is left (`m = n = 1`), so
+    /// the step is a fused pass over the batch axis or one reduction per item.
+    InnerProduct,
 }
 
 impl Algorithm {
@@ -25,6 +28,7 @@ impl Algorithm {
             Algorithm::Packed => "packed",
             Algorithm::Faer => "faer",
             Algorithm::Elementwise => "elementwise",
+            Algorithm::InnerProduct => "inner_product",
         }
     }
 }
@@ -51,6 +55,10 @@ pub enum Reason {
     },
     /// Rule 4: no copy-free fusion exists.
     NotFusable,
+    /// Rule 5: a copy-free batched inner product — the M and N groups both fuse
+    /// to extent one, so the step is `h` dot products of length `k` rather than
+    /// a GEMM. Served by [`Algorithm::InnerProduct`].
+    InnerProduct,
 }
 
 /// What the packed strategy resolved to: the family, its geometry and the grid.
