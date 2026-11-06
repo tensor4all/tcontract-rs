@@ -93,7 +93,7 @@ fn a_batch_of_dots_selects_the_inner_product_route() {
             assert_eq!(plan.report().algorithm, Algorithm::InnerProduct);
             assert_eq!(plan.report().reason, Reason::InnerProduct);
             assert_eq!(
-                plan.execution_route(&mut Exec::serial(), 1.0, crate::OutputContract::Fresh)
+                plan.execution_route(&Exec::serial(), 1.0, crate::OutputContract::Fresh)
                     .unwrap(),
                 ExecutionRoute::InnerProduct
             );
@@ -389,7 +389,13 @@ fn overwrite_never_reads_the_destination() {
 }
 
 /// `<layout, h, k, output bits>` from the faer route on `origin/main`.
-const FAER_BASELINE_F64: &[(&str, usize, usize, &[u64])] = &[
+type F64BaselineRow = (&'static str, usize, usize, &'static [u64]);
+
+/// `<layout, h, k, real bits, imaginary bits>` from the faer route on
+/// `origin/main`.
+type C64BaselineRow = (&'static str, usize, usize, &'static [u64], &'static [u64]);
+
+const FAER_BASELINE_F64: &[F64BaselineRow] = &[
     ("hc", 1, 1, &[0xbf90baa85909aee5]),
     ("kc", 1, 1, &[0xbf90baa85909aee5]),
     ("hc", 2, 3, &[0xbfb41f8414eb2477, 0xbfc45bfad0a83182]),
@@ -610,9 +616,7 @@ const FAER_BASELINE_F64: &[(&str, usize, usize, &[u64])] = &[
     ),
 ];
 
-/// `<layout, h, k, real bits, imaginary bits>` from the faer route on
-/// `origin/main`.
-const FAER_BASELINE_C64: &[(&str, usize, usize, &[u64], &[u64])] = &[
+const FAER_BASELINE_C64: &[C64BaselineRow] = &[
     ("hc", 1, 1, &[0x3f9718b5af18df47], &[0xbfb7e51dc9fb1551]),
     ("kc", 1, 1, &[0x3f9718b5af18df47], &[0xbfb7e51dc9fb1551]),
     (
