@@ -249,10 +249,11 @@ impl<T: Scalar> Plan<T> {
     /// C-mode validation belongs to execution; fresh storage cannot accumulate
     /// from the previous destination. Requery if caller/executor changes.
     ///
-    /// The route is the one a root token gets: when the token cannot
-    /// co-schedule a barrier team (it was produced by `fork`, or the caller is
-    /// a worker of the pool), execution takes the barrier-free cells route
-    /// instead; see [`PackedRoute`].
+    /// The reported width is the one this call will run at: when the token
+    /// cannot co-schedule a barrier team (it was produced by `fork`, or the
+    /// caller is a worker of the pool), the same barrier-free fallback
+    /// execution takes is applied here, so a grid that would have been `Spmd`
+    /// is reported as `Cells` with its narrower width; see [`PackedRoute`].
     ///
     /// # Errors
     /// Returns `Error::Exec` when a forced batch strategy cannot be honoured by
@@ -289,14 +290,29 @@ impl<T: Scalar> Plan<T> {
             (Strategy::Faer(_), _) => return Ok(ExecutionRoute::Faer),
             (Strategy::Elementwise(_), _) => return Ok(ExecutionRoute::Elementwise),
         };
-        let geometry = crate::driver::execution_geometry::<T>(
+        let budget = self.batch_budget(exec);
+        let mut geometry = crate::driver::execution_geometry::<T>(
             &pk.plan,
             &pk.rg,
             exec,
-            self.batch_budget(exec),
+            budget,
             exec.batch_policy(),
             true,
         )?;
+        // The fallback execution itself takes (`driver::execute_packed`): a
+        // token that cannot broadcast cannot honour a barrier team, and the
+        // barrier-free grid is narrower. Reporting the team width here would
+        // over-report exactly for the callers that schedule sub-teams.
+        if geometry.pm > 1 && !exec.token_ref().can_broadcast() {
+            geometry = crate::driver::execution_geometry::<T>(
+                &pk.plan,
+                &pk.rg,
+                exec,
+                budget,
+                exec.batch_policy(),
+                false,
+            )?;
+        }
         Ok(ExecutionRoute::Packed {
             kind: geometry.kind(),
             width: geometry.width(),
