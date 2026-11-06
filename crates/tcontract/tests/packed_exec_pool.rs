@@ -10,7 +10,7 @@ use tcontract_exec::{BatchPolicy, Exec, Pool};
 use tcontract_kernel::KernelChoice;
 
 mod common;
-use common::placement::{installs, max_live, on_worker, pool, root};
+use common::placement::{installs, max_live, on_worker, pool, pool_with_reference_costs, root};
 use common::plans::{matmul_problem, packed_plan};
 
 const M: usize = 256;
@@ -119,6 +119,51 @@ fn a_forked_child_falls_back_and_stays_within_the_budget() {
     assert_eq!(outs.len(), 2);
     assert!(outs.iter().all(|o| *o == serial));
     assert!(max_live(root) <= 4, "{}", max_live(root));
+}
+
+/// `execution_route` reports the grid the call will actually run on: a caller
+/// that cannot co-schedule a barrier team gets the barrier-free `Cells` grid,
+/// not the `Spmd` team the same plan takes on a root token (tcontract#176).
+/// The width is unchanged in the probed shapes -- the barrier-free grid also
+/// uses the budget -- but the kind is what tells a scheduler whether the call
+/// needs co-scheduled members, and it has to be the executed one.
+#[test]
+fn the_route_query_applies_the_barrier_free_fallback() {
+    let plan = packed_plan(M, N, K);
+    let sp = pool_with_reference_costs(4);
+    let pool = Pool::borrow(&sp);
+    let exec = Exec::new(&pool, 4).unwrap();
+    let root = plan
+        .execution_route(&exec, 1.0, OutputContract::Initialized)
+        .unwrap();
+    let ExecutionRoute::Packed {
+        kind: PackedRoute::Spmd,
+        width: root_width,
+    } = root
+    else {
+        panic!("the root token takes the team: {root:?}")
+    };
+    let workspace = exec.workspace();
+    let mut token = exec.into_token();
+    token.reborrow().fork(1, |_, child| {
+        let e = Exec::from_token(child, workspace, BatchPolicy::default());
+        assert_eq!(e.budget(), 4, "the share keeps the parent's budget");
+        let route = plan
+            .execution_route(&e, 1.0, OutputContract::Initialized)
+            .unwrap();
+        let ExecutionRoute::Packed { kind, width } = route else {
+            panic!("a packed plan takes the packed route: {route:?}")
+        };
+        assert_eq!(
+            kind,
+            PackedRoute::Cells,
+            "a forked child cannot co-schedule a barrier team"
+        );
+        assert!(
+            width <= root_width,
+            "the barrier-free grid never exceeds the team: {width} vs {root_width}"
+        );
+    });
 }
 
 /// `pm == 1` takes no barrier -- every column group has one thread and reads
