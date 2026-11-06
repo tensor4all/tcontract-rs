@@ -54,6 +54,17 @@ pub(crate) enum Write {
     Accumulate,
 }
 
+/// Batch items below which one pass per contracted element is not worth a
+/// strided-basic call.
+///
+/// A pass reads and writes one element per batch item, so below the width of one
+/// 128-byte cache line the call overhead (measured at 26-55 ns per pass on an
+/// M5 Max) dominates the 8 bytes it moves. There the per-item reduction runs
+/// `h` calls instead of `k`, and `h < k` is the regime this geometry is in when
+/// it is small (`h = 8, k = 131072` measured 3.98 ms per pass-per-k against
+/// 4.0 ms here, and 3.74 ms on the per-item GEMM route it replaces).
+const PER_K_MIN_ITEMS: usize = 16;
+
 /// A planned batched inner product: the two fused groups and the traversal.
 #[derive(Clone, Debug)]
 pub(crate) struct InnerProductPlan {
@@ -105,7 +116,7 @@ pub(crate) fn plan(p: &Problem) -> Option<InnerProductPlan> {
     if k.extent == 0 || h.extent == 0 || broadcast {
         return None;
     }
-    let per_k = h.extent > 1 && h.a == 1 && h.b == 1 && h.d == 1;
+    let per_k = h.extent >= PER_K_MIN_ITEMS && h.a == 1 && h.b == 1 && h.d == 1;
     Some(InnerProductPlan {
         h,
         k,

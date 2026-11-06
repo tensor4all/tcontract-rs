@@ -83,8 +83,9 @@ fn a_batch_of_dots_selects_the_inner_product_route() {
                 assert!(planned.is_some(), "h={h} k={k} hc={hc} {dtype:?}");
                 // The traversal follows the unit-stride axis, never a size.
                 // One pass per contracted element needs the batch axis at unit
-                // stride in A, B and D; with k == 1 both axes are.
-                let per_k = h > 1 && (hc || k == 1);
+                // stride in A, B and D, and enough items to pay a call; with
+                // k == 1 both axes have unit stride.
+                let per_k = h >= 16 && (hc || k == 1);
                 assert_eq!(planned.unwrap().per_k_for_test(), per_k);
             }
             let p = problem(DType::F64, &dims, &strides, h, &la, &lb);
