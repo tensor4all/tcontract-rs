@@ -741,9 +741,9 @@ dependencies = [
 
 [[package]]
 name = "strided-basic"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d1bc288afca49a3ca493c20dcd1095b477f39466124b841e652768d6f88b2fd"
+checksum = "1d5b6ae7845353d0370ae76c9d101968e79414f175b1fd452bc75128daf7983c"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -755,9 +755,9 @@ dependencies = [
 
 [[package]]
 name = "strided-perm"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec41974959b9ce03542b31eefed2cf72f8e972843872f36c1979406d628d065e"
+checksum = "9201632f2fbb80f41b3ef3acd80d0d1b8468f071040088ba851d7edcc0ccc4ea"
 dependencies = [
  "strided-view",
  "thiserror",
@@ -837,9 +837,9 @@ dependencies = [
 
 [[package]]
 name = "t4a-faer"
-version = "0.30.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cab95e048a72ca19b37446bacf360ac14120a3aa8d03605726314dec2e6b0190"
+checksum = "56cb66d2a11287259ed62ab6cbef98e907ef0b67d78b45c32d8d33709693fde7"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -860,9 +860,9 @@ dependencies = [
 
 [[package]]
 name = "t4a-faer-traits"
-version = "0.24.2"
+version = "0.24.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e518a21025297df2986819d8691cc590e473dc8676316895bfeecddffad0d52"
+checksum = "2d0ac00f8eac55b87f2609e232ed97179783cd57a14ce3a007e6c45b2bda0b84"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "t4a-faer",
  "thiserror",
@@ -1122,9 +1122,9 @@ dependencies = [
 
 [[package]]
 name = "threadteam"
-version = "0.4.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7a5218209ff687a851e064af466d0a3daeca458dcba50c41ff935162201a9b7"
+checksum = "8ae7666b2f6a9ad479f5d0be7b54d21d62912ddd7c69923ad6f50767a86440e8"
 dependencies = [
  "libc",
  "loom",
