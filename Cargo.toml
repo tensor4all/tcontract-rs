@@ -25,7 +25,7 @@ rust-version = "1.89"
 # Placement lives in `threadteam`: every fan-out entry takes an `Exec` token.
 strided-basic = { version = "0.12.0", default-features = false }
 threadteam = { version = "0.5.1" }
-strided-view = { version = "0.7.0" }
+strided-view = { version = "0.7.1" }
 strided-perm = { version = "0.12.0" }
 strided-kernel = { version = "0.12.0" }
 tcontract-kernel = { version = "0.3.1", path = "crates/tcontract-kernel", default-features = false }
