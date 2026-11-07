@@ -181,6 +181,11 @@ pub enum ExecutionRoute {
     /// Prepared batched inner product: one pass over the batch axis per
     /// contracted element, or one reduction per batch item.
     InnerProduct,
+    /// The reference rank-k kernel (#175): serial on the calling thread, one
+    /// participant, no workspace. Reported for every nonempty rank-k call,
+    /// including `alpha == 0`, because that kernel itself scales the requested
+    /// triangle. No faster rank-k family exists yet.
+    RankKReference,
     /// Prepared packed contraction and its exact scheduling width.
     Packed {
         /// Scheduling shape.
@@ -283,6 +288,11 @@ impl<T: Scalar> Plan<T> {
         if self.problem.out_empty() {
             return Ok(ExecutionRoute::Empty);
         }
+        // Before the output-only shortcut: that pass writes the whole output,
+        // and the rank-k kernel applies `beta` to the requested triangle itself.
+        if matches!(self.strategy, Strategy::RankK(_)) {
+            return Ok(ExecutionRoute::RankKReference);
+        }
         if self.problem.k_empty() || alpha == <T as Element>::zero() {
             return Ok(ExecutionRoute::OutputOnly);
         }
@@ -293,6 +303,7 @@ impl<T: Scalar> Plan<T> {
             (Strategy::Faer(_), _) => return Ok(ExecutionRoute::Faer),
             (Strategy::InnerProduct(_), _) => return Ok(ExecutionRoute::InnerProduct),
             (Strategy::Elementwise(_), _) => return Ok(ExecutionRoute::Elementwise),
+            (Strategy::RankK(_), _) => return Ok(ExecutionRoute::RankKReference),
         };
         let budget = self.batch_budget(exec);
         let mut geometry = crate::driver::execution_geometry::<T>(

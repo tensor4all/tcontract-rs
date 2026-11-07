@@ -340,6 +340,16 @@ added as one more table row later (advisor rule `R-performance-64`).
 | Why does the rate not default to the `Exec`'s `BatchPolicy`? | **Decided:** the caller owns the rate. `BatchPolicy`'s `muladds_per_ns` is what this crate's own batch and width rules price work at, so a default from it would hand back the scheduler's own number where the caller asked for an independent one; `tcontract_exec::host::muladds_per_ns()` is the natural argument, and a rate another crate calibrated can replace it. | `Plan::estimate` doc; worklog `docs/worklogs/2026-11-02-plan-estimate.md` |
 | Why not a `tlinalg` dependency to share `Rates`? | **Decided against:** `tlinalg::estimate::Rates` publishes its rate as a plain `f64` per nanosecond, so a caller passes `Rates::gemm()` as the argument and no dependency is needed. A contraction crate depending on a linear-algebra provider inverts the layering, and neither provider should own the other's model. | tensor4all/tlinalg-rs#94, `docs/design/estimate-rates.md` there |
 
+## 2026-11-07 Rank-k update, step 1 ([#175](https://github.com/tensor4all/tcontract-rs/issues/175))
+
+| Question | Position | Evidence |
+| --- | --- | --- |
+| Flag on the general product or its own kind? | **Decided (2026-11-04, issue thread):** its own plan kind, `RankK { triangle, hermitian }`, with its own kernel family. A flag would add a branch to the packed path and still run at general-product speed. | #175 comment |
+| Where does the kind live? | **Decided:** a separate `api::RankKProblem` planned by `Plan::new_rank_k` into `Strategy::RankK`; `Problem` is unchanged, so no existing `ContractionBackend` can receive a rank-k request it would compute as a full product. General-product entries refuse a rank-k plan before any read or write. | `crates/tcontract/src/api/rank_k.rs`; `plan/mod.rs` (`new_rank_k`, `general_only`, `execute_rank_k`) |
+| Written-triangle semantics? | **Decided:** only the requested triangle is read (at `beta != 0`) and written; the other triangle and any padding are left bit for bit. `beta == 0` reads no `C`, `alpha == 0` reads no `A`. | `tests/rank_k.rs` |
+| Hermitian scalars and diagonal? | **Decided:** validated, not repaired: complex `alpha`/`beta` is `ValueError::ComplexScalar`, and with `beta != 0` an imaginary (or NaN) diagonal element of `C` is `ValueError::HermitianDiagonal`, both before any write. The written diagonal is exactly real. | same tests |
+| Which implementation? | **Step 1:** a serial reference kernel only (`Algorithm::RankKReference`, `ExecutionRoute::RankKReference`), no workspace, cost `n (n + 1) / 2 · k`. Forcing the packed driver is refused. Register-tile families, team partitioning of the triangle and benchmark rows are step 2. | worklog `docs/worklogs/2026-11-07-rank-k-reference.md` |
+
 ## 2026-11-06 A batched inner product is not a GEMM (tensor4all/tenferro-rs#2293)
 
 | Question | Position | Evidence |

@@ -162,6 +162,15 @@ pub enum ShapeError {
         /// The extents of D.
         actual: Vec<usize>,
     },
+    /// An operand that must be a matrix (the `A` and `C` of a rank-k update)
+    /// has another number of axes.
+    #[error("{operand} must be a matrix but has {rank} axes")]
+    NotMatrix {
+        /// The operand (`D` names a rank-k update's `C`).
+        operand: OperandId,
+        /// Its number of axes.
+        rank: usize,
+    },
     /// A product, stride sum, scatter size or address range overflows.
     #[error("{what} overflows")]
     Overflow {
@@ -231,6 +240,28 @@ pub enum Unsupported {
     Reason(&'static str),
 }
 
+/// A scalar argument or an operand value that the operation's contract
+/// excludes. Raised before anything is written.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ValueError {
+    /// A Hermitian rank-k update takes real `alpha` and `beta`; this one has a
+    /// nonzero (or NaN) imaginary part.
+    #[error("a Hermitian rank-k update needs a real {which}")]
+    ComplexScalar {
+        /// `"alpha"` or `"beta"`.
+        which: &'static str,
+    },
+    /// A Hermitian rank-k update with `beta != 0` reads the diagonal of `C`,
+    /// which must be real; `C[index, index]` has a nonzero (or NaN) imaginary
+    /// part.
+    #[error("C[{index}, {index}] has an imaginary part; a Hermitian C has a real diagonal")]
+    HermitianDiagonal {
+        /// The diagonal position.
+        index: usize,
+    },
+}
+
 /// The one error of `tcontract`.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -251,6 +282,9 @@ pub enum Error {
     /// would-materialize reason).
     #[error(transparent)]
     Unsupported(#[from] Unsupported),
+    /// A scalar or operand value the operation excludes.
+    #[error(transparent)]
+    Value(#[from] ValueError),
     /// Kernel selection failed.
     #[error("kernel selection: {0}")]
     Select(#[from] SelectError),

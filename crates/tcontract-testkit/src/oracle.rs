@@ -202,3 +202,97 @@ fn odometer(vals: &mut [usize], dims: &[(i64, usize)]) {
         *v = 0;
     }
 }
+
+/// A rank-k case for [`rank_k_reference`]: a strided matrix `A` and the form of
+/// the update. Plain data, no engine types.
+#[derive(Clone, Copy, Debug)]
+pub struct RankKCase<'a, T> {
+    /// The backing allocation of `A`.
+    pub data: &'a [T],
+    /// Extents of `A`: `[n, k]` without transpose, `[k, n]` with it.
+    pub dims: [usize; 2],
+    /// Signed element strides of `A`.
+    pub strides: [isize; 2],
+    /// Element offset of `A[0, 0]`.
+    pub offset: isize,
+    /// `op(A) = A^H` (hermitian) or `A^T` (symmetric) instead of `A`.
+    pub transpose: bool,
+    /// `op(A) op(A)^H` instead of `op(A) op(A)^T`.
+    pub hermitian: bool,
+}
+
+/// The full `n × n` matrix `alpha · op(A) op(A)^{H|T} + beta · C`, column-major,
+/// from `C` given as a dense column-major `n × n` slice (read only when
+/// `beta != 0`).
+///
+/// It is [`contract_reference`] with `A` passed as both operands and the
+/// contracted label repeated: `D[i, j] = sum_l A[i, l] conj(A[j, l])`
+/// (`A A^H`), or `sum_l conj(A[l, i]) A[l, j]` (`A^H A`). It knows nothing of
+/// triangles: it computes both, and a test compares the requested one and
+/// checks the other separately.
+///
+/// # Errors
+///
+/// [`OracleError`] from [`contract_reference`].
+///
+/// # Panics
+///
+/// When `c` is not `n × n` long and `beta` is nonzero.
+pub fn rank_k_reference<T: Element>(
+    case: &RankKCase<'_, T>,
+    alpha: T,
+    beta: T,
+    c: &[T],
+) -> Result<Vec<T>, OracleError> {
+    let n = if case.transpose {
+        case.dims[1]
+    } else {
+        case.dims[0]
+    };
+    let (la, lb): (&[i64], &[i64]) = if case.transpose {
+        (&[2, 0], &[2, 1])
+    } else {
+        (&[0, 2], &[1, 2])
+    };
+    let (conj_a, conj_b) = match (case.transpose, case.hermitian) {
+        (_, false) => (false, false),
+        (true, true) => (true, false),
+        (false, true) => (false, true),
+    };
+    let operand = |labels, conj| RefOperand {
+        data: case.data,
+        dims: &case.dims,
+        strides: &case.strides,
+        offset: case.offset,
+        labels,
+        conj,
+    };
+    let dense = [1, n as isize];
+    let dims = [n, n];
+    let c_ref = RefOperand {
+        data: c,
+        dims: &dims,
+        strides: &dense,
+        offset: 0,
+        labels: &[0, 1],
+        conj: false,
+    };
+    let mut out = vec![T::zero(); n * n];
+    let mut d = RefOutput {
+        data: &mut out,
+        dims: &dims,
+        strides: &dense,
+        offset: 0,
+        labels: &[0, 1],
+        conj: false,
+    };
+    contract_reference(
+        alpha,
+        &operand(la, conj_a),
+        &operand(lb, conj_b),
+        beta,
+        (beta != T::zero()).then_some(&c_ref),
+        &mut d,
+    )?;
+    Ok(out)
+}
