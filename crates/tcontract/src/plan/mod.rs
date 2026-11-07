@@ -7,6 +7,7 @@
 //! Plan<T>
 //!   problem   original layouts, normalized roles, ops, C mode, checked spans
 //!   strategy  Packed(PackedPlan + resolved family) | Faer(FaerPlan) | Elementwise(ElementPlan)
+//!             | InnerProduct(InnerProductPlan) | RankK(RankKPlan)
 //!   report    immutable PlanReport
 //! ```
 //!
@@ -23,6 +24,11 @@
 //!    operand, with full semantics, runs on **faer**, unless its GEMM volume
 //!    `m * n * k` per batch item exceeds the dtype's [`FaerLimit`] (#63).
 //! 4. Everything else runs on the packed driver.
+//!
+//! A rank-k update (BLAS `herk`/`syrk`, #175) is not a general product and
+//! takes none of these rules: [`Plan::new_rank_k`] builds it as its own kind,
+//! run by [`Plan::execute_rank_k`] on the serial reference kernel, the only
+//! rank-k implementation so far.
 //!
 //! Runtime pointers, `alpha` and `beta` may pick the packed driver's existing
 //! direct-B and direct-C applicability fallbacks, never another family.
@@ -65,7 +71,7 @@ pub use report::{Algorithm, PackedReport, PlanReport, Reason};
 
 use crate::api::{
     AccumulationSource, AliasError, CSpec, ConfigError, Diagnostics, LayoutError, OperandId,
-    PreparedContraction, Problem, Result, Scalar,
+    PreparedContraction, Problem, RankKProblem, Result, Scalar, Unsupported,
 };
 use crate::driver;
 use crate::resolve;
@@ -73,6 +79,7 @@ use crate::select::Chooser;
 use crate::strategy::elementwise::{CRead, ElementPlan, Expr, Inputs};
 use crate::strategy::faer::{self as faer_strategy, FaerPlan, FaerWrite};
 use crate::strategy::inner_product::{self, InnerProductPlan, Write as InnerProductWrite};
+use crate::strategy::rank_k::RankKPlan;
 use tcontract_exec::host::muladds_per_ns;
 
 /// Dispatches one execution of a plan performs, declared to the token's width rule:
@@ -103,6 +110,8 @@ enum Strategy<T: Scalar> {
     Faer(FaerPlan),
     Elementwise(ElementPlan),
     InnerProduct(InnerProductPlan),
+    /// The rank-k update (#175): its own kind, not a general product.
+    RankK(Box<RankKPlan>),
 }
 
 /// A prepared contraction for fixed layouts, reusable across executions.
@@ -237,6 +246,199 @@ impl<T: Scalar> Plan<T> {
         Self::build(problem.clone(), config, Some((catalog, selector)))
     }
 
+    /// Plan a Hermitian/symmetric rank-k update (BLAS `herk`/`syrk`, #175).
+    ///
+    /// The plan is its own kind ([`Algorithm::RankKReference`],
+    /// [`Reason::RankK`]): it runs through [`Plan::execute_rank_k`] only, and
+    /// every general-product entry refuses it. Its only implementation today is
+    /// the serial reference kernel — no packing, blocking or workspace — so a
+    /// configuration that asks for the packed driver (an explicit kernel,
+    /// partition, complex method, blocking, cache model or write-back) is
+    /// refused rather than silently ignored.
+    ///
+    /// [`Plan::problem`] is the general product whose requested triangle the
+    /// update computes (`B` laid out as `A`, `C` taken from `D`), for its
+    /// layouts and spans; handing it to another backend computes the full
+    /// product, not the update. [`Plan::rank_k`] returns the update itself.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::DtypeMismatch`] when `T` is not the problem's dtype, any
+    /// [`PlanConfig::validate`] error, and [`Unsupported::Reason`] for a
+    /// configuration that requires the packed driver.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tcontract::api::{DType, LayoutSpec, RankK, RankKOp, RankKProblem, Triangle};
+    /// use tcontract::{Algorithm, Plan, PlanConfig};
+    /// let p = RankKProblem::new(
+    ///     DType::F64,
+    ///     LayoutSpec::new(&[3, 2], &[1, 3], 0)?,
+    ///     RankKOp::NoTrans,
+    ///     LayoutSpec::new(&[3, 3], &[1, 3], 0)?,
+    ///     RankK { triangle: Triangle::Lower, hermitian: true },
+    /// )?;
+    /// let plan = Plan::<f64>::new_rank_k(&p, &PlanConfig::default())?;
+    /// assert_eq!(plan.report().algorithm, Algorithm::RankKReference);
+    /// // Half the 3 x 3 x 2 product plus the diagonal: 6 elements x 2.
+    /// assert_eq!(plan.muladds(), 12.0);
+    /// # Ok::<(), tcontract::Error>(())
+    /// ```
+    pub fn new_rank_k(problem: &RankKProblem, config: &PlanConfig) -> Result<Self> {
+        if problem.dtype() != T::STORAGE {
+            return Err(ConfigError::DtypeMismatch {
+                plan: T::STORAGE.name(),
+                problem: problem.dtype().name(),
+            }
+            .into());
+        }
+        config.validate()?;
+        if config.requires_packed() {
+            return Err(Unsupported::Reason(
+                "a rank-k plan has only the reference kernel; no packed-driver request applies",
+            )
+            .into());
+        }
+        let general = problem.general().clone();
+        let mut plan = Self {
+            output: ElementPlan::output(&general),
+            report: PlanReport {
+                algorithm: Algorithm::RankKReference,
+                reason: Reason::RankK,
+                materialized: [false; 3],
+                packed: None,
+            },
+            diagnostics: Diagnostics::new("tcontract", Algorithm::RankKReference.name()),
+            problem: general,
+            strategy: Strategy::RankK(Box::new(RankKPlan {
+                problem: problem.clone(),
+            })),
+            retained: 0,
+            _t: PhantomData,
+        };
+        plan.retained = plan.count_retained();
+        Ok(plan)
+    }
+
+    /// The rank-k update this plan was built from by [`Plan::new_rank_k`];
+    /// `None` for a general-product plan.
+    pub fn rank_k(&self) -> Option<&RankKProblem> {
+        match &self.strategy {
+            Strategy::RankK(r) => Some(&r.problem),
+            _ => None,
+        }
+    }
+
+    /// Refuse a general-product entry on a rank-k plan, before anything is
+    /// read or written: the general entries would write both triangles.
+    fn general_only(&self) -> Result<()> {
+        if matches!(self.strategy, Strategy::RankK(_)) {
+            return Err(Unsupported::Reason(
+                "a rank-k plan runs through Plan::execute_rank_k, not a general-product entry",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Run the rank-k update this plan was built for (BLAS `herk`/`syrk`):
+    ///
+    /// ```text
+    /// C[tri] ← alpha · op(A) op(A)^H [tri] + beta · C[tri]   (hermitian)
+    /// C[tri] ← alpha · op(A) op(A)^T [tri] + beta · C[tri]   (symmetric)
+    /// ```
+    ///
+    /// # What is read and written
+    ///
+    /// **Only the requested triangle of `C`, diagonal included, is written.
+    /// The other triangle is neither written nor read — also when
+    /// `beta != 0`** — so it may hold anything, including values that are not
+    /// valid numbers, and it is left bit for bit as it was. A caller that needs
+    /// the full matrix mirrors the triangle itself. `beta == 0` reads no `C` at
+    /// all (the requested triangle may then be uninitialised-looking too), and
+    /// `alpha == 0` reads no `A`.
+    ///
+    /// # Hermitian scalars and diagonal
+    ///
+    /// For `hermitian`, `alpha` and `beta` must be real and the diagonal of `C`
+    /// is read as Hermitian, so it must be real. Neither is trusted: a complex
+    /// `alpha`/`beta` is refused with [`ValueError::ComplexScalar`](crate::api::ValueError::ComplexScalar), and with
+    /// `beta != 0` a diagonal element with a nonzero (or NaN) imaginary part is
+    /// refused with [`ValueError::HermitianDiagonal`](crate::api::ValueError::HermitianDiagonal). Both checks run before
+    /// any write, so a refused call leaves `C` unchanged; the plan does not
+    /// silently drop the imaginary part as reference BLAS does. The written
+    /// diagonal is real: its imaginary part is stored as exactly zero. For the
+    /// symmetric form and for real dtypes none of this applies.
+    ///
+    /// # Execution
+    ///
+    /// The serial reference kernel runs on the calling thread, whatever the
+    /// executor's budget, and takes no workspace from it
+    /// ([`ExecutionRoute::RankKReference`]).
+    ///
+    /// # Errors
+    ///
+    /// [`Unsupported::Reason`] on a general-product plan,
+    /// [`LayoutError::Mismatch`] when a view differs from the planned layout,
+    /// and the [`ValueError`](crate::api::ValueError)s above, all before any write.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use num_complex::Complex64 as C;
+    /// use strided_view::{StridedView, StridedViewMut};
+    /// use tcontract::api::{DType, LayoutSpec, RankK, RankKOp, RankKProblem, Triangle};
+    /// use tcontract::{Plan, PlanConfig};
+    /// use tcontract_exec::Exec;
+    /// // C (2 x 2, lower) <- A^H A for the 1 x 2 row A = [1, i].
+    /// let p = RankKProblem::new(
+    ///     DType::C64,
+    ///     LayoutSpec::new(&[1, 2], &[2, 1], 0)?,
+    ///     RankKOp::Trans,
+    ///     LayoutSpec::new(&[2, 2], &[1, 2], 0)?,
+    ///     RankK { triangle: Triangle::Lower, hermitian: true },
+    /// )?;
+    /// let plan = Plan::<C>::new_rank_k(&p, &PlanConfig::default())?;
+    /// let a = [C::new(1.0, 0.0), C::new(0.0, 1.0)];
+    /// let sentinel = C::new(f64::NAN, 7.0);
+    /// let mut c = [sentinel; 4];
+    /// let av = StridedView::new(&a, &[1, 2], &[2, 1], 0)?;
+    /// let mut cv = StridedViewMut::new(&mut c, &[2, 2], &[1, 2], 0)?;
+    /// plan.execute_rank_k(&mut Exec::serial(), C::new(1.0, 0.0), &av, C::new(0.0, 0.0), &mut cv)?;
+    /// // Column-major [c00, c10, c01, c11]: c01 (upper) is untouched.
+    /// assert_eq!(c[0], C::new(1.0, 0.0));
+    /// assert_eq!(c[1], C::new(0.0, -1.0)); // conj(A[0,1]) A[0,0] = conj(i)
+    /// assert_eq!(c[3], C::new(1.0, 0.0));
+    /// assert!(c[2].re.is_nan() && c[2].im == 7.0);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn execute_rank_k(
+        &self,
+        exec: &mut Exec<'_>,
+        alpha: T,
+        a: &StridedView<'_, T>,
+        beta: T,
+        c: &mut StridedViewMut<'_, T>,
+    ) -> Result<()> {
+        let Strategy::RankK(r) = &self.strategy else {
+            return Err(Unsupported::Reason(
+                "Plan::execute_rank_k needs a plan built by Plan::new_rank_k",
+            )
+            .into());
+        };
+        self.check_layout(OperandId::A, a.dims(), a.strides())?;
+        self.check_layout(OperandId::D, c.dims(), c.strides())?;
+        r.validate(alpha, beta, c)?;
+        // INVARIANT: the reference kernel is serial by design (#175 step 1);
+        // the executor is part of the entry so a parallel family can take it
+        // without changing the signature, and `execution_route` reports the
+        // serial route.
+        let _ = exec;
+        r.run(alpha, a, beta, c);
+        Ok(())
+    }
+
     fn build(
         owned: Problem,
         config: &PlanConfig,
@@ -300,6 +502,7 @@ impl<T: Scalar> Plan<T> {
             Strategy::Faer(_) => (Algorithm::Faer, None),
             Strategy::Elementwise(_) => (Algorithm::Elementwise, None),
             Strategy::InnerProduct(_) => (Algorithm::InnerProduct, None),
+            Strategy::RankK(_) => unreachable!("rank-k plans are built by new_rank_k"),
         };
         let mut plan = Self {
             output: ElementPlan::output(problem),
@@ -336,6 +539,9 @@ impl<T: Scalar> Plan<T> {
             Strategy::Faer(_) => 0,
             Strategy::Elementwise(e) => e.heap_bytes(),
             Strategy::InnerProduct(_) => 0,
+            Strategy::RankK(r) => {
+                core::mem::size_of::<RankKPlan>() + r.problem.general().heap_bytes()
+            }
         };
         let report = report.packed.as_ref().map_or(0, |p| p.stats.heap_bytes());
         core::mem::size_of::<Self>()
@@ -438,7 +644,12 @@ impl<T: Scalar> Plan<T> {
     /// assert_eq!(plan.muladds(), 24.0);
     /// ```
     pub fn muladds(&self) -> f64 {
-        self.problem.macs() as f64 * if T::IS_COMPLEX { 4.0 } else { 1.0 }
+        let macs = match &self.strategy {
+            // The requested triangle only: `n (n + 1) / 2 * k`.
+            Strategy::RankK(r) => r.problem.macs(),
+            _ => self.problem.macs(),
+        };
+        macs as f64 * if T::IS_COMPLEX { 4.0 } else { 1.0 }
     }
 
     /// Estimated wall time of one execution at `width` participants, at the rate `muladds_per_ns`.
@@ -511,7 +722,12 @@ impl<T: Scalar> Plan<T> {
         if !muladds_per_ns.is_finite() || muladds_per_ns <= 0.0 {
             return Duration::MAX;
         }
-        let width = width.clamp(1, exec.budget());
+        let width = match self.strategy {
+            // The reference rank-k kernel is serial: a wider estimate would
+            // promise a speed-up no implementation delivers.
+            Strategy::RankK(_) => 1,
+            _ => width.clamp(1, exec.budget()),
+        };
         let share = ns_duration(self.muladds() / muladds_per_ns / width as f64);
         if width < 2 {
             return share;
@@ -720,6 +936,7 @@ impl<T: Scalar> Plan<T> {
         source: Option<AccumulationSource<'_, T>>,
         d: &StridedViewMut<'_, T>,
     ) -> Result<CRead<T>> {
+        self.general_only()?;
         self.check_layout(OperandId::A, a.dims(), a.strides())?;
         self.check_layout(OperandId::B, b.dims(), b.strides())?;
         self.check_layout(OperandId::D, d.dims(), d.strides())?;
@@ -890,6 +1107,7 @@ impl<T: Scalar> Plan<T> {
     ) -> Result<()> {
         #[cfg(feature = "phase-timing")]
         crate::phase::report_previous();
+        self.general_only()?;
         self.check_raw(a, b, c, d)?;
         // Sizing and dispatch share one output-route decision: `workspace_req`
         // resolves `output` exactly as `raw_dispatch` will, so a plan that sizes
@@ -1080,6 +1298,7 @@ impl<T: Scalar> Plan<T> {
         d: *mut T,
         fresh: bool,
     ) -> Result<()> {
+        self.general_only()?;
         let p = &self.problem;
         if p.out_empty() {
             return Ok(());
@@ -1213,6 +1432,7 @@ impl<T: Scalar> Plan<T> {
             }
             Strategy::Faer(_) => unreachable!("served above"),
             Strategy::InnerProduct(_) => unreachable!("served above"),
+            Strategy::RankK(_) => unreachable!("refused by general_only"),
             Strategy::Elementwise(e) => {
                 // SAFETY: the caller's contract.
                 unsafe { e.run(exec, expr, Inputs::Product(a, b), c, d) }?;

@@ -7,6 +7,7 @@ mod error;
 mod fusion;
 mod labels;
 pub(crate) mod problem;
+mod rank_k;
 pub(crate) mod scalar;
 mod validate;
 
@@ -17,6 +18,7 @@ pub use backend::{
 pub use dot_general::{DotGeneral, DotShape};
 pub use error::{
     AliasError, ConfigError, Error, LayoutError, OperandId, Result, ShapeError, Unsupported,
+    ValueError,
 };
 pub use fusion::{fuse_axes, sort_by_stride};
 pub use labels::Labels;
@@ -24,6 +26,7 @@ pub use problem::{
     CRef, CSpec, ContractionRef, DType, LayoutRef, LayoutSpec, Op, OperandSpec, Problem,
     ProblemRef, RoleAxis, Roles, Span,
 };
+pub use rank_k::{RankK, RankKOp, RankKProblem, Triangle};
 #[doc(hidden)]
 pub use scalar::FaerGemm;
 pub use scalar::Scalar;

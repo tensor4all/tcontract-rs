@@ -19,6 +19,9 @@ pub enum Algorithm {
     /// A batched inner product: no matrix multiply is left (`m = n = 1`), so
     /// the step is a fused pass over the batch axis or one reduction per item.
     InnerProduct,
+    /// The serial reference rank-k kernel (`herk`/`syrk`, #175): no packing,
+    /// no blocking, no workspace. The only rank-k implementation so far.
+    RankKReference,
 }
 
 impl Algorithm {
@@ -29,6 +32,7 @@ impl Algorithm {
             Algorithm::Faer => "faer",
             Algorithm::Elementwise => "elementwise",
             Algorithm::InnerProduct => "inner_product",
+            Algorithm::RankKReference => "rank_k_reference",
         }
     }
 }
@@ -59,6 +63,10 @@ pub enum Reason {
     /// to extent one, so the step is `h` dot products of length `k` rather than
     /// a GEMM. Served by [`Algorithm::InnerProduct`].
     InnerProduct,
+    /// The plan was built as a rank-k update
+    /// ([`Plan::new_rank_k`](super::Plan::new_rank_k)); no general-product rule
+    /// applies.
+    RankK,
 }
 
 /// What the packed strategy resolved to: the family, its geometry and the grid.

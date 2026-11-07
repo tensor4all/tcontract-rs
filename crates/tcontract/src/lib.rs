@@ -17,6 +17,11 @@
 //! panels; faer on a copy-free fusion to one strided batched GEMM; and an
 //! elementwise pass for all-batch problems.
 //!
+//! A Hermitian/symmetric rank-k update (`herk`/`syrk`), which writes one
+//! triangle, is a plan kind of its own: [`api::RankKProblem`],
+//! [`Plan::new_rank_k`] and [`Plan::execute_rank_k`]. Only a serial reference
+//! kernel implements it so far.
+//!
 //! [`contract_batched`] runs many independent items of one plan with the batch
 //! as the parallel axis, the regime where per-contraction threading loses.
 //!
