@@ -777,9 +777,9 @@ dependencies = [
 
 [[package]]
 name = "strided-view"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af817b291f1ed116c05ca320aca0f854b29a68aabcddc6546061042c6b790c14"
+checksum = "cb3b5a247c1c752c3cbf1ec86515bbf219118d02974256ad55dd71c634d280cf"
 dependencies = [
  "num-complex",
  "num-traits",
