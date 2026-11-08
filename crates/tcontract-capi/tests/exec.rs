@@ -6,9 +6,9 @@ use std::time::Duration;
 use tcontract_capi::executor::*;
 use tcontract_capi::status::*;
 
-fn create_rayon(n: usize) -> TAPP_executor {
+fn create_pool(n: usize) -> TAPP_executor {
     let mut e = 0;
-    let st = unsafe { tcontract_tapp_executor_create_rayon(&mut e, n, std::ptr::null()) };
+    let st = unsafe { tcontract_tapp_executor_create_pool(&mut e, n, std::ptr::null()) };
     assert_eq!(st, TCONTRACT_OK);
     assert_ne!(e, 0);
     e
@@ -58,18 +58,18 @@ fn zero_is_the_default_serial_executor() {
 
 #[test]
 fn one_thread_is_serial_and_zero_threads_is_an_error() {
-    let e = create_rayon(1);
+    let e = create_pool(1);
     assert_eq!(threads(e), (0, 1), "nthreads == 1 creates no workers");
     assert_eq!(unsafe { TAPP_destroy_executor(e) }, TCONTRACT_OK);
 
     let mut out = 7;
     assert_eq!(
-        unsafe { tcontract_tapp_executor_create_rayon(&mut out, 0, std::ptr::null()) },
+        unsafe { tcontract_tapp_executor_create_pool(&mut out, 0, std::ptr::null()) },
         TCONTRACT_ERR_INVALID_ARGUMENT
     );
     assert_eq!(out, 7, "failed creation leaves the out-parameter alone");
     assert_eq!(
-        unsafe { tcontract_tapp_executor_create_rayon(std::ptr::null_mut(), 2, std::ptr::null()) },
+        unsafe { tcontract_tapp_executor_create_pool(std::ptr::null_mut(), 2, std::ptr::null()) },
         TCONTRACT_ERR_INVALID_ARGUMENT
     );
     assert_eq!(
@@ -82,7 +82,7 @@ fn one_thread_is_serial_and_zero_threads_is_an_error() {
 fn width_ignores_the_environment() {
     std::env::set_var("RAYON_NUM_THREADS", "7");
     std::env::set_var("TENSORCONTRACT_THREADS", "5");
-    let e = create_rayon(3);
+    let e = create_pool(3);
     assert_eq!(threads(e), (3, 3));
     assert_eq!(unsafe { TAPP_destroy_executor(e) }, TCONTRACT_OK);
     std::env::remove_var("RAYON_NUM_THREADS");
@@ -91,7 +91,7 @@ fn width_ignores_the_environment() {
 
 #[test]
 fn budget_is_positive_clamped_and_snapshotted_per_call() {
-    let e = create_rayon(3);
+    let e = create_pool(3);
     assert_eq!(
         unsafe { tcontract_tapp_executor_set_budget(e, 2) },
         TCONTRACT_OK
@@ -132,7 +132,7 @@ fn budget_is_positive_clamped_and_snapshotted_per_call() {
 
 #[test]
 fn destroy_joins_workers_and_waits_for_tls_teardown() {
-    let e = create_rayon(3);
+    let e = create_pool(3);
     static DROPPED: AtomicUsize = AtomicUsize::new(0);
     struct Guard;
     impl Drop for Guard {
@@ -162,7 +162,7 @@ fn destroy_joins_workers_and_waits_for_tls_teardown() {
 
 #[test]
 fn busy_and_self_worker_destroy_leave_the_handle_live() {
-    let e = create_rayon(2);
+    let e = create_pool(2);
     let inside = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
     let (i2, r2) = (inside.clone(), release.clone());

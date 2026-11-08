@@ -48,10 +48,10 @@ fn run(e: &Executor, m: usize, n: usize, k: usize) -> (usize, usize) {
     root.map_or((0, 0), |r| (ledger::installs(r), ledger::max_live(r)))
 }
 
-unsafe fn rayon_exec(n: usize) -> isize {
+unsafe fn pool_exec(n: usize) -> isize {
     let mut e = 0isize;
     assert_eq!(
-        tcontract_tapp_executor_create_rayon(&mut e, n, std::ptr::null()),
+        tcontract_tapp_executor_create_pool(&mut e, n, std::ptr::null()),
         TAPP_SUCCESS
     );
     e
@@ -60,7 +60,7 @@ unsafe fn rayon_exec(n: usize) -> isize {
 #[test]
 fn large_work_enters_the_pool_once_and_small_work_never() {
     unsafe {
-        let four = rayon_exec(4);
+        let four = pool_exec(4);
         let e = executor_ref(four).unwrap();
         let (installs, live) = run(e, 256, 256, 256);
         assert_eq!(installs, 1, "a large contraction enters the pool once");
@@ -74,7 +74,7 @@ fn large_work_enters_the_pool_once_and_small_work_never() {
         assert_eq!(TAPP_destroy_executor(four), TAPP_SUCCESS);
 
         // 1T and the default executor have no pool to enter.
-        let one = rayon_exec(1);
+        let one = pool_exec(1);
         assert_eq!(run(executor_ref(one).unwrap(), 256, 256, 256).0, 0);
         assert_eq!(TAPP_destroy_executor(one), TAPP_SUCCESS);
     }
@@ -85,7 +85,7 @@ fn width_is_the_executors_not_the_environment_and_budget_one_is_serial() {
     unsafe {
         // The environment asks for one thread; the 4T executor still decides.
         std::env::set_var("RAYON_NUM_THREADS", "1");
-        let four = rayon_exec(4);
+        let four = pool_exec(4);
         let e = executor_ref(four).unwrap();
         let (installs, live) = run(e, 256, 256, 256);
         assert_eq!(installs, 1);
@@ -107,7 +107,7 @@ fn a_borrowed_executor_enters_the_hosts_pool_once() {
     unsafe {
         let mut p = 0;
         assert_eq!(
-            tcontract_pool_create_rayon(&mut p, 4, std::ptr::null()),
+            tcontract_pool_create(&mut p, 4, std::ptr::null()),
             TAPP_SUCCESS
         );
         let mut four = 0;

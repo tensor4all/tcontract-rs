@@ -78,9 +78,9 @@ fn one_plan_runs_on_default_serial_and_four_thread_executors() {
     let want = p.want();
     unsafe {
         let serial = serial_exec();
-        let four = rayon_exec(4);
-        let one = rayon_exec(1);
-        let two = rayon_exec(2);
+        let four = pool_exec(4);
+        let one = pool_exec(1);
+        let two = pool_exec(2);
         for exec in [0, serial, four, one, two] {
             assert_close(&p.run(exec), &want, 1e-12);
         }
@@ -118,7 +118,7 @@ fn one_plan_runs_on_default_serial_and_four_thread_executors() {
 #[test]
 fn large_and_small_work_are_right_on_the_executors_pool() {
     unsafe {
-        let four = rayon_exec(4);
+        let four = pool_exec(4);
         assert_eq!(pool_width(four), 4);
         let big = Problem::new(256, 256, 256);
         let want = big.want();
@@ -130,7 +130,7 @@ fn large_and_small_work_are_right_on_the_executors_pool() {
         }
 
         // Explicit 1T and the default executor never have a pool to enter.
-        let one = rayon_exec(1);
+        let one = pool_exec(1);
         assert_eq!((pool_width(one), pool_width(0)), (0, 0));
         assert_close(&big.run(one), &want, 1e-12);
         assert_close(&big.run(0), &want, 1e-12);
@@ -147,7 +147,7 @@ fn width_is_the_executors_not_the_environment() {
         // The environment asks for one thread; the 4T executor still decides.
         std::env::set_var("TENSORCONTRACT_THREADS", "1");
         std::env::set_var("RAYON_NUM_THREADS", "1");
-        let four = rayon_exec(4);
+        let four = pool_exec(4);
         assert_close(&big.run(four), &want, 1e-12);
         // The environment asks for many; a budget of one keeps the call serial.
         std::env::set_var("TENSORCONTRACT_THREADS", "16");
@@ -162,7 +162,7 @@ fn width_is_the_executors_not_the_environment() {
 #[test]
 fn plans_sharing_an_executor_share_its_pool() {
     unsafe {
-        let four = rayon_exec(4);
+        let four = pool_exec(4);
         let p1 = Problem::new(256, 256, 256);
         let p2 = Problem::new(240, 250, 260);
         assert_close(&p1.run(four), &p1.want(), 1e-12);

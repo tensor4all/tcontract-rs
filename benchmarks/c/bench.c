@@ -39,7 +39,7 @@ int main(int argc, char **argv) {
   int threads = argc > 1 ? atoi(argv[1]) : 1;
   /* threads == 1 is an explicit serial executor (no workers, no pool). */
   TAPP_executor ex = 0;
-  if (tcontract_tapp_executor_create_rayon(&ex, (size_t)threads, NULL) != TCONTRACT_OK) { fprintf(stderr, "exec: %s\n", tcontract_last_error()); return 1; }
+  if (tcontract_tapp_executor_create_pool(&ex, (size_t)threads, NULL) != TCONTRACT_OK) { fprintf(stderr, "exec: %s\n", tcontract_last_error()); return 1; }
   size_t pool_size = 0, budget = 0;
   tcontract_tapp_executor_get_threads(ex, &pool_size, &budget);
   printf("# threads: requested=%d pool=%zu budget=%zu\n", threads, pool_size, budget);

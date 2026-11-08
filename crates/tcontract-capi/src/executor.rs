@@ -5,12 +5,12 @@
 //! A `TAPP_executor` is an `intptr_t` holding a pointer to an [`Executor`];
 //! zero selects the default serial executor (a tcontract policy, not in the
 //! pinned TAPP headers). `TAPP_create_executor` makes a serial executor;
-//! `tcontract_tapp_executor_create_rayon` makes one that owns a pool;
+//! `tcontract_tapp_executor_create_pool` makes one that owns a pool;
 //! `TAPP_destroy_executor` stops that pool and waits for its workers to exit. Operations of every
 //! part of `libtcontract_capi` (TAPP products) take the same executor.
 //!
 //! A `tcontract_pool` is the same discipline for a pool the *host* owns:
-//! `tcontract_pool_create_rayon` builds it, `tcontract_pool_destroy` stops it and
+//! `tcontract_pool_create` builds it, `tcontract_pool_destroy` stops it and
 //! waits for its workers, and `tcontract_tapp_executor_borrow_pool` makes an executor that
 //! runs on it instead of creating a second pool. The host keeps the pool alive
 //! for every executor built from it and every call through one.
@@ -35,13 +35,14 @@ use crate::status::*;
 pub type TAPP_executor = isize;
 
 /// `tcontract_pool`: `intptr_t` holding a host-owned worker pool from
-/// [`tcontract_pool_create_rayon`]; zero means no pool.
+/// [`tcontract_pool_create`]; zero means no pool.
 pub type tcontract_pool = isize;
 
-/// Options for [`tcontract_tapp_executor_create_rayon`].
+/// Options for the two entries that start a pool,
+/// [`tcontract_tapp_executor_create_pool`] and [`tcontract_pool_create`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct tcontract_rayon_opts {
+pub struct tcontract_pool_opts {
     /// Worker stack size in bytes; 0 = 16 MiB (provider kernels recurse
     /// deeply, see tenferro-rs's CPU threading contract).
     pub stack_size: usize,
@@ -215,7 +216,7 @@ impl Executor {
 }
 
 /// A host-owned worker pool behind a `tcontract_pool` (opaque in C), built by
-/// [`tcontract_pool_create_rayon`].
+/// [`tcontract_pool_create`].
 ///
 /// The handle holds the only `Arc<threadteam::Pool>` of a dedicated pool;
 /// every borrowed executor holds one clone, so `Arc::strong_count` is one plus
@@ -237,7 +238,7 @@ impl std::fmt::Debug for PoolHandle {
 
 impl PoolHandle {
     /// Build the pool: workers are started exactly as for
-    /// [`tcontract_tapp_executor_create_rayon`], so worker names and `stack`
+    /// [`tcontract_tapp_executor_create_pool`], so worker names and `stack`
     /// are identical.
     fn create(nthreads: usize, stack: usize) -> Result<Box<Self>, FfiError> {
         let (pool, worker_id) = Workers::start(nthreads, stack)?;
@@ -392,10 +393,10 @@ fn nonzero(nthreads: usize) -> Result<(), FfiError> {
 /// # Safety
 ///
 /// `opts` is null or valid.
-unsafe fn stack_size(opts: *const tcontract_rayon_opts) -> usize {
+unsafe fn stack_size(opts: *const tcontract_pool_opts) -> usize {
     // SAFETY: null or valid per the contract.
     let o = if opts.is_null() {
-        tcontract_rayon_opts::default()
+        tcontract_pool_opts::default()
     } else {
         unsafe { *opts }
     };
@@ -421,7 +422,7 @@ pub unsafe extern "C" fn TAPP_create_executor(exec: *mut TAPP_executor) -> c_int
 }
 
 /// `TAPP_destroy_executor`: destroy a serial executor, or stop and join the
-/// pool an owned executor created with [`tcontract_tapp_executor_create_rayon`]
+/// pool an owned executor created with [`tcontract_tapp_executor_create_pool`]
 /// and free it. An executor built with
 /// [`tcontract_tapp_executor_borrow_pool`] releases only its borrow of the
 /// host's pool; the pool itself is destroyed by [`tcontract_pool_destroy`].
@@ -456,10 +457,10 @@ pub unsafe extern "C" fn TAPP_destroy_executor(exec: TAPP_executor) -> c_int {
 ///
 /// `out` is null or writable; `opts` is null or valid.
 #[no_mangle]
-pub unsafe extern "C" fn tcontract_tapp_executor_create_rayon(
+pub unsafe extern "C" fn tcontract_tapp_executor_create_pool(
     out: *mut TAPP_executor,
     nthreads: usize,
-    opts: *const tcontract_rayon_opts,
+    opts: *const tcontract_pool_opts,
 ) -> c_int {
     ffi(|| {
         null_out(out, "executor")?;
@@ -479,10 +480,10 @@ pub unsafe extern "C" fn tcontract_tapp_executor_create_rayon(
 /// [`tcontract_tapp_executor_borrow_pool`] can lend to any number of executors,
 /// so a C host that manages its own threads keeps one pool instead of two.
 /// `nthreads == 0` is an error. Unlike
-/// [`tcontract_tapp_executor_create_rayon`], `nthreads == 1` is a real
+/// [`tcontract_tapp_executor_create_pool`], `nthreads == 1` is a real
 /// one-worker pool: the handle is a pool, not an executor. `opts` may be null;
 /// `stack_size` is honoured exactly as in
-/// [`tcontract_tapp_executor_create_rayon`]. Free the handle with
+/// [`tcontract_tapp_executor_create_pool`]. Free the handle with
 /// [`tcontract_pool_destroy`].
 ///
 /// Each borrowed executor keeps its own `Pool` wrapper of the shared pool
@@ -493,10 +494,10 @@ pub unsafe extern "C" fn tcontract_tapp_executor_create_rayon(
 ///
 /// `out` is null or writable; `opts` is null or valid.
 #[no_mangle]
-pub unsafe extern "C" fn tcontract_pool_create_rayon(
+pub unsafe extern "C" fn tcontract_pool_create(
     out: *mut tcontract_pool,
     nthreads: usize,
-    opts: *const tcontract_rayon_opts,
+    opts: *const tcontract_pool_opts,
 ) -> c_int {
     ffi(|| {
         null_out(out, "pool")?;
@@ -511,7 +512,7 @@ pub unsafe extern "C" fn tcontract_pool_create_rayon(
 }
 
 /// `tcontract_pool_destroy`: stop and join a pool from
-/// [`tcontract_pool_create_rayon`], then free the handle. Zero is an error.
+/// [`tcontract_pool_create`], then free the handle. Zero is an error.
 ///
 /// `TCONTRACT_BUSY` while an executor built from the pool is live, and
 /// `TCONTRACT_ERR_WOULD_DEADLOCK` from one of the pool's own workers; both leave
@@ -541,7 +542,7 @@ pub unsafe extern "C" fn tcontract_pool_destroy(pool: tcontract_pool) -> c_int {
 /// # Safety
 ///
 /// `out` is null or writable; `pool` is a live handle from
-/// [`tcontract_pool_create_rayon`] that outlives the executor built here.
+/// [`tcontract_pool_create`] that outlives the executor built here.
 #[no_mangle]
 pub unsafe extern "C" fn tcontract_tapp_executor_borrow_pool(
     out: *mut TAPP_executor,

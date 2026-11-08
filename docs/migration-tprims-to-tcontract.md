@@ -36,7 +36,7 @@ and so on. Public Rust types follow: `TprimsBackend` → `TcontractBackend`.
 |---|---|
 | shared library `libtprims` (`libtprims.so` / `.dylib` / `tprims.dll` + import lib) | `libtcontract_capi` (`libtcontract_capi.so` / `.dylib` / `tcontract_capi.dll`) |
 | headers `tprims/{tprims,core,tapp_ext}.h` | `tcontract/{tcontract,core,tapp_ext}.h` |
-| symbol prefix `tprims_` (`tprims_abi_version`, `tprims_status`, `tprims_tensor`, `tprims_tensor_borrow_raw/versioned`, `tprims_tapp_executor_create_rayon/get_threads/set_budget`, `tprims_last_error`, `tprims_rayon_opts`, `tprims_has_part`, …) | prefix `tcontract_`; prototypes and numeric status values unchanged |
+| symbol prefix `tprims_` (`tprims_abi_version`, `tprims_status`, `tprims_tensor`, `tprims_tensor_borrow_raw/versioned`, `tprims_tapp_executor_create_rayon/get_threads/set_budget`, `tprims_last_error`, `tprims_rayon_opts`, `tprims_has_part`, …) | prefix `tcontract_`; prototypes and numeric status values unchanged, except the entries that start a pool and their options type: `tcontract_tapp_executor_create_pool`, `tcontract_pool_create` and `tcontract_pool_opts` ([#149](https://github.com/tensor4all/tcontract-rs/issues/149)) |
 | macros/constants `TPRIMS_ABI_VERSION` (100), `TPRIMS_OK`, `TPRIMS_ERR_*`, `TPRIMS_BUSY` | `TCONTRACT_ABI_VERSION`, `TCONTRACT_OK`, `TCONTRACT_ERR_*`, `TCONTRACT_BUSY`; values unchanged |
 | pkg-config `tprims.pc` (`-ltprims`), CMake/Corrosion target `tprims` | `tcontract_capi.pc` (`-ltcontract_capi`), target `tcontract_capi` |
 

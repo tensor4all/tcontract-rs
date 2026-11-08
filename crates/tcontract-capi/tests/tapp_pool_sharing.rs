@@ -35,7 +35,7 @@ fn concurrent_nested_and_over_budget_products_neither_deadlock_nor_add_threads()
         let b = seq(k * n, 2);
         let want = naive(m, n, k, &a, &b);
 
-        let exec = rayon_exec(4);
+        let exec = pool_exec(4);
         // Warm: the pool's workers exist now.
         let baseline = threads();
 

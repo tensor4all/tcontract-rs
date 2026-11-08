@@ -152,10 +152,10 @@ pub fn assert_close(got: &[f64], want: &[f64], tol: f64) {
     }
 }
 
-pub unsafe fn rayon_exec(n: usize) -> isize {
+pub unsafe fn pool_exec(n: usize) -> isize {
     let mut e = 0isize;
     assert_eq!(
-        tcontract_tapp_executor_create_rayon(&mut e, n, std::ptr::null()),
+        tcontract_tapp_executor_create_pool(&mut e, n, std::ptr::null()),
         TAPP_SUCCESS
     );
     e

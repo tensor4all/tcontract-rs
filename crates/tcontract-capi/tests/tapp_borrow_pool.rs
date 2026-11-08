@@ -1,5 +1,5 @@
 //! A worker pool the *host* owns, lent to a TAPP executor through
-//! `tcontract_pool_create_rayon` / `tcontract_tapp_executor_borrow_pool`: work
+//! `tcontract_pool_create` / `tcontract_tapp_executor_borrow_pool`: work
 //! runs on that pool (not on the global one, and not on a second pool), the
 //! budget is clamped to its width, and destroying it while a borrowed executor
 //! is live is refused.
@@ -16,7 +16,7 @@ use tcontract_capi::*;
 unsafe fn pool(nthreads: usize) -> tcontract_pool {
     let mut p = 0;
     assert_eq!(
-        tcontract_pool_create_rayon(&mut p, nthreads, std::ptr::null()),
+        tcontract_pool_create(&mut p, nthreads, std::ptr::null()),
         TAPP_SUCCESS
     );
     p
@@ -191,7 +191,7 @@ fn the_budget_is_clamped_to_the_pool_width() {
 
 #[test]
 fn a_one_worker_pool_is_a_real_pool() {
-    // Unlike tcontract_tapp_executor_create_rayon(1), which is a serial
+    // Unlike tcontract_tapp_executor_create_pool(1), which is a serial
     // executor, the handle is the host's pool object: one worker, still a pool.
     unsafe {
         let p = pool(1);
@@ -216,11 +216,11 @@ fn invalid_arguments_are_rejected() {
 
         // Null out-parameter and zero workers.
         assert_eq!(
-            tcontract_pool_create_rayon(std::ptr::null_mut(), 2, std::ptr::null()),
+            tcontract_pool_create(std::ptr::null_mut(), 2, std::ptr::null()),
             TAPP_ERROR_NULL
         );
         assert_eq!(
-            tcontract_pool_create_rayon(&mut p, 0, std::ptr::null()),
+            tcontract_pool_create(&mut p, 0, std::ptr::null()),
             TAPP_ERROR_NULL
         );
         assert_eq!(p, 0, "a rejected create wrote the out-parameter");

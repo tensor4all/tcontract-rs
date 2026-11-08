@@ -272,7 +272,7 @@ static void test_every_declaration_links(void) {
         (void*)TAPP_execute_batched_product,
         (void*)TAPP_implementation_name,
         (void*)TAPP_implementation_version,
-        (void*)tcontract_pool_create_rayon,
+        (void*)tcontract_pool_create,
         (void*)tcontract_pool_destroy,
         (void*)tcontract_tapp_executor_borrow_pool,
     };
