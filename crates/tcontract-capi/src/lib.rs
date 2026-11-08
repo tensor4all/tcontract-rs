@@ -97,7 +97,7 @@
 //! | Case 5 isolated *output* indices (broadcast) | rejected, as TAPP permits |
 //! | `TAPP_CONJUGATE` on any operand | supported (folded into packing or write-back) |
 //! | computational precision | `TAPP_DEFAULT_PREC` or the storage precision; anything else is `TAPP_ERROR_UNSUPPORTED` |
-//! | executors | `0` and `TAPP_create_executor` are serial; `tcontract_tapp_executor_create_rayon` owns a worker pool, which `TAPP_destroy_executor` stops and waits for; `tcontract_pool_create_rayon` + `tcontract_tapp_executor_borrow_pool` run on a pool the C host owns and shares |
+//! | executors | `0` and `TAPP_create_executor` are serial; `tcontract_tapp_executor_create_pool` owns a worker pool, which `TAPP_destroy_executor` stops and waits for; `tcontract_pool_create` + `tcontract_tapp_executor_borrow_pool` run on a pool the C host owns and shares |
 //! | `D` overlapping `A`/`B`, or itself | rejected (`TAPP_ERROR_ALIASED`); `C == D` only with equal element mapping |
 //! | mixed storage types across operands | rejected (`TAPP_ERROR_DATATYPE`) |
 //! | batched product | supported (items validated first, then run in sequence) |
@@ -122,10 +122,10 @@ pub mod tensor_info;
 pub use abi::*;
 pub use execute::{TAPP_execute_batched_product, TAPP_execute_product};
 pub use executor::{
-    executor_from_handle, tcontract_pool, tcontract_pool_create_rayon, tcontract_pool_destroy,
-    tcontract_rayon_opts, tcontract_tapp_executor_borrow_pool,
-    tcontract_tapp_executor_create_rayon, tcontract_tapp_executor_get_threads,
-    tcontract_tapp_executor_set_budget, Executor, TAPP_create_executor, TAPP_destroy_executor,
+    executor_from_handle, tcontract_pool, tcontract_pool_create, tcontract_pool_destroy,
+    tcontract_pool_opts, tcontract_tapp_executor_borrow_pool, tcontract_tapp_executor_create_pool,
+    tcontract_tapp_executor_get_threads, tcontract_tapp_executor_set_budget, Executor,
+    TAPP_create_executor, TAPP_destroy_executor,
 };
 pub use handle::*;
 pub use product::{TAPP_create_tensor_product, TAPP_destroy_tensor_product};
@@ -134,8 +134,10 @@ pub use tensor_info::*;
 
 use std::ffi::{c_char, CStr};
 
-/// ABI version: major * 10000 + minor * 100 + patch.
-pub const ABI_VERSION: u32 = 100; // 0.1.0
+/// ABI version: the `tcontract-capi` crate version folded into one integer,
+/// `major * 10000 + minor * 100 + patch`. The two move together, so a library
+/// whose symbols changed never reports the number an older build reported.
+pub const ABI_VERSION: u32 = 101; // 0.1.1: #149 removed the *_create_rayon names
 
 /// The ABI version of the loaded library (`TCONTRACT_ABI_VERSION` in the header).
 #[no_mangle]

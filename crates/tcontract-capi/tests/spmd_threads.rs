@@ -8,16 +8,16 @@ use std::time::Duration;
 use tcontract_capi::executor::*;
 use tcontract_capi::status::*;
 
-fn create_rayon(n: usize) -> TAPP_executor {
+fn create_pool(n: usize) -> TAPP_executor {
     let mut e = 0;
-    let st = unsafe { tcontract_tapp_executor_create_rayon(&mut e, n, std::ptr::null()) };
+    let st = unsafe { tcontract_tapp_executor_create_pool(&mut e, n, std::ptr::null()) };
     assert_eq!(st, TCONTRACT_OK);
     e
 }
 
 #[test]
 fn nested_and_concurrent_spmd_neither_deadlock_nor_add_threads() {
-    let e = create_rayon(4);
+    let e = create_pool(4);
     let (tx, rx) = std::sync::mpsc::channel();
     let ptr = e as usize;
     std::thread::spawn(move || {

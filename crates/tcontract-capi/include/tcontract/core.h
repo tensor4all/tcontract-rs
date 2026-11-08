@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define TCONTRACT_ABI_VERSION 100 /* 0.1.0 */
+#define TCONTRACT_ABI_VERSION 101 /* 0.1.1: #149 removed the *_create_rayon names */
 
 /* DLPack 1.x. The vendored copy (v1.1, Apache-2.0, include/dlpack/) is used
    unless the host already included its own dlpack.h (same include guard). */

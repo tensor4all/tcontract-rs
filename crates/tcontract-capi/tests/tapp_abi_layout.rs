@@ -36,7 +36,7 @@ mod c_abi {
 
     /// `include/tcontract/tapp_ext.h`, `typedef struct { size_t stack_size; }`.
     #[repr(C)]
-    pub struct tcontract_rayon_opts {
+    pub struct tcontract_pool_opts {
         pub stack_size: usize,
     }
 
@@ -124,10 +124,10 @@ mod c_abi {
         // that borrows it. Transcribed here as well so a renamed symbol or a
         // changed argument list is a link (or call) failure in this crate's own
         // suite, not only in the C program `c_abi.rs` compiles.
-        pub fn tcontract_pool_create_rayon(
+        pub fn tcontract_pool_create(
             out: *mut isize,
             nthreads: usize,
-            opts: *const tcontract_rayon_opts,
+            opts: *const tcontract_pool_opts,
         ) -> c_int;
         pub fn tcontract_pool_destroy(pool: isize) -> c_int;
         pub fn tcontract_tapp_executor_borrow_pool(
@@ -159,11 +159,11 @@ mod c_abi {
 fn the_pool_extensions_resolve_and_run() {
     unsafe {
         let mut pool = 0isize;
-        let opts = c_abi::tcontract_rayon_opts {
+        let opts = c_abi::tcontract_pool_opts {
             stack_size: 1 << 20,
         };
         assert_eq!(
-            c_abi::tcontract_pool_create_rayon(&mut pool, 3, &opts),
+            c_abi::tcontract_pool_create(&mut pool, 3, &opts),
             c_int::from(0)
         );
         assert_ne!(pool, 0);

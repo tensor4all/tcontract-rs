@@ -23,7 +23,7 @@ fn mixed_storage_batch_checks_nested_fresh_route_before_first_write() {
             (&ed, &sd, &[I, J]),
         );
         assert_eq!(rc, TAPP_SUCCESS);
-        let exec = rayon_exec(4);
+        let exec = pool_exec(4);
         let a = vec![1.0_f64; m * k];
         let b = vec![1.0_f64; k * n];
         let c = vec![23.0_f64; m * n];

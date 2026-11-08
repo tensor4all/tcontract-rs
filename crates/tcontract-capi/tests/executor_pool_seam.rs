@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 
 use tcontract_capi::{
-    executor_from_handle, tcontract_pool, tcontract_pool_create_rayon, tcontract_pool_destroy,
+    executor_from_handle, tcontract_pool, tcontract_pool_create, tcontract_pool_destroy,
     tcontract_tapp_executor_borrow_pool, TAPP_check_success, TAPP_create_executor,
     TAPP_destroy_executor, TAPP_ERROR_BUSY,
 };
@@ -13,7 +13,7 @@ use tcontract_capi::{
 fn a_borrowed_executor_lends_its_pool_and_budget() {
     let mut pool: tcontract_pool = 0;
     // SAFETY: a writable out-parameter and a null options pointer.
-    let status = unsafe { tcontract_pool_create_rayon(&mut pool, 2, std::ptr::null()) };
+    let status = unsafe { tcontract_pool_create(&mut pool, 2, std::ptr::null()) };
     assert!(TAPP_check_success(status), "create the pool");
 
     let mut exec: isize = 0;

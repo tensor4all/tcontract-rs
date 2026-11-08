@@ -12,7 +12,7 @@
    One pool owner is the host. A host that wants one shared pool creates a
    single tcontract_pool handle here, builds one borrowed-pool executor on it,
    shares that executor across plans, and does not let
-   tcontract_tapp_executor_create_rayon create a second pool. The width is never
+   tcontract_tapp_executor_create_pool create a second pool. The width is never
    inferred from the environment. BLAS/LAPACK providers (cpueinsum-blas,
    tlinalg-blas) own their threads outside any executor and are not controlled
    by a TAPP_executor. */
@@ -25,14 +25,14 @@
 extern "C" {
 #endif
 
-typedef struct { size_t stack_size; /* bytes; 0 = 16 MiB */ } tcontract_rayon_opts;
+typedef struct { size_t stack_size; /* bytes; 0 = 16 MiB */ } tcontract_pool_opts;
 
 /* An executor owning a private worker pool of `nthreads` workers. nthreads == 0
    is TCONTRACT_ERR_INVALID_ARGUMENT; nthreads == 1 is a serial executor with no
    workers. The width is never inferred from the environment. `opts` may be
    NULL. */
-TAPP_error tcontract_tapp_executor_create_rayon(TAPP_executor *out, size_t nthreads,
-                                             const tcontract_rayon_opts *opts);
+TAPP_error tcontract_tapp_executor_create_pool(TAPP_executor *out, size_t nthreads,
+                                               const tcontract_pool_opts *opts);
 
 /* An opaque handle to a worker pool the *host* owns: created here, lent to the
    executors below, and released by tcontract_pool_destroy. intptr_t, so 0 means
@@ -42,13 +42,13 @@ typedef intptr_t tcontract_pool;
 
 /* Create a host-owned worker pool of `nthreads` workers; release it with
    tcontract_pool_destroy. nthreads == 0 is TCONTRACT_ERR_INVALID_ARGUMENT.
-   Unlike tcontract_tapp_executor_create_rayon, nthreads == 1 is a real
+   Unlike tcontract_tapp_executor_create_pool, nthreads == 1 is a real
    one-worker pool, because the handle is a pool and not an executor. `opts` may
    be NULL; `stack_size` is honoured exactly as in
-   tcontract_tapp_executor_create_rayon. The width is never inferred from the
+   tcontract_tapp_executor_create_pool. The width is never inferred from the
    environment. */
-TAPP_error tcontract_pool_create_rayon(tcontract_pool *out, size_t nthreads,
-                                       const tcontract_rayon_opts *opts);
+TAPP_error tcontract_pool_create(tcontract_pool *out, size_t nthreads,
+                                 const tcontract_pool_opts *opts);
 
 /* Stop a pool created here, wait for its workers, then free the handle. 0 is
    TCONTRACT_ERR_INVALID_ARGUMENT. TCONTRACT_BUSY while an executor built from
