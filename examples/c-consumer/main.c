@@ -278,8 +278,14 @@ static void test_every_declaration_links(void) {
     };
     const size_t n = sizeof decls / sizeof *decls;
 
+    /* A volatile sink, so every address is emitted even at -O2. Without it the
+     * compiler folds `decls[i] == NULL` to false for a declared function and
+     * drops the array, and an undefined symbol then links cleanly (measured
+     * with Apple Clang 21 and a deliberately missing name). */
+    static void *volatile sink;
     int all_resolved = 1;
     for (size_t i = 0; i < n; i++) {
+        sink = decls[i];
         if (decls[i] == NULL) {
             all_resolved = 0;
         }
