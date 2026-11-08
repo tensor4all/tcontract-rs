@@ -262,3 +262,66 @@ fn vendored_tapp_headers_are_the_pinned_ones() {
         );
     }
 }
+
+/// The declaration link test in `examples/c-consumer/main.c` must survive the
+/// optimizer. A plain array of function addresses is dead code (a function's
+/// address is never null), so `-O2` may delete it along with every relocation
+/// and the test then passes with a symbol the library does not export. This
+/// compiles the example with one pool symbol renamed to a name no library has
+/// and asserts the reference is still there in the object file.
+#[test]
+fn the_declaration_link_test_survives_optimization() {
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    if Command::new(&cc).arg("--version").output().is_err() {
+        eprintln!("skipping: no C compiler ({cc})");
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let obj = std::env::temp_dir().join(format!(
+        "tcontract_c_consumer_link_{}.o",
+        std::process::id()
+    ));
+    let st = Command::new(&cc)
+        .args([
+            "-std=c11",
+            "-O2",
+            "-c",
+            "-Dtcontract_pool_create=deliberately_missing_pool_symbol",
+        ])
+        .arg(format!("-I{}", root.join("include").display()))
+        .arg(root.join("../../examples/c-consumer/main.c"))
+        .arg("-o")
+        .arg(&obj)
+        .status()
+        .expect("cc");
+    assert!(st.success(), "examples/c-consumer/main.c did not compile");
+    let out = Command::new("nm")
+        .args(["-u"])
+        .arg(&obj)
+        .output()
+        .expect("nm");
+    let _ = std::fs::remove_file(&obj);
+    let macho = cfg!(target_os = "macos");
+    let undefined: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_whitespace().last())
+        .map(|s| {
+            if macho {
+                s.strip_prefix('_').unwrap_or(s)
+            } else {
+                s
+            }
+        })
+        .map(str::to_owned)
+        .collect();
+    for want in [
+        "deliberately_missing_pool_symbol",
+        "tcontract_pool_destroy",
+        "tcontract_tapp_executor_borrow_pool",
+    ] {
+        assert!(
+            undefined.iter().any(|s| s == want),
+            "{want} did not survive -O2, so the declaration link test proves nothing for it: {undefined:?}"
+        );
+    }
+}

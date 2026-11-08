@@ -9,6 +9,10 @@
 
 int main(void) {
   CHECK(tcontract_abi_version() == TCONTRACT_ABI_VERSION, "abi version");
+  /* A header from before #149 says 100 and declares `tcontract_pool_create_rayon`,
+     which this library no longer exports: reporting 100 again would make the check
+     above pass against a header whose symbols are missing. */
+  CHECK(tcontract_abi_version() != 100u, "a header from the previous ABI is refused");
   CHECK(tcontract_has_part("tapp") && tcontract_has_part("core"), "parts");
   CHECK(!tcontract_has_part("blas"), "blas is not part of libtcontract_capi");
   CHECK(!tcontract_has_part("linalg"), "linalg not in this slice");

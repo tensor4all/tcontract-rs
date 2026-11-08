@@ -134,8 +134,10 @@ pub use tensor_info::*;
 
 use std::ffi::{c_char, CStr};
 
-/// ABI version: major * 10000 + minor * 100 + patch.
-pub const ABI_VERSION: u32 = 100; // 0.1.0
+/// ABI version: the `tcontract-capi` crate version folded into one integer,
+/// `major * 10000 + minor * 100 + patch`. The two move together, so a library
+/// whose symbols changed never reports the number an older build reported.
+pub const ABI_VERSION: u32 = 101; // 0.1.1: #149 removed the *_create_rayon names
 
 /// The ABI version of the loaded library (`TCONTRACT_ABI_VERSION` in the header).
 #[no_mangle]

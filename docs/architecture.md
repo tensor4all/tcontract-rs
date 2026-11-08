@@ -67,7 +67,7 @@ Headers live in `crates/tcontract-capi/include/`: the pinned upstream TAPP heade
 
 - Symbols: the contraction and executor API keeps the standard `TAPP_*` names; tcontract extensions to it are `tcontract_tapp_<object>_<operation>` (for example `tcontract_tapp_executor_create_pool`); library-level symbols are `tcontract_<object>_<operation>`.
 - Every entry point catches panics and returns a status (a `TAPP_error` is a `tcontract_status`: zero is success and the other values are provider-defined, so callers test success with `TAPP_check_success`); `tcontract_last_error()` returns a thread-local message.
-- `tcontract_abi_version()` and `TCONTRACT_ABI_VERSION` (header) state the ABI number; `TAPP_implementation_version()` states the crate version of the loaded library; `tcontract_has_part("tapp")` answers what the library contains. A header and a library from different versions are detectable.
+- `tcontract_abi_version()` and `TCONTRACT_ABI_VERSION` (header) state the ABI number; `TAPP_implementation_version()` states the crate version of the loaded library; `tcontract_has_part("tapp")` answers what the library contains. A header and a library from different versions are detectable. The ABI number is the `tcontract-capi` crate version folded into one integer (`major * 10000 + minor * 100 + patch`), so the two cannot drift: a change to the exported names raises the number in the same release that raises the crate version, and a caller that compares its header's number with `tcontract_abi_version()` refuses a mixed pair.
 - There is no C tuning API: kernel and blocking choices are Rust `PlanConfig` inputs.
 
 ## Zero-copy data exchange
