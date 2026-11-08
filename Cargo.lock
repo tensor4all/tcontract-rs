@@ -837,9 +837,9 @@ dependencies = [
 
 [[package]]
 name = "t4a-faer"
-version = "0.32.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56cb66d2a11287259ed62ab6cbef98e907ef0b67d78b45c32d8d33709693fde7"
+checksum = "fbb418322be3bde5413613ec9dfcaa8c7e764ac8e17fd513ceba6942e9bfcbc7"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "num-complex",
  "num-traits",
@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "tcontract-exec"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "t4a-faer",
  "thiserror",
