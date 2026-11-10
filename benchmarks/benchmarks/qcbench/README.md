@@ -36,6 +36,8 @@ verifier runs its TTGT arm whatever engines the caller selected (`engines/verify
 reference are live — **2A+2B+3C ≈ 22.5 GiB on the same family**, so that build needs a host above 24 GiB. The
 bound below is the `blas`-free one. `corpus/tests.rs` pins the selection, the derivation rules, and the footprint budget.
 
+**The transcription itself is not machine-checked here.** The corpus tables this was copied from (`out/real_corpus/` in the benchmark job) are not in this repository, and `corpus/tests.rs` compares the literals against a second copy of the same table rather than against a paper. Paper fidelity — that `I6.t1_oovv` is the equation Pieniazek prints, with these index roles — has to be read against the cited paper; the module doc in `corpus.rs` names the source for each corpus so that reading is possible.
+
 ## Engines and correctness
 
 - `plan`: tcontract's planner, with the same `TCBENCH_*` knobs as `tcbench`.
