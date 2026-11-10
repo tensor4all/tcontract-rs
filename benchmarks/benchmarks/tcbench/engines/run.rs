@@ -364,7 +364,10 @@ pub fn run_case<T>(
                         tb::Operand::new(s.lc.extents(), s.lc.strides(), s.case.c),
                     )
                 });
-                let mut dt: Vec<T> = vec![<T as Element>::zero(); s.elems_c()];
+                // Reuse the plan arm's output buffer: its result is already
+                // cloned into `reference`, and `check` compares against that,
+                // so a second output-sized allocation here would raise the
+                // case peak by one C for nothing.
                 let ta = oa.tensor(
                     T::TBLIS_TYPE,
                     T::tblis_scalar(1.0),
@@ -379,7 +382,7 @@ pub fn run_case<T>(
                     let mut tc = oc.tensor(
                         T::TBLIS_TYPE,
                         T::tblis_scalar(0.0),
-                        dt.as_mut_ptr() as *mut std::ffi::c_void,
+                        d.as_mut_ptr() as *mut std::ffi::c_void,
                     );
                     unsafe {
                         tb::tblis_tensor_mult(
@@ -394,7 +397,7 @@ pub fn run_case<T>(
                         )
                     }
                 });
-                let notes = check("tblis", &dt, &mut reference);
+                let notes = check("tblis", &d, &mut reference);
                 push(
                     "tblis",
                     samples,

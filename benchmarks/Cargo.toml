@@ -75,6 +75,10 @@ name = "lukbench"
 path = "benchmarks/lukbench/main.rs"
 
 [[bin]]
+name = "qcbench"
+path = "benchmarks/qcbench/main.rs"
+
+[[bin]]
 name = "exec_entry"
 path = "benchmarks/tcontract/exec_entry/exec_entry.rs"
 
