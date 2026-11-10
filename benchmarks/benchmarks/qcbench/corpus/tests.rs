@@ -59,8 +59,11 @@ fn corpus_is_the_twenty_four_selected_cases_at_three_aspect_ratios() {
 }
 
 #[test]
-fn selected_einsums_match_the_paper_transcriptions() {
-    // (case, A, B, C) as transcribed in `out/real_corpus/*/cases.csv`.
+fn selected_einsums_match_the_transcription_table() {
+    // (case, A, B, C) as copied into `corpus.rs`. This pins the table against a second copy, so a change to one
+    // without the other fails. It is **not** a check against the papers: the per-corpus sources are named in
+    // `corpus.rs`'s module doc, and whether a literal matches the equation it cites has to be read against the
+    // paper, which no test here can do.
     let expected = [
         ("b_tau.A", "PQ", "RP", "RQ"),
         ("b_tau.S", "PQ", "RP", "RQ"),
