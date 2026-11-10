@@ -248,3 +248,83 @@ fn whole_binary_footprints_stay_within_the_eight_gib_cell_budget() {
         binding.1
     );
 }
+
+/// The corpus `macs` monomial for each selected case, in selection order.
+/// Pinned so a domain-class or extent edit changes the computed product and
+/// fails here, rather than only breaking an internal-consistency check.
+const DECLARED_MACS: &[(&str, &str)] = &[
+    ("b_tau.A", "vroot^2*oroot"),
+    ("b_tau.S", "vsym*vroot*oroot"),
+    ("T.connected.virtual", "o^3*v^4"),
+    ("T.connected.occupied", "o^4*v^3"),
+    ("I6.t1_oovv", "o^3*v^2"),
+    ("sigma2.wovvo", "o^3*v^2"),
+    ("sigma2.woooo", "o^4*v"),
+    ("sigma2.w_abcd", "o*v^4"),
+    ("sigma2.w_alcj", "o^2*v^3"),
+    ("sigma2.w_bljc", "o^2*v^3"),
+    ("sigma2.w_lbdj", "o^2*v^3"),
+    ("gamma.abcd", "ao_root*vroot^2"),
+    ("gamma.aibc", "o*v^3*ao^2"),
+    ("df.factor", "ao^2*naux^2"),
+    ("exchange.matrix", "ao^2*o*naux"),
+    ("exchange.occupied_transform", "ao^2*o*naux"),
+    ("gradient.Y_transform2", "ao^2*o*naux"),
+    ("gradient.X", "o^2*naux^2"),
+    ("gradient.Z_pair", "o^2*naux^2"),
+    ("response.exchange.occupied_half", "ao^2*o*naux"),
+    ("response.exchange.transform", "ao^2*o*naux"),
+    ("response.exchange.metric", "o^2*naux^2"),
+    ("K.aux", "o*v^2*naux"),
+    ("K.matrix", "o^2*v*naux"),
+];
+
+/// Evaluate a corpus `macs` monomial at one extent set.
+fn declared_macs(e: &Extents, expr: &str) -> u64 {
+    expr.split('*')
+        .map(|term| {
+            let (name, exp) = match term.split_once('^') {
+                Some((name, exp)) => (name, exp.parse::<u32>().expect("exponent")),
+                None => (term, 1),
+            };
+            let base = match name {
+                "o" => e.o,
+                "v" => e.v,
+                "naux" => e.naux,
+                "ao" => e.ao(),
+                "oroot" => e.oroot(),
+                "vroot" => e.vroot(),
+                "vsym" => e.vsym(),
+                "ao_root" => e.ao_root(),
+                other => panic!("unknown macs domain {other} in {expr}"),
+            } as u64;
+            base.pow(exp)
+        })
+        .product()
+}
+
+#[test]
+fn selection_macs_match_the_corpus_monomials() {
+    assert_eq!(DECLARED_MACS.len(), SELECTED.len());
+    let cases = corpus();
+    for (name, expr) in DECLARED_MACS {
+        assert!(SELECTED.contains(name), "{name} is not in the selection");
+        for (group, e) in [
+            ("ov_03", &EXTENTS[0]),
+            ("ov_10", &EXTENTS[1]),
+            ("ov_20", &EXTENTS[2]),
+        ] {
+            let full = format!("{group}/{name}");
+            let case = cases
+                .iter()
+                .find(|case| case.name == full)
+                .unwrap_or_else(|| panic!("missing {full}"));
+            let sized = size_case(case, 0.0);
+            assert_eq!(
+                sized.macs(),
+                declared_macs(e, expr),
+                "{full}: extent product must match the corpus monomial {expr}"
+            );
+        }
+    }
+}
