@@ -19,7 +19,14 @@ This file only records what is specific to `tcontract-rs`:
   test and its exported-symbol list, and an installed and a prebuilt `cmake` consumer.
 - **Platforms claimed**: `ubuntu-latest` and `macos-latest` for `clippy`, `test` and `capi`; `fmt`, `placement`,
   `scripts`, `test-release`, `c-consumer`, `msrv` and `doc` run on `ubuntu-latest` only.
-- **Local gate**: `cargo test --workspace`.
+- **Local gate**:
+
+  ```sh
+  cargo build --profile ci -p tcontract-capi && cargo test --profile ci --workspace
+  ```
+
+  The `cargo build` is the step people forget: `crates/tcontract-capi/tests/c_abi.rs` links the built shared library,
+  and `cargo test` alone builds only the rlib, so three of its tests fail with `libtcontract_capi ... not built`.
 
 ## Anything here that departs from the shared rules
 
