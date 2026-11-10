@@ -28,7 +28,7 @@ The three extent sets are aspect-ratio classes, not molecules. The ratios v/o = 
 | `ov_10` | cc-pVTZ (v/o 10.17, naux/nao 2.568) | 10 | 100 | 282 |
 | `ov_20` | cc-pVQZ (v/o 20.36, naux/nao 2.237) | 7 | 140 | 329 |
 
-Each ratio's extents follow the rung-median rule `naux = round(k_rung · (o+v))`, and `v·o` stays nearly constant (972 / 1000 / 980): a larger basis rung affords more virtuals but fewer occupied orbitals. The extents are derived from a *whole-binary* memory budget: the largest f64 A+B+C footprint over the suite — bound by the `o³v³` triples output of `T.connected.virtual` — stays within 8 GiB per cell, so no case is ever skipped for memory. `corpus/tests.rs` pins the selection, the derivation rules, and the footprint budget.
+Each ratio's extents follow the rung-median rule `naux = round(k_rung · (o+v))`, and `v·o` stays nearly constant (972 / 1000 / 980): a larger basis rung affords more virtuals but fewer occupied orbitals. The extents are derived from a *whole-binary* memory budget: the largest f64 A+B+C footprint over the suite — bound by the `o³v³` triples output of `T.connected.virtual` — stays within 8 GiB per cell, so no case is ever skipped for memory. That is the **operand footprint, not the process peak**: the harness holds one extra output-sized reference for its cross-arm check, so `verify` and `run` peak at **A+B+2C — 14.98 GiB for the binding family — and a recording host needs above 16 GiB**. `corpus/tests.rs` pins the selection, the derivation rules, and the footprint budget.
 
 ## Engines and correctness
 
