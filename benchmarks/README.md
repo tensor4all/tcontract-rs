@@ -11,6 +11,7 @@ package now holds only the tcontract benchmarks.
 | `exec_entry` | [exec_entry](benchmarks/tcontract/exec_entry/README.md) |
 | `tcbench` | [49-case TCCG comparison](benchmarks/tcbench/README.md): `run`, `verify`, `info`, `--threads`, `--stress`; optional `blas` baseline |
 | `lukbench` | [per-shape corpus of tcontract-rs#61](benchmarks/lukbench/README.md): the same `run`/`verify`/`info` shape over fixed extents; optional `tblis` baseline |
+| `qcbench` | [24-case QC binary contractions](benchmarks/qcbench/README.md): fixed occupied/virtual/auxiliary extents at three basis-rung aspect ratios, f64 only; optional `tblis` baseline |
 | `contract` | [contract](benchmarks/tcontract/contract/README.md) |
 | `capi_rust` | [C ABI comparison](c/README.md) |
 

@@ -121,6 +121,9 @@ jobs:
           save-if: ${{ github.event_name == 'push' }}
       - run: cargo test -p tcontract --profile release-test
       - run: cargo run --profile release-test -p tcontract-bench --bin tcbench -- info
+      # qcbench is a campaign harness binary: prove it links and reports its
+      # info in the same release-test gate as tcbench.
+      - run: cargo run --profile release-test -p tcontract-bench --bin qcbench -- info
       # The README's Rust example.
       - run: cargo run --profile release-test -p tcontract --example readme
 
