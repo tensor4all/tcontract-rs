@@ -46,7 +46,10 @@ bound below is the `blas`-free one. `corpus/tests.rs` pins the selection, the de
 
 `verify` evaluates all selected families. At realistic extents it compares full outputs from the planner, forced packed route, and built baselines using relative Frobenius error, requiring finite error at most `1e-10` for f64. It is a cross-provider check, not a naive-loop recomputation of the expensive QC contractions. Timed runs also compare each later engine with the first engine's full output and fail on `MISMATCH`.
 
-Only f64 and unit batch are accepted; the benchmark is real-orbital throughout, and `c64` is rejected rather than skipped. `--n 1` is solely the timing-v2 identity sentinel; it does not resize the tensors. Layout stress is fixed to `none`.
+Only f64 and unit batch are accepted **as a member**; the benchmark is real-orbital throughout, and a `c64` case is
+rejected rather than skipped. The shared verifier still runs its own known-value self-check for `f64` and
+`Complex<f64>` before any family (`engines/verify.rs:66-67`, unconditional), so `qcbench verify` does execute one
+`c64` gemm that no case in this corpus declares. `--n 1` is solely the timing-v2 identity sentinel; it does not resize the tensors. Layout stress is fixed to `none`.
 
 ## Build and run
 
