@@ -189,6 +189,11 @@ where
     let mut dp: Vec<T> = vec![<T as Element>::zero(); s.elems_c()];
     run_plan(&packed, exec, &a, &b, &mut dp);
     let packed_err = super::rel_error(&dp, &d);
+    // `dp` has served its one purpose (the forced-packed cross-check); the
+    // later arms compare against `d`, so release the output-sized buffer
+    // before the next one is allocated. Holding it would raise the verify
+    // peak from A+B+2C to A+B+3C, which matters for whole-binary corpora.
+    drop(dp);
 
     let mut fails = usize::from(known && d.iter().any(|&v| v != T::from_f64(k as f64)));
 
