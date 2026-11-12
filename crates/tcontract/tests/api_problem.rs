@@ -2,7 +2,7 @@
 //! the equivalence of the two front ends.
 use tcontract::api::{
     AliasError, CSpec, ConfigError, DType, DotGeneral, Error, Labels, LayoutSpec, Op, OperandId,
-    OperandSpec, Problem, ShapeError, Unsupported,
+    OperandSpec, Problem, RoleAxis, ShapeError, Unsupported,
 };
 
 fn op(d: &[usize], s: &[isize]) -> OperandSpec {
@@ -340,4 +340,56 @@ fn zero_extents_and_arithmetic_overflow_are_decided_at_construction() {
     .unwrap();
     let span = q.span(OperandId::A).unwrap();
     assert_eq!((span.lo(), span.hi()), (-2, 0));
+}
+
+#[test]
+fn roles_keep_first_appearance_order_when_roles_interleave() {
+    // Labels H 10,11; K 20,21; M 30,31; N 40,41. First appearance over A then B
+    // is H0 K0 M0 H1 M1 K1 N1 N0.
+    let ext = |n: usize| -> (Vec<usize>, Vec<isize>) {
+        let d = vec![2; n];
+        let s = (0..n).map(|i| 1isize << i).collect();
+        (d, s)
+    };
+    let (d6, s6) = ext(6);
+    let q = p(
+        op(&d6, &s6),
+        op(&d6, &s6),
+        CSpec::Absent,
+        op(&d6, &s6),
+        &Labels::new(
+            &[10, 20, 30, 11, 31, 21],
+            &[10, 20, 11, 21, 41, 40],
+            &[40, 30, 11, 41, 31, 10],
+        ),
+    )
+    .unwrap();
+    let r = q.roles();
+    let labels = |axes: &[RoleAxis]| axes.iter().map(|x| x.label()).collect::<Vec<_>>();
+    assert_eq!(labels(r.k()), [20, 21]);
+    assert_eq!(labels(r.m()), [30, 31]);
+    assert_eq!(labels(r.n()), [41, 40]);
+    assert_eq!(labels(r.h()), [10, 11]);
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn macs_multiplies_a_zero_output_extent_before_huge_contracted_ones() {
+    // M and N have extent zero, K is three axes of 2^50: M·N·K is 0, while a
+    // product that starts with K overflows u128 (2^150) under overflow checks.
+    let b = 1usize << 50;
+    let q = p(
+        op(&[0, b, b, b], &[0, 0, 0, 0]),
+        op(&[0, b, b, b], &[0, 0, 0, 0]),
+        CSpec::Absent,
+        op(&[0, 0], &[1, 1]),
+        &Labels::new(&[0, 2, 3, 4], &[1, 2, 3, 4], &[0, 1]),
+    )
+    .unwrap();
+    let r = q.roles();
+    assert_eq!(
+        (r.m().len(), r.n().len(), r.k().len(), r.h().len()),
+        (1, 1, 3, 0)
+    );
+    assert_eq!(q.macs(), 0);
 }
