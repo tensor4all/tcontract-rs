@@ -45,9 +45,11 @@ fn main() -> ExitCode {
     let cmd = args.get(1).map(String::as_str).unwrap_or("help");
     let opts = Options::parse(&args[2.min(args.len())..]);
 
-    let threads = tcontract_bench::threads::BenchThreads::from_args();
+    // Vendor thread pools are created by `configure_threads`, and they must
+    // exist before `BenchThreads` pins its leader (see `from_args_with`).
+    let threads =
+        tcontract_bench::threads::BenchThreads::from_args_with(engines::configure_threads);
     threads.verify();
-    engines::configure_threads(threads.requested);
     match cmd {
         "verify" => threads.with_exec(|exec, _| engines::verify::run(&opts, exec)),
         "run" => threads.with_exec(|exec, _| engines::run::run(&opts, exec)),
