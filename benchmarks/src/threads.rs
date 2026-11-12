@@ -65,6 +65,20 @@ impl BenchThreads {
     /// From the process arguments and environment; exits with status 2 on a
     /// bad flag or a conflicting thread environment variable.
     pub fn from_args() -> Self {
+        Self::from_args_with(|_| {})
+    }
+
+    /// As [`from_args`](Self::from_args), with `configure` run after the flags
+    /// are validated and **before** the team is built.
+    ///
+    /// A placed team pins its leader to one CPU of the process's set for the
+    /// team's lifetime, and a vendor library (OpenMP, OpenBLAS, TBLIS) builds
+    /// its own thread team from the thread that first calls it. A vendor pool
+    /// created after the pin inherits a one-CPU mask and stays confined to it,
+    /// so a harness that links such a library configures it here: the pools are
+    /// created while the process still owns the whole set, and the pin cannot
+    /// reach them.
+    pub fn from_args_with(configure: impl FnOnce(usize)) -> Self {
         let args: Vec<String> = std::env::args().collect();
         let requested = parse_threads(&args).unwrap_or_else(|e| fail(&e));
         if let Some((name, value)) = conflicting_env(requested, |n| std::env::var(n).ok()) {
@@ -77,6 +91,19 @@ impl BenchThreads {
                 "{name}={value}: this variable was removed in tcontract-rs#37 and is not read; use the benchmark's flags"
             ));
         }
+        Self::new(requested, configure)
+    }
+
+    /// A configuration for `requested` threads, with `configure` run **before**
+    /// the team is built (see [`from_args_with`](Self::from_args_with)).
+    ///
+    /// `new` does not read the process arguments; callers that do use
+    /// [`from_args`](Self::from_args) or [`from_args_with`](Self::from_args_with).
+    pub fn new(requested: usize, configure: impl FnOnce(usize)) -> Self {
+        let requested = requested.max(1);
+        // Vendor thread pools must see the whole CPU set, so they are created
+        // before the team pins its leader. See the type's placement note.
+        configure(requested);
         // tcontract paths run on this pool and start no ambient one.
         let team = (requested > 1).then(|| {
             threadteam::Pool::builder()
