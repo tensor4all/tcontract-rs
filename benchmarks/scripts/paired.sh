@@ -7,7 +7,7 @@
 # CPUS must hold at least max(THREADS) CPUs of one L3 domain (from
 # `idle_cpus.py pick`); a count T uses the first T of them. BIN must support
 # `--list` and `BENCH_CASE`. Environment: CORPUS (a corpus file passed as
-# `--corpus`), BENCH_RUNS / BENCH_WARMUP (passed through). Writes
+# `--corpus`), BENCH_RUNS / BENCH_WARMUP / BENCH_WARMUP_MS (passed through). Writes
 # OUTDIR/<bin>-<T>t.csv, OUTDIR/<bin>-<T>t.log (`#` and CHECK lines) and
 # OUTDIR/manifest.txt.
 set -euo pipefail
@@ -28,7 +28,7 @@ mkdir -p "$out"
     echo "cpus: $cpus"
     echo "threads: ${threads[*]}"
     echo "corpus: ${CORPUS:-built-in}$([[ -n ${CORPUS:-} ]] && echo " sha256=$(sha256sum "$CORPUS" | cut -d' ' -f1)")"
-    echo "BENCH_RUNS=${BENCH_RUNS:-default} BENCH_WARMUP=${BENCH_WARMUP:-default}"
+    echo "BENCH_RUNS=${BENCH_RUNS:-default} BENCH_WARMUP=${BENCH_WARMUP:-default} BENCH_WARMUP_MS=${BENCH_WARMUP_MS:-default}"
 } > "$out/manifest.txt"
 for t in "${threads[@]}"; do
     if (( t > ${#all[@]} )); then echo "paired.sh: $t threads but only ${#all[@]} CPUs in '$cpus'" >&2; exit 2; fi
