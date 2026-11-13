@@ -77,56 +77,108 @@ type Step = (
     &'static [i64],
 );
 
-/// Borrowed construction: a rank-3 fusable problem must lower and compile
-/// without a heap allocation (#121 item 1). The plan's own packed scatter tables
-/// are the one exception and need a packed route; a Faer plan builds none.
+/// Borrowed construction: compact rank-2 and rank-3 problems must lower and
+/// compile without a heap allocation (#121 item 1, #157). The plan's own packed
+/// scatter tables are the one exception and need a packed route; Faer and
+/// InnerProduct plans build none.
 #[test]
 fn borrowed_construction_and_compile_are_allocation_free() {
-    // D[i,j,h] = sum_k A[i,k,h] B[k,j,h], rank 3, fusable to faer.
-    let dims = [8usize; 3];
-    let strides = col_major(&dims);
-    let (la, lb, ld) = ([0i64, 2, 3], [2i64, 1, 3], [0i64, 1, 3]);
-    let l = LayoutRef {
-        dims: &dims,
-        strides: &strides,
-        offset: 0,
-    };
-    let pref = ProblemRef {
-        dtype: DType::F64,
-        a: (l, Op::Identity),
-        b: (l, Op::Identity),
-        c: CRef::Absent,
-        d: (l, Op::Identity),
-        contraction: ContractionRef::Labels {
-            a: &la,
-            b: &lb,
-            c: None,
-            d: &ld,
-        },
-    };
-
-    // The first pass warms any one-time initialisation.
-    let _ = Problem::from_ref(&pref).unwrap();
-    let _ = Plan::<f64>::compile(&pref, &PlanConfig::default()).unwrap();
-
-    let (problem, n_ref) = count(|| Problem::from_ref(&pref).unwrap());
-    let (_, n_clone) = count(|| problem.clone());
-    let (plan, n_compile) = count(|| Plan::<f64>::compile(&pref, &PlanConfig::default()).unwrap());
-    let (_, n_new) = count(|| Plan::<f64>::new(&problem, &PlanConfig::default()).unwrap());
-    assert_eq!(plan.report().algorithm, Algorithm::Faer);
-    assert_eq!(n_ref, 0, "Problem::from_ref allocated {n_ref} times");
-    assert_eq!(n_clone, 0, "Problem::clone allocated {n_clone} times");
-    assert_eq!(n_compile, 0, "Plan::compile allocated {n_compile} times");
-    // `Plan::new` clones the problem and compiles it; both are inline now.
-    assert_eq!(n_new, 0, "Plan::new allocated {n_new} times");
-
-    // The one documented exception: a forced packed plan builds the scatter
-    // tables, whose length is the product of the role extents, not the rank.
-    let (_, n_packed) = count(|| Plan::<f64>::compile(&pref, &PlanConfig::packed()).unwrap());
-    assert!(
-        n_packed > 0,
-        "a packed plan should allocate its scatter tables"
+    // dims of A, B, D; labels of A, B, D; the expected route.
+    type Case = (
+        &'static [usize],
+        &'static [usize],
+        &'static [usize],
+        &'static [i64],
+        &'static [i64],
+        &'static [i64],
+        Algorithm,
     );
+    let cases: [Case; 3] = [
+        // D[i,j] = sum_k A[i,k] B[k,j], compact rank 2.
+        (
+            &[8, 8],
+            &[8, 8],
+            &[8, 8],
+            &[0, 2],
+            &[2, 1],
+            &[0, 1],
+            Algorithm::Faer,
+        ),
+        // D[p] = sum_i A[p,i] B[p,i], a batched inner product.
+        (
+            &[8, 8],
+            &[8, 8],
+            &[8],
+            &[0, 1],
+            &[0, 1],
+            &[0],
+            Algorithm::InnerProduct,
+        ),
+        // D[i,j,h] = sum_k A[i,k,h] B[k,j,h], rank 3, fusable to faer.
+        (
+            &[8, 8, 8],
+            &[8, 8, 8],
+            &[8, 8, 8],
+            &[0, 2, 3],
+            &[2, 1, 3],
+            &[0, 1, 3],
+            Algorithm::Faer,
+        ),
+    ];
+    for (da, db, dd, la, lb, ld, algorithm) in cases {
+        let (sa, sb, sd) = (col_major(da), col_major(db), col_major(dd));
+        let layout = |dims, strides| LayoutRef {
+            dims,
+            strides,
+            offset: 0,
+        };
+        let pref = ProblemRef {
+            dtype: DType::F64,
+            a: (layout(da, &sa), Op::Identity),
+            b: (layout(db, &sb), Op::Identity),
+            c: CRef::Absent,
+            d: (layout(dd, &sd), Op::Identity),
+            contraction: ContractionRef::Labels {
+                a: la,
+                b: lb,
+                c: None,
+                d: ld,
+            },
+        };
+
+        // The first pass warms any one-time initialisation.
+        let _ = Problem::from_ref(&pref).unwrap();
+        let _ = Plan::<f64>::compile(&pref, &PlanConfig::default()).unwrap();
+
+        let (problem, n_ref) = count(|| Problem::from_ref(&pref).unwrap());
+        let (_, n_clone) = count(|| problem.clone());
+        let (plan, n_compile) =
+            count(|| Plan::<f64>::compile(&pref, &PlanConfig::default()).unwrap());
+        let (_, n_new) = count(|| Plan::<f64>::new(&problem, &PlanConfig::default()).unwrap());
+        assert_eq!(plan.report().algorithm, algorithm, "{la:?},{lb:?}->{ld:?}");
+        assert_eq!(
+            n_ref, 0,
+            "{la:?}: Problem::from_ref allocated {n_ref} times"
+        );
+        assert_eq!(
+            n_clone, 0,
+            "{la:?}: Problem::clone allocated {n_clone} times"
+        );
+        assert_eq!(
+            n_compile, 0,
+            "{la:?}: Plan::compile allocated {n_compile} times"
+        );
+        // `Plan::new` clones the problem and compiles it; both are inline now.
+        assert_eq!(n_new, 0, "{la:?}: Plan::new allocated {n_new} times");
+
+        // The one documented exception: a forced packed plan builds the scatter
+        // tables, whose length is the product of the role extents, not the rank.
+        let (_, n_packed) = count(|| Plan::<f64>::compile(&pref, &PlanConfig::packed()).unwrap());
+        assert!(
+            n_packed > 0,
+            "{la:?}: a packed plan should allocate its scatter tables"
+        );
+    }
 }
 
 #[test]

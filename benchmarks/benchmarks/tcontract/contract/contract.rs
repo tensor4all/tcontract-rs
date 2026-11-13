@@ -6,27 +6,36 @@
 //!
 //! Usage: `contract --threads N [--corpus FILE] [--partition static|dynamic:JM,JN]
 //! [--list]`. CSV `case,variant,threads,median_ns,samples` where `variant` is
-//! `<engine>_<plan|exec>`; `# selected` lines report what each plan runs (the
-//! algorithm and, for the packed driver, its family); `CHECK` lines compare the
-//! engines' results. `--list` prints the case names and exits. Environment:
-//! `BENCH_RUNS` (default 20), `BENCH_WARMUP` (3), `BENCH_CASE` (exact case
+//! `<engine>_<plan|build|exec|fresh>`: `plan` is `Plan::new` from a lowered
+//! problem, `build` lowers the problem too (`Problem::from_*` plus
+//! `Plan::from_problem`), `exec` is the initialized execution and `fresh`
+//! (overwrite mode only) `execute_uninit_slices` into reused uninitialized
+//! storage. `# selected` lines report what each plan runs (the algorithm and,
+//! for the packed driver, its family); `# spread case variant threads min p25
+//! p75 max` lines give each row's sample scatter in ns; `CHECK` lines compare
+//! the engines' results, and the fresh output with the initialized one.
+//! `--list` prints the case names and exits. Environment: `BENCH_RUNS`
+//! (default 20), `BENCH_WARMUP` (3), `BENCH_WARMUP_MS` (0: untimed calls for
+//! that much wall time before the `BENCH_WARMUP` ones), `BENCH_CASE` (exact case
 //! name), `BENCH_C_MODE` (`overwrite`, the default `dot_general` form, or the
 //! TAPP-style separate-C forms `separate_b0` (beta 0, C unread), `separate_b1`
 //! (beta 0.5, C a distinct buffer of D's layout) and `separate_same` (beta 0.5,
 //! C is D itself); they run through `execute_raw`). The built-in corpus runs in f64 and c64; a corpus file sets each
 //! entry's dtype.
 use std::hint::black_box;
+use std::mem::MaybeUninit;
+use std::time::Duration;
 
 use num_complex::{Complex32, Complex64};
 use strided_view::{StridedView, StridedViewMut};
 use tcontract::api::{
     CSpec, DType, DotGeneral, Labels, LayoutSpec, Op, OperandSpec, Problem, Scalar,
 };
-use tcontract::{Partition, Plan, PlanConfig};
+use tcontract::{Partition, Plan, PlanConfig, SliceAccumulationSource};
 use tcontract_bench::corpus::{Corpus, DotGeneralEntry, Dtype, Entry, Operand};
 use tcontract_bench::threads::BenchThreads;
-use tcontract_bench::timing::{env_usize, median_ns};
-use tcontract_exec::Exec;
+use tcontract_bench::timing::{env_usize, samples_ns};
+use tcontract_exec::{BatchStrategy, Exec};
 use tcontract_kernel::{Element, Real};
 
 /// One corpus entry. `a_order` / `b_order` give the storage order of the
@@ -262,39 +271,78 @@ fn dot_labels(e: &DotGeneralEntry) -> Labels {
     Labels::new(&la, &lb, &ld)
 }
 
-fn run<T: Scalar>(
-    e: &DotGeneralEntry,
-    exec: &mut Exec<'_>,
+/// The timing settings of one case.
+#[derive(Clone, Copy)]
+struct Timing {
     threads: usize,
+    prime: Duration,
     warmup: usize,
     runs: usize,
-) {
+}
+
+impl Timing {
+    /// Time `f` and print its CSV row and its `# spread` line.
+    fn row(&self, name: &str, variant: &str, f: impl FnMut()) {
+        let Self {
+            threads,
+            prime,
+            warmup,
+            runs,
+        } = *self;
+        let s = samples_ns(prime, warmup, runs, f);
+        let q = |k: usize| s[(s.len() - 1) * k / 4];
+        println!("{name},{variant},{threads},{:.0},{runs}", s[s.len() / 2]);
+        println!(
+            "# spread {name} {variant} {threads} {:.0} {:.0} {:.0} {:.0}",
+            q(0),
+            q(1),
+            q(3),
+            q(4)
+        );
+    }
+}
+
+fn run<T: Scalar>(e: &DotGeneralEntry, exec: &mut Exec<'_>, timing: Timing) {
     let name = &e.name;
+    let threads = timing.threads;
     let ((oa, la), (ob, lb), (oc, lc)) = (e.a.span(), e.b.span(), e.c.span());
     let ad: Vec<T> = fill(la, 1);
     let bd: Vec<T> = fill(lb, 2);
     let mode = c_mode();
-    let problem = if mode == CMode::Overwrite {
-        Problem::from_dot_general(
-            dtype_of(e.dtype),
-            operand(&e.a, op(e.conj[0])),
-            operand(&e.b, op(e.conj[1])),
-            operand(&e.c, Op::Identity),
-            &DotGeneral::new(&e.lc, &e.rc, &e.lb, &e.rb),
-        )
-    } else {
+    // The construction inputs, prepared once so the `build` row times the
+    // lowering and the plan, not the bench's own metadata.
+    let (sa, sb, sc) = (
+        operand(&e.a, op(e.conj[0])),
+        operand(&e.b, op(e.conj[1])),
+        operand(&e.c, Op::Identity),
+    );
+    let dot = DotGeneral::new(&e.lc, &e.rc, &e.lb, &e.rb);
+    let separate = (mode != CMode::Overwrite).then(|| {
         let labels = dot_labels(e);
         let ld = labels.d().to_vec();
-        Problem::from_labels(
-            dtype_of(e.dtype),
-            operand(&e.a, op(e.conj[0])),
-            operand(&e.b, op(e.conj[1])),
-            CSpec::Separate(operand(&e.c, Op::Identity)),
-            operand(&e.c, Op::Identity),
-            &labels.with_c(&ld),
-        )
-    }
-    .expect("problem");
+        labels.with_c(&ld)
+    });
+    let build = || {
+        match &separate {
+            None => Problem::from_dot_general(
+                dtype_of(e.dtype),
+                sa.clone(),
+                sb.clone(),
+                sc.clone(),
+                &dot,
+            ),
+            Some(labels) => Problem::from_labels(
+                dtype_of(e.dtype),
+                sa.clone(),
+                sb.clone(),
+                CSpec::Separate(sc.clone()),
+                sc.clone(),
+                labels,
+            ),
+        }
+        .expect("problem")
+    };
+    let problem = build();
     // The C buffer is only filled for the separate-C modes: the overwrite form
     // reads none, and filling an output-sized vector costs ~24 instructions per
     // element of whole-process time.
@@ -327,10 +375,12 @@ fn run<T: Scalar>(
     for (tag, partition) in variants.iter().map(|(t, p)| (t.as_str(), *p)) {
         let config = tcontract_bench::partition::apply(PlanConfig::default(), partition);
         let mk = || Plan::<T>::new(&problem, &config).expect("plan");
-        let ns = median_ns(warmup, runs, || {
+        timing.row(name, &format!("{tag}_plan"), || {
             black_box(mk());
         });
-        println!("{name},{tag}_plan,{threads},{ns:.0},{runs}");
+        timing.row(name, &format!("{tag}_build"), || {
+            black_box(Plan::<T>::from_problem(build(), &config).expect("plan"));
+        });
         let plan = mk();
         let report = plan.report();
         if let Some(p) = &report.packed {
@@ -345,7 +395,7 @@ fn run<T: Scalar>(
         };
         let one = <T as Element>::one();
         let half = <T as Element>::from_parts(Real::from_f64(0.5), Real::from_f64(0.0));
-        let ns = median_ns(warmup, runs, || match mode {
+        timing.row(name, &format!("{tag}_exec"), || match mode {
             CMode::Overwrite => {
                 let mut cv =
                     StridedViewMut::new(&mut c, &e.c.dims, &e.c.strides, oc as isize).expect("c");
@@ -380,37 +430,86 @@ fn run<T: Scalar>(
                     .expect("exec");
             },
         });
-        println!("{name},{tag}_exec,{threads},{ns:.0},{runs}");
+        if mode == CMode::Overwrite {
+            let mut d: Vec<MaybeUninit<T>> = Vec::with_capacity(lc);
+            d.resize_with(lc, MaybeUninit::uninit);
+            let (a, b) = ((&ad[..], oa as isize), (&bd[..], ob as isize));
+            match fresh(&plan, exec, a, b, (&mut d, oc as isize)) {
+                // A padded or diagonal-only output has no dense exact coverage.
+                Err(err) => println!("# fresh skipped {name} {tag}: {err}"),
+                Ok(_) => {
+                    timing.row(name, &format!("{tag}_fresh"), || {
+                        black_box(fresh(&plan, exec, a, b, (&mut d, oc as isize)).expect("fresh"));
+                    });
+                    let out = fresh(&plan, exec, a, b, (&mut d, oc as isize)).expect("fresh");
+                    let err = rel_err(&c, out);
+                    println!(
+                        "CHECK {name} threads={threads} {tag}_fresh_vs_exec_rel={err:e} {}",
+                        verdict(e.dtype, err)
+                    );
+                }
+            }
+        }
         outs.push(c);
     }
+    let err = rel_err(&outs[0], &outs[1]);
+    println!(
+        "CHECK {name} threads={threads} plan_vs_packed_rel={err:e} {}",
+        verdict(e.dtype, err)
+    );
+}
+
+/// `D = A B` into uninitialized storage of D's exact span (alpha 1, beta 0).
+fn fresh<'d, T: Scalar>(
+    plan: &Plan<T>,
+    exec: &mut Exec<'_>,
+    a: (&[T], isize),
+    b: (&[T], isize),
+    d: (&'d mut [MaybeUninit<T>], isize),
+) -> tcontract::Result<&'d mut [T]> {
+    let (one, zero) = (<T as Element>::one(), <T as Element>::zero());
+    plan.execute_uninit_slices(exec, one, a, b, zero, SliceAccumulationSource::Absent, d)
+}
+
+/// Largest elementwise difference relative to the largest magnitude of `x`
+/// (at least 1); infinite when any value or difference is not finite.
+fn rel_err<T: Scalar>(x: &[T], y: &[T]) -> f64 {
     let mag = |z: T| {
         let (re, im): (f64, f64) = (Real::to_f64(Element::re(z)), Real::to_f64(Element::im(z)));
         re.hypot(im)
     };
-    let scale = outs[0].iter().map(|&z| mag(z)).fold(1.0, f64::max);
-    let err = outs[0]
-        .iter()
-        .zip(&outs[1])
-        .map(|(&x, &y)| mag(Element::sub(x, y)))
-        .fold(0.0, f64::max)
-        / scale;
-    let tol = if matches!(e.dtype, Dtype::F32 | Dtype::C32) {
+    let (mut scale, mut err) = (1.0f64, 0.0f64);
+    for (&a, &b) in x.iter().zip(y) {
+        let (ma, mb, d) = (mag(a), mag(b), mag(Element::sub(a, b)));
+        // `f64::max` drops a NaN, so a non-finite output would otherwise pass.
+        if !(ma.is_finite() && mb.is_finite() && d.is_finite()) {
+            return f64::INFINITY;
+        }
+        scale = scale.max(ma);
+        err = err.max(d);
+    }
+    err / scale
+}
+
+fn verdict(dtype: Dtype, err: f64) -> &'static str {
+    let tol = if matches!(dtype, Dtype::F32 | Dtype::C32) {
         1e-4
     } else {
         1e-12
     };
-    println!(
-        "CHECK {name} threads={threads} plan_vs_packed_rel={err:e} {}",
-        if err < tol { "ok" } else { "MISMATCH" }
-    );
+    if err < tol {
+        "ok"
+    } else {
+        "MISMATCH"
+    }
 }
 
-fn dispatch(e: &DotGeneralEntry, exec: &mut Exec<'_>, threads: usize, warmup: usize, runs: usize) {
+fn dispatch(e: &DotGeneralEntry, exec: &mut Exec<'_>, timing: Timing) {
     match e.dtype {
-        Dtype::F32 => run::<f32>(e, exec, threads, warmup, runs),
-        Dtype::F64 => run::<f64>(e, exec, threads, warmup, runs),
-        Dtype::C32 => run::<Complex32>(e, exec, threads, warmup, runs),
-        Dtype::C64 => run::<Complex64>(e, exec, threads, warmup, runs),
+        Dtype::F32 => run::<f32>(e, exec, timing),
+        Dtype::F64 => run::<f64>(e, exec, timing),
+        Dtype::C32 => run::<Complex32>(e, exec, timing),
+        Dtype::C64 => run::<Complex64>(e, exec, timing),
     }
 }
 
@@ -448,9 +547,16 @@ fn main() {
     threads.verify();
     let warmup = env_usize("BENCH_WARMUP", 3);
     let runs = env_usize("BENCH_RUNS", 20);
+    let prime = Duration::from_millis(env_usize("BENCH_WARMUP_MS", 0) as u64);
     let exact = std::env::var("BENCH_CASE").ok().filter(|f| !f.is_empty());
     println!("case,variant,threads,median_ns,samples");
     threads.with_exec(|exec, _| {
+        // Every execute row goes through the Auto batch route, which reads the
+        // plan's work estimate.
+        assert!(
+            matches!(exec.batch_policy().strategy, BatchStrategy::Auto),
+            "contract times the Auto batch policy"
+        );
         for e in &cases {
             if exact.as_deref().is_some_and(|x| x != e.name) {
                 continue;
@@ -458,7 +564,16 @@ fn main() {
             let mults: usize = e.c.dims.iter().product::<usize>()
                 * e.lc.iter().map(|&i| e.a.dims[i]).product::<usize>();
             let r = if mults >= 1 << 24 { runs.min(10) } else { runs };
-            dispatch(e, exec, threads.requested, warmup, r);
+            let timing = Timing {
+                threads: threads.requested,
+                prime,
+                warmup,
+                runs: r,
+            };
+            dispatch(e, exec, timing);
         }
     });
 }
+
+#[cfg(test)]
+mod tests;

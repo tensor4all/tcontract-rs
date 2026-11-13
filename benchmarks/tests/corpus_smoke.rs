@@ -32,8 +32,12 @@ fn contract_replays_every_dot_general_entry() {
     let text = replay(env!("CARGO_BIN_EXE_contract"));
     let c = checks(&text);
     // The four contraction entries and the two batched-GEMM entries that were
-    // rewritten as contraction cases.
-    assert_eq!(c.len(), 6, "{text}");
+    // rewritten as contraction cases; the fresh rows add their own checks.
+    let engines = c
+        .iter()
+        .filter(|l| l.contains(" plan_vs_packed_rel="))
+        .count();
+    assert_eq!(engines, 6, "{text}");
     assert!(c.iter().all(|l| l.ends_with(" ok")), "{text}");
 }
 

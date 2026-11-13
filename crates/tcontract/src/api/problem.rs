@@ -28,8 +28,6 @@ pub(crate) type DimVec = TinyVec<[usize; INLINE_RANK]>;
 pub(crate) type StrideVec = TinyVec<[isize; INLINE_RANK]>;
 /// Labels (`i64`) with inline storage for [`INLINE_RANK`] axes.
 pub(crate) type LabelVec = TinyVec<[i64; INLINE_RANK]>;
-/// One role's axes with inline storage for [`COMBINED_RANK`].
-pub(crate) type RoleVec = TinyVec<[RoleAxis; COMBINED_RANK]>;
 /// An index list (`usize`) with inline storage for [`INLINE_RANK`] axes.
 pub(crate) type IndexVec = TinyVec<[usize; INLINE_RANK]>;
 /// An index list that can reach `2 * INLINE_RANK` (an output's rank).
@@ -302,33 +300,48 @@ impl RoleAxis {
 ///
 /// Axes are in first-appearance order; ordering, folding and orientation are
 /// decisions of plan construction, not of the problem.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Roles {
-    pub(crate) m: RoleVec,
-    pub(crate) n: RoleVec,
-    pub(crate) k: RoleVec,
-    pub(crate) h: RoleVec,
+    /// Every role axis in role order K | M | N | H, each role in
+    /// first-appearance order. One pool, not one inline list per role: the
+    /// roles share at most [`COMBINED_RANK`] distinct labels.
+    pub(super) axes: TinyVec<[RoleAxis; COMBINED_RANK]>,
+    /// Ends of the K, M and N runs in `axes`; H runs to `axes.len()`.
+    /// INVARIANT: `ends[0] <= ends[1] <= ends[2] <= axes.len()`; written only
+    /// by `api::validate::lower`.
+    pub(super) ends: [usize; 3],
 }
 
 impl Roles {
     /// Axes of A, C and D.
     pub fn m(&self) -> &[RoleAxis] {
-        self.m.as_slice()
+        &self.axes[self.ends[0]..self.ends[1]]
     }
 
     /// Axes of B, C and D.
     pub fn n(&self) -> &[RoleAxis] {
-        self.n.as_slice()
+        &self.axes[self.ends[1]..self.ends[2]]
     }
 
     /// Contracted (and isolated, reduced) axes.
     pub fn k(&self) -> &[RoleAxis] {
-        self.k.as_slice()
+        &self.axes[..self.ends[0]]
     }
 
     /// Batch axes.
     pub fn h(&self) -> &[RoleAxis] {
-        self.h.as_slice()
+        &self.axes[self.ends[2]..]
+    }
+}
+
+impl core::fmt::Debug for Roles {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Roles")
+            .field("m", &self.m())
+            .field("n", &self.n())
+            .field("k", &self.k())
+            .field("h", &self.h())
+            .finish()
     }
 }
 
@@ -483,7 +496,7 @@ impl Problem {
             lowered,
         } = self;
         let Lowered {
-            roles: Roles { m, n, k, h },
+            roles: Roles { axes, ends: _ },
             spans: _,
             c_matches_d: _,
             k_empty: _,
@@ -493,7 +506,7 @@ impl Problem {
             CSpec::Separate(c) => layout(c),
             CSpec::Absent | CSpec::Output(_) => 0,
         };
-        layout(a) + layout(b) + c + layout(d) + tiny(m) + tiny(n) + tiny(k) + tiny(h)
+        layout(a) + layout(b) + c + layout(d) + tiny(axes)
     }
 
     /// Lower a borrowed [`ProblemRef`].
@@ -718,19 +731,24 @@ impl Problem {
 
     /// Every reduced axis is a batch axis (a Hadamard product, or a scalar).
     pub fn all_batch(&self) -> bool {
-        let r = &self.lowered.roles;
-        r.m.is_empty() && r.n.is_empty() && r.k.is_empty()
+        self.lowered.roles.ends[2] == 0
     }
 
     /// Multiply-accumulates of one execution: the product of every reduced
     /// extent (an empty role set contributes one).
     pub fn macs(&self) -> u128 {
+        // Not the pool order (K first): with a zero M or N extent, a pool-order
+        // product could overflow on K before reaching the zero.
         let r = &self.lowered.roles;
-        r.m.iter()
-            .chain(r.n.as_slice())
-            .chain(r.k.as_slice())
-            .chain(r.h.as_slice())
+        r.m()
+            .iter()
+            .chain(r.n())
+            .chain(r.k())
+            .chain(r.h())
             .map(|x| x.extent as u128)
             .product()
     }
 }
+
+#[cfg(test)]
+mod tests;

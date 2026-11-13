@@ -190,6 +190,22 @@ struct Label {
     in_d: bool,
 }
 
+/// A label's position in the role order K | M | N | H of [`Roles`], or `None`
+/// for an output-only label.
+fn role(l: &Label) -> Option<usize> {
+    match (l.in_a, l.in_b, l.in_d) {
+        // Contracted, or isolated in A or in B (a reduction).
+        (true, _, false) | (false, true, false) => Some(0),
+        (true, false, true) => Some(1),
+        (false, true, true) => Some(2),
+        (true, true, true) => Some(3),
+        (false, false, true) => None,
+        // A label in C alone is rejected as an output mismatch before roles
+        // are formed, and every label is created by merging some operand.
+        (false, false, false) => unreachable!("label present in no operand"),
+    }
+}
+
 fn merge(
     table: &mut TinyVec<[Label; COMBINED_RANK]>,
     modes: &[Mode],
@@ -269,29 +285,31 @@ pub(crate) fn lower(
         return Err(ShapeError::OutputLabelMismatch.into());
     }
 
-    let mut roles = Roles::default();
-    for l in &table {
-        let axis = RoleAxis {
-            label: l.id,
-            extent: l.extent,
-            strides: l.strides,
-            in_a: l.in_a,
-            in_b: l.in_b,
-        };
-        match (l.in_a, l.in_b, l.in_d) {
-            (true, true, true) => roles.h.push(axis),
-            (true, false, true) => roles.m.push(axis),
-            (false, true, true) => roles.n.push(axis),
-            // Contracted, or isolated in A or in B (a reduction).
-            (true, _, false) | (false, true, false) => roles.k.push(axis),
-            (false, false, true) => {
-                return Err(Unsupported::OutputOnlyLabel { label: l.id }.into());
-            }
-            // A label in C alone was rejected above as an output mismatch, and
-            // every label is created by merging some operand.
-            (false, false, false) => unreachable!("label present in no operand"),
+    if let Some(l) = table.iter().find(|l| role(l).is_none()) {
+        return Err(Unsupported::OutputOnlyLabel { label: l.id }.into());
+    }
+    // One stable pass per role, not a sort: a stable slice sort may allocate.
+    // Every label is now in A or B, so two rank-INLINE_RANK inputs stay inline.
+    let mut axes = TinyVec::with_capacity(table.len());
+    let mut ends = [0; 3];
+    for r in 0..4 {
+        axes.extend(
+            table
+                .iter()
+                .filter(|l| role(l) == Some(r))
+                .map(|l| RoleAxis {
+                    label: l.id,
+                    extent: l.extent,
+                    strides: l.strides,
+                    in_a: l.in_a,
+                    in_b: l.in_b,
+                }),
+        );
+        if let Some(end) = ends.get_mut(r) {
+            *end = axes.len();
         }
     }
+    let roles = Roles { axes, ends };
 
     let spans = [
         span_of(dtype, a.layout())?,
@@ -323,12 +341,12 @@ pub(crate) fn lower(
         _ => true,
     };
 
-    let k_empty = roles.k.iter().any(|x| x.extent == 0);
+    let k_empty = roles.k().iter().any(|x| x.extent == 0);
     let out_empty = roles
-        .m
+        .m()
         .iter()
-        .chain(roles.n.as_slice())
-        .chain(roles.h.as_slice())
+        .chain(roles.n())
+        .chain(roles.h())
         .any(|x| x.extent == 0);
     Ok(Lowered {
         roles,

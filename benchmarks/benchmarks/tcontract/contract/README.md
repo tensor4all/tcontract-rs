@@ -2,9 +2,15 @@
 
 `tcontract` at an enforced thread count on a predeclared corpus, under
 the planner's own choice (`plan`) and with the packed driver forced
-(`packed`; `--partition dynamic:JM,JN` adds a `packed_dyn..` row). Planning
-(`Plan::new`) and execution (`execute_into`, alpha = 1, beta = 0) are timed
-separately.
+(`packed`; `--partition dynamic:JM,JN` adds a `packed_dyn..` row). Each engine
+has four rows, timed separately: `_plan` (`Plan::new` from a lowered problem),
+`_build` (lowering included: `Problem::from_dot_general`, or `from_labels` in the
+separate-C modes, then `Plan::from_problem`), `_exec` (`execute_into`, alpha = 1,
+beta = 0) and, in the overwrite mode, `_fresh` (`execute_uninit_slices` into
+reused uninitialized storage of D's span; a `CHECK` line compares it with
+`_exec`). `BENCH_WARMUP_MS` adds untimed calls for that much wall time before
+the `BENCH_WARMUP` ones, and `# spread` lines in the log give each row's
+min/p25/p75/max.
 
 > **Row names changed in the contract consolidation.** The recorded results below
 > were taken with the two old strategies, `pg` (permute plus batched GEMM, which
