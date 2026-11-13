@@ -3,13 +3,35 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+fn has_capi_library(dir: &std::path::Path) -> bool {
+    dir.join("libtcontract_capi.so").exists() || dir.join("libtcontract_capi.dylib").exists()
+}
+
 fn target_dir() -> PathBuf {
-    // .../target/<profile>/deps/c_abi-<hash>
+    // Cargo may put the harness under .../target/<profile>/deps/ or, with the
+    // build-dir layout, under .../target/<profile>/build/<crate>/<hash>/out/.
+    // In that layout the cdylib and the harness get different hash directories,
+    // so a walk up from the harness is not enough: scan the package's build
+    // directories for the one that holds the library.
     let exe = std::env::current_exe().expect("exe");
-    exe.parent()
-        .and_then(|p| p.parent())
-        .expect("target dir")
-        .to_path_buf()
+    let mut dir = exe.parent().expect("exe parent").to_path_buf();
+    loop {
+        if has_capi_library(&dir) {
+            return dir;
+        }
+        let pkg_build = dir.join("build").join("tcontract-capi");
+        if let Ok(entries) = std::fs::read_dir(&pkg_build) {
+            for entry in entries.flatten() {
+                let out = entry.path().join("out");
+                if has_capi_library(&out) {
+                    return out;
+                }
+            }
+        }
+        if !dir.pop() {
+            panic!("libtcontract_capi not found above {}", exe.display());
+        }
+    }
 }
 
 #[test]

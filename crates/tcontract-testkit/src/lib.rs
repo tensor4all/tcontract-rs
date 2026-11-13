@@ -2,7 +2,7 @@
 //!
 //! | Module | What it is |
 //! |---|---|
-//! | [`oracle`] | an independent label oracle: brute force over label assignments, sharing no code with the planner; `rank_k_reference` expresses `op(A) op(A)^{H|T}` through it |
+//! | [`oracle`] | an independent label oracle: brute force over label assignments, sharing no code with the planner; `rank_k_reference` expresses `op(A) op(A)^{H\|T}` through it |
 //! | [`fixtures`] | seeded data and layout helpers |
 //! | [`NaiveBackend`] | a second implementation of the contraction interface: a plain loop nest over the validated problem's roles |
 //! | [`custom_kernels`] | a downstream crate's own packed micro-kernels, for the selection and ownership contracts |
