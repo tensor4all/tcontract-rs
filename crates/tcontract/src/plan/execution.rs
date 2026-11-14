@@ -302,7 +302,7 @@ impl<T: Scalar> Plan<T> {
             (Strategy::Packed(pk), _) => pk.as_ref(),
             (Strategy::Faer(_), _) => return Ok(ExecutionRoute::Faer),
             (Strategy::InnerProduct(_), _) => return Ok(ExecutionRoute::InnerProduct),
-            (Strategy::Elementwise(_), _) => return Ok(ExecutionRoute::Elementwise),
+            (Strategy::Elementwise, _) => return Ok(ExecutionRoute::Elementwise),
             (Strategy::RankK(_), _) => return Ok(ExecutionRoute::RankKReference),
         };
         let budget = self.batch_budget(exec);

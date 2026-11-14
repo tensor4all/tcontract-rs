@@ -274,11 +274,6 @@ impl ElementPlan {
         }))
     }
 
-    /// The pass of an all-batch problem: every axis is a batch axis.
-    pub(crate) fn product(p: &Problem) -> Self {
-        Self::from_roles(p.roles().h().iter(), true)
-    }
-
     /// The pass of an elementwise `D = alpha * A + beta * D` over equal extents
     /// with `A`'s and `D`'s strides.
     pub(crate) fn scaled(dims: &[usize], a: &[isize], d: &[isize]) -> Self {
@@ -289,12 +284,17 @@ impl ElementPlan {
         )
     }
 
-    /// The pass over the output's elements (`M`, `N` and batch axes), without
-    /// inputs. Compiles the plain `D = beta * op_C(C)` replay once, here, so an
-    /// output-only call does not re-plan its traversal.
+    /// The pass over the output's elements (`M`, `N` and batch axes). Compiles
+    /// the plain `D = beta * op_C(C)` replay once, here, so an output-only call
+    /// does not re-plan its traversal.
+    ///
+    /// An all-batch problem has no `M`, `N` or `K` axis, so these axes are the
+    /// product's too: A's and B's strides are kept then, and this one plan runs
+    /// the product (`Inputs::Product`) and the output-only update
+    /// (`Inputs::None`, which reads no input stride) alike (#157).
     pub(crate) fn output(p: &Problem) -> Self {
         let r = p.roles();
-        let plan = Self::from_roles(r.m().iter().chain(r.n()).chain(r.h()), false);
+        let plan = Self::from_roles(r.m().iter().chain(r.n()).chain(r.h()), p.all_batch());
         let st = plan.strides();
         let beta_update = UpdatePlan::compile(&plan.dims, st[3], st[2]).ok();
         Self {
