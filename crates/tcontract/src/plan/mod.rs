@@ -6,7 +6,7 @@
 //! ```text
 //! Plan<T>
 //!   problem   original layouts, normalized roles, ops, C mode, checked spans
-//!   strategy  Packed(PackedPlan + resolved family) | Faer(FaerPlan) | Elementwise(ElementPlan)
+//!   strategy  Packed(PackedPlan + resolved family) | Faer(FaerPlan) | Elementwise
 //!             | InnerProduct(InnerProductPlan) | RankK(RankKPlan)
 //!   report    immutable PlanReport
 //! ```
@@ -100,15 +100,13 @@ struct Packed<T: Scalar> {
     rg: ResolvedGemm<<T as Scalar>::Re>,
 }
 
-#[allow(clippy::large_enum_variant)]
-// INVARIANT: `ElementPlan`'s axis metadata is
-// inline (tinyvec) so an all-batch plan allocates nothing; boxing it would add
-// one allocation to the very path #121 removes.
 #[derive(Debug)]
 enum Strategy<T: Scalar> {
     Packed(Box<Packed<T>>),
     Faer(FaerPlan),
-    Elementwise(ElementPlan),
+    /// The all-batch pass: its traversal is [`Plan::output`], shared with the
+    /// output-only update rather than stored twice (#157).
+    Elementwise,
     InnerProduct(InnerProductPlan),
     /// The rank-k update (#175): its own kind, not a general product.
     RankK(Box<RankKPlan>),
@@ -148,7 +146,9 @@ enum Strategy<T: Scalar> {
 pub struct Plan<T: Scalar> {
     problem: Problem,
     strategy: Strategy<T>,
-    /// The pass over the output's elements: `alpha == 0` and empty `K`.
+    /// The pass over the output's elements: `alpha == 0` and empty `K`. An
+    /// all-batch problem has no other axis, so this plan also carries the
+    /// product's input strides and runs the [`Strategy::Elementwise`] pass.
     output: ElementPlan,
     report: PlanReport,
     diagnostics: Diagnostics,
@@ -490,7 +490,7 @@ impl<T: Scalar> Plan<T> {
             (Reason::Forced, _) => {
                 Strategy::Packed(Box::new(Self::plan_packed(problem, config, selection)?))
             }
-            (Reason::AllBatch, _) => Strategy::Elementwise(ElementPlan::product(problem)),
+            (Reason::AllBatch, _) => Strategy::Elementwise,
             (Reason::Fused, Some(f)) => Strategy::Faer(f),
             _ => match inner {
                 Some(ip) => Strategy::InnerProduct(ip),
@@ -500,7 +500,7 @@ impl<T: Scalar> Plan<T> {
         let (algorithm, packed_report) = match &strategy {
             Strategy::Packed(p) => (Algorithm::Packed, Some(packed_report(p))),
             Strategy::Faer(_) => (Algorithm::Faer, None),
-            Strategy::Elementwise(_) => (Algorithm::Elementwise, None),
+            Strategy::Elementwise => (Algorithm::Elementwise, None),
             Strategy::InnerProduct(_) => (Algorithm::InnerProduct, None),
             Strategy::RankK(_) => unreachable!("rank-k plans are built by new_rank_k"),
         };
@@ -537,7 +537,7 @@ impl<T: Scalar> Plan<T> {
         let strategy = match strategy {
             Strategy::Packed(p) => core::mem::size_of::<Packed<T>>() + p.plan.heap_bytes(),
             Strategy::Faer(_) => 0,
-            Strategy::Elementwise(e) => e.heap_bytes(),
+            Strategy::Elementwise => 0,
             Strategy::InnerProduct(_) => 0,
             Strategy::RankK(r) => {
                 core::mem::size_of::<RankKPlan>() + r.problem.general().heap_bytes()
@@ -1433,9 +1433,11 @@ impl<T: Scalar> Plan<T> {
             Strategy::Faer(_) => unreachable!("served above"),
             Strategy::InnerProduct(_) => unreachable!("served above"),
             Strategy::RankK(_) => unreachable!("refused by general_only"),
-            Strategy::Elementwise(e) => {
-                // SAFETY: the caller's contract.
-                unsafe { e.run(exec, expr, Inputs::Product(a, b), c, d) }?;
+            Strategy::Elementwise => {
+                // SAFETY: the caller's contract. `output` carries A's and B's
+                // strides for an all-batch problem, the only one that reaches
+                // here.
+                unsafe { self.output.run(exec, expr, Inputs::Product(a, b), c, d) }?;
             }
         }
         Ok(())

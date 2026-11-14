@@ -93,7 +93,7 @@ fn borrowed_construction_and_compile_are_allocation_free() {
         &'static [i64],
         Algorithm,
     );
-    let cases: [Case; 3] = [
+    let cases: [Case; 4] = [
         // D[i,j] = sum_k A[i,k] B[k,j], compact rank 2.
         (
             &[8, 8],
@@ -123,6 +123,17 @@ fn borrowed_construction_and_compile_are_allocation_free() {
             &[2, 1, 3],
             &[0, 1, 3],
             Algorithm::Faer,
+        ),
+        // D[i,j,h] = A[i,j,h] B[i,j,h], all batch: the elementwise plan whose
+        // traversal is shared with the output-only pass (#157).
+        (
+            &[4, 4, 4],
+            &[4, 4, 4],
+            &[4, 4, 4],
+            &[0, 1, 2],
+            &[0, 1, 2],
+            &[0, 1, 2],
+            Algorithm::Elementwise,
         ),
     ];
     for (da, db, dd, la, lb, ld, algorithm) in cases {
