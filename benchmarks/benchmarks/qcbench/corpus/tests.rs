@@ -109,70 +109,87 @@ fn selected_einsums_match_the_transcription_table() {
 /// sequence-4 `response.exchange.b_trial_pair`; the backfill's own corpus twin
 /// (ri_rhf_gradient's unselected `gradient.pair_factor`) is not in the
 /// selection. Each letter is canonicalized to `<domain><first-appearance>`
-/// (counted per domain, so `o` and `oroot` never collide), so only the domain
-/// roles and the contraction's structure enter the key.
+/// (counted per domain, so `o` and `oroot` never collide) — and because that
+/// labeling depends on the operand scan order, the key is the lexicographic
+/// minimum over both operand orders, so a duplicate written with A and B
+/// swapped gets the same key as its twin (adversarial-review finding: a single
+/// scan order let swapped forms through).
 #[test]
 fn selected_contractions_are_pairwise_unique() {
-    let dom_tag = |dom: Dom| match dom {
-        Dom::O => "o",
-        Dom::V => "v",
-        Dom::Naux => "naux",
-        Dom::Ao => "ao",
-        Dom::ORoot => "oroot",
-        Dom::VRoot => "vroot",
-        Dom::VSym => "vsym",
-        Dom::AoRoot => "ao_root",
-    };
+    /// One operand order's canonical form: letters relabeled
+    /// `<domain><first-appearance>` scanning `first`, then `second`, then the
+    /// output, with the two operand labels sorted so the pair is unordered
+    /// within this orientation. Valid for this orientation only; the caller
+    /// reduces over both.
+    fn orientation_key(
+        case: &Case,
+        first: &str,
+        second: &str,
+    ) -> ([String; 2], String, Vec<&'static str>) {
+        let dom_tag = |dom: Dom| match dom {
+            Dom::O => "o",
+            Dom::V => "v",
+            Dom::Naux => "naux",
+            Dom::Ao => "ao",
+            Dom::ORoot => "oroot",
+            Dom::VRoot => "vroot",
+            Dom::VSym => "vsym",
+            Dom::AoRoot => "ao_root",
+        };
+        let mut labels: BTreeMap<char, String> = BTreeMap::new();
+        let mut next_per_domain: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut canon = |indices: &str| {
+            indices
+                .chars()
+                .map(|ch| {
+                    if let Some(label) = labels.get(&ch) {
+                        return label.clone();
+                    }
+                    let &(_, dom) = case
+                        .doms
+                        .iter()
+                        .find(|&&(c, _)| c == ch)
+                        .unwrap_or_else(|| panic!("{}: letter {ch} has no domain", case.name));
+                    let tag = dom_tag(dom);
+                    let next = next_per_domain.get(tag).copied().unwrap_or(0);
+                    let label = format!("{tag}{next}");
+                    next_per_domain.insert(tag, next + 1);
+                    labels.insert(ch, label.clone());
+                    label
+                })
+                .collect::<String>()
+        };
+        let first_labels = canon(first);
+        let second_labels = canon(second);
+        let output_labels = canon(case.c);
+        let mut operands = [first_labels, second_labels];
+        operands.sort();
+        let mut summed: Vec<&str> = case
+            .a
+            .chars()
+            .chain(case.b.chars())
+            .filter(|ch| !case.c.contains(*ch))
+            .map(|ch| {
+                dom_tag(
+                    case.doms
+                        .iter()
+                        .find(|&&(c, _)| c == ch)
+                        .unwrap_or_else(|| panic!("{}: letter {ch} has no domain", case.name))
+                        .1,
+                )
+            })
+            .collect();
+        summed.sort_unstable();
+        summed.dedup();
+        (operands, output_labels, summed)
+    }
     for group in ["ov_03", "ov_10", "ov_20"] {
         let mut seen = BTreeSet::new();
         for case in corpus().iter().filter(|case| case.group == group) {
-            let mut labels: BTreeMap<char, String> = BTreeMap::new();
-            let mut next_per_domain: BTreeMap<&str, usize> = BTreeMap::new();
-            let mut canon = |indices: &str| {
-                indices
-                    .chars()
-                    .map(|ch| {
-                        if let Some(label) = labels.get(&ch) {
-                            return label.clone();
-                        }
-                        let &(_, dom) = case
-                            .doms
-                            .iter()
-                            .find(|&&(c, _)| c == ch)
-                            .unwrap_or_else(|| panic!("{}: letter {ch} has no domain", case.name));
-                        let tag = dom_tag(dom);
-                        let next = next_per_domain.get(tag).copied().unwrap_or(0);
-                        let label = format!("{tag}{next}");
-                        next_per_domain.insert(tag, next + 1);
-                        labels.insert(ch, label.clone());
-                        label
-                    })
-                    .collect::<String>()
-            };
-            let a = canon(case.a);
-            let b = canon(case.b);
-            let c = canon(case.c);
-            let mut operands = [a, b];
-            operands.sort();
-            let mut summed: Vec<&str> = case
-                .a
-                .chars()
-                .chain(case.b.chars())
-                .filter(|ch| !case.c.contains(*ch))
-                .map(|ch| {
-                    dom_tag(
-                        case.doms
-                            .iter()
-                            .find(|&&(c, _)| c == ch)
-                            .unwrap_or_else(|| panic!("{}: letter {ch} has no domain", case.name))
-                            .1,
-                    )
-                })
-                .collect();
-            summed.sort_unstable();
-            summed.dedup();
+            let key =
+                orientation_key(case, case.a, case.b).min(orientation_key(case, case.b, case.a));
             assert!(
-                seen.insert((operands, c, summed)),
+                seen.insert(key),
                 "duplicate contraction in {group}: {}",
                 case.name
             );

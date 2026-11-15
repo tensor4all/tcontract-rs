@@ -30,8 +30,12 @@ workload.
   `selected_contractions_are_pairwise_unique`, which canonicalizes every
   case per ratio (letters relabeled to `<domain><first-appearance>`,
   counted per domain so `o`/`oroot` cannot collide; operands sorted;
-  summed-domain set) and asserts 24 distinct keys. With the swap the pass
-  is exact: the only corpus-level twin of `b_trial_pair` is
+  summed-domain set) and asserts 24 distinct keys. Because that labeling
+  depends on the operand scan order, the key is the lexicographic minimum
+  over both operand orders, so a duplicate written with A and B swapped
+  gets the same key as its twin (adversarial-review finding against the
+  single-order version: swapped forms passed). With the swap the pass is
+  exact: the only corpus-level twin of `b_trial_pair` is
   ri_rhf_gradient's sequence-5 `gradient.pair_factor` (rung 3, unselected),
   so a future widening of that corpus's selection re-triggers the rule.
 - **Vocabulary notes only:** `K.aux`/`K.matrix` keep the Neese–Olbrich `K`
