@@ -4,7 +4,7 @@
 
 ## Corpus
 
-Twenty-four binary contractions selected from nine corpus transcriptions of the QC papers (source material in the benchmark job's `out/real_corpus/`, one `CORPUS.md` per corpus). Selection is uniform: per corpus, every binary of the two most expensive formal-scaling rungs (the first two distinct `macs` monomials of the corpus's own sequence order).
+Twenty-four binary contractions selected from nine corpus transcriptions of the QC papers (source material in the benchmark job's `out/real_corpus/`, one `CORPUS.md` per corpus). Selection is uniform: per corpus, every binary of the two most expensive formal-scaling rungs (the first two distinct `macs` monomials of the corpus's own sequence order), under the plan's uniqueness rule: no two selected cases may be the same contraction up to index relabeling and A/B operand swap — df_tdhf's sequence-3 metric is ri_rhf_gradient's `gradient.X` under that comparison and is backfilled by sequence-4 `b_trial_pair` (asserted by `corpus/tests.rs`). Case ids follow the corpus vocabulary register; `K.aux`/`K.matrix` keep the Neese–Olbrich paper's `K` ids (frozen once transcribed; `K` ≡ `exchange`, of which ri_rhf/df_tdhf's `exchange.*` ids are the conforming tokens).
 
 | Corpus | Paper | Cases |
 |---|---|---|
@@ -15,7 +15,7 @@ Twenty-four binary contractions selected from nine corpus transcriptions of the 
 | CCSD analytic gradient | Salter, Trucks & Bartlett, *J. Chem. Phys.* **90**, 1752 (1989), DOI [10.1063/1.456069](https://doi.org/10.1063/1.456069), Tables III/IV + Eqs. (21), (25), (26), (33), (34) | `gamma.abcd` (packed `ao_root`/`vroot`), `gamma.aibc` |
 | RI-HF energy | Barca et al., [arXiv:2407.19614](https://arxiv.org/abs/2407.19614), Eqs. (4)-(18) | `df.factor`, `exchange.matrix`, `exchange.occupied_transform` |
 | RI-HF gradients | Barca et al., [arXiv:2407.19614](https://arxiv.org/abs/2407.19614), Eqs. (20), (26)-(27), (31)-(35) | `gradient.Y_transform2`, `gradient.X`, `gradient.Z_pair` |
-| TDHF/CIS response | Mester & Kállay, *J. Chem. Theory Comput.* **15**, 1690 (2019), DOI [10.1021/acs.jctc.8b01199](https://doi.org/10.1021/acs.jctc.8b01199), Table 1 + Eq. (12) | `response.exchange.occupied_half`, `response.exchange.transform`, `response.exchange.metric` |
+| TDHF/CIS response | Mester & Kállay, *J. Chem. Theory Comput.* **15**, 1690 (2019), DOI [10.1021/acs.jctc.8b01199](https://doi.org/10.1021/acs.jctc.8b01199), Table 1 + Eq. (12) | `response.exchange.occupied_half`, `response.exchange.transform`, `response.exchange.b_trial_pair` |
 | MO RI-J/K response | Neese & Olbrich, *Chem. Phys. Lett.* **362**, 170 (2002), DOI [10.1016/S0009-2614(02)01053-9](https://doi.org/10.1016/S0009-2614(02)01053-9), Eqs. (23)-(24), (30)-(31) | `K.aux`, `K.matrix` |
 
 Index domains are occupied `o`, virtual `v`, density-fitting `naux`, atomic orbital `ao = o + v`, and the packed pair domains the papers themselves use (`oroot`, `vroot`, `vsym`, `ao_root`). Packed cases stay packed exactly as their corpus declares them, so their MACs and footprints are the packed products — `gamma.abcd`, the rank-1 head of the gradient corpus, is the largest single MAC count in the suite.

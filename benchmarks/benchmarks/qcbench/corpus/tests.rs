@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 
@@ -26,7 +26,7 @@ const SELECTED: &[&str] = &[
     "gradient.Z_pair",
     "response.exchange.occupied_half",
     "response.exchange.transform",
-    "response.exchange.metric",
+    "response.exchange.b_trial_pair",
     "K.aux",
     "K.matrix",
 ];
@@ -86,7 +86,7 @@ fn selected_einsums_match_the_transcription_table() {
         ("gradient.Z_pair", "ijP", "ijQ", "PQ"),
         ("response.exchange.occupied_half", "ui", "uvP", "ivP"),
         ("response.exchange.transform", "rsQ", "sj", "rjQ"),
-        ("response.exchange.metric", "PQ", "ijQ", "ijP"),
+        ("response.exchange.b_trial_pair", "ivP", "vj", "ijP"),
         ("K.aux", "Pab", "jb", "Pja"),
         ("K.matrix", "Pja", "Pij", "ia"),
     ];
@@ -98,6 +98,85 @@ fn selected_einsums_match_the_transcription_table() {
             .find(|case| case.name == full)
             .unwrap_or_else(|| panic!("missing {full}"));
         assert_eq!((case.a, case.b, case.c), (a, b, c), "{full}");
+    }
+}
+
+/// The plan's uniqueness rule: no two selected cases may be the same
+/// contraction — identical up to index relabeling and A/B operand swap, with
+/// matching index-domain roles. Precedent: df_tdhf's sequence-3
+/// `response.exchange.metric` (`PQ,ijQ->ijP`, P/Q: naux, i/j: o) was
+/// ri_rhf_gradient's `gradient.X` under this comparison and was backfilled to
+/// sequence-4 `response.exchange.b_trial_pair`; the backfill's own corpus twin
+/// (ri_rhf_gradient's unselected `gradient.pair_factor`) is not in the
+/// selection. Each letter is canonicalized to `<domain><first-appearance>`
+/// (counted per domain, so `o` and `oroot` never collide), so only the domain
+/// roles and the contraction's structure enter the key.
+#[test]
+fn selected_contractions_are_pairwise_unique() {
+    let dom_tag = |dom: Dom| match dom {
+        Dom::O => "o",
+        Dom::V => "v",
+        Dom::Naux => "naux",
+        Dom::Ao => "ao",
+        Dom::ORoot => "oroot",
+        Dom::VRoot => "vroot",
+        Dom::VSym => "vsym",
+        Dom::AoRoot => "ao_root",
+    };
+    for group in ["ov_03", "ov_10", "ov_20"] {
+        let mut seen = BTreeSet::new();
+        for case in corpus().iter().filter(|case| case.group == group) {
+            let mut labels: BTreeMap<char, String> = BTreeMap::new();
+            let mut next_per_domain: BTreeMap<&str, usize> = BTreeMap::new();
+            let mut canon = |indices: &str| {
+                indices
+                    .chars()
+                    .map(|ch| {
+                        if let Some(label) = labels.get(&ch) {
+                            return label.clone();
+                        }
+                        let &(_, dom) = case
+                            .doms
+                            .iter()
+                            .find(|&&(c, _)| c == ch)
+                            .unwrap_or_else(|| panic!("{}: letter {ch} has no domain", case.name));
+                        let tag = dom_tag(dom);
+                        let next = next_per_domain.get(tag).copied().unwrap_or(0);
+                        let label = format!("{tag}{next}");
+                        next_per_domain.insert(tag, next + 1);
+                        labels.insert(ch, label.clone());
+                        label
+                    })
+                    .collect::<String>()
+            };
+            let a = canon(case.a);
+            let b = canon(case.b);
+            let c = canon(case.c);
+            let mut operands = [a, b];
+            operands.sort();
+            let mut summed: Vec<&str> = case
+                .a
+                .chars()
+                .chain(case.b.chars())
+                .filter(|ch| !case.c.contains(*ch))
+                .map(|ch| {
+                    dom_tag(
+                        case.doms
+                            .iter()
+                            .find(|&&(c, _)| c == ch)
+                            .unwrap_or_else(|| panic!("{}: letter {ch} has no domain", case.name))
+                            .1,
+                    )
+                })
+                .collect();
+            summed.sort_unstable();
+            summed.dedup();
+            assert!(
+                seen.insert((operands, c, summed)),
+                "duplicate contraction in {group}: {}",
+                case.name
+            );
+        }
     }
 }
 
@@ -277,7 +356,7 @@ const DECLARED_MACS: &[(&str, &str)] = &[
     ("gradient.Z_pair", "o^2*naux^2"),
     ("response.exchange.occupied_half", "ao^2*o*naux"),
     ("response.exchange.transform", "ao^2*o*naux"),
-    ("response.exchange.metric", "o^2*naux^2"),
+    ("response.exchange.b_trial_pair", "ao*o^2*naux"),
     ("K.aux", "o*v^2*naux"),
     ("K.matrix", "o^2*v*naux"),
 ];

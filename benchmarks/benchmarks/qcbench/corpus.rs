@@ -7,7 +7,11 @@
 //! forms with more than two operands are metadata there, never separate cases.
 //! Selection is the top-two-rung rule: per corpus, every binary of the two most
 //! expensive formal-scaling rungs (the first two distinct `macs` monomials of
-//! the corpus's own sequence order).
+//! the corpus's own sequence order), taken under the plan's uniqueness rule:
+//! no two selected cases may be the same contraction up to index relabeling
+//! and A/B operand swap (df_tdhf's sequence-3 metric is ri_rhf_gradient's
+//! `gradient.X` under that comparison, and is backfilled by sequence-4
+//! `b_trial_pair`).
 //!
 //! Sources: Scuseria-Janssen-Schaefer 1988 (RCCSD, JCP 89, 7382),
 //! Scuseria 1991 (RCCSD(T), JCP 94, 442), Pieniazek 2008 thesis (EOM-IP,
@@ -397,7 +401,12 @@ macro_rules! qc_cases {
                 extents: &EXTENTS[$extents],
                 doms: doms!['i':O, 'j':O, 'P':Naux, 'Q':Naux],
             },
-            // df_tdhf_corpus: ao^2 o naux, o^2 naux^2.
+            // df_tdhf_corpus: rungs 1-2 are ao^2 o naux, o^2 naux^2, taken
+            // after the benchmark plan's §4 uniqueness backfill: sequence-3
+            // response.exchange.metric (o^2 naux^2) is ri_rhf_gradient's
+            // gradient.X under canonical comparison (same contraction up to
+            // relabeling/operand swap), so it is dropped and df_tdhf
+            // backfills to sequence-4 b_trial_pair (ao o^2 naux, rung 3).
             Case {
                 name: concat!($group, "/response.exchange.occupied_half"),
                 group: $group,
@@ -417,15 +426,18 @@ macro_rules! qc_cases {
                 doms: doms!['r':Ao, 's':Ao, 'Q':Naux, 'j':O],
             },
             Case {
-                name: concat!($group, "/response.exchange.metric"),
+                name: concat!($group, "/response.exchange.b_trial_pair"),
                 group: $group,
                 c: "ijP",
-                a: "PQ",
-                b: "ijQ",
+                a: "ivP",
+                b: "vj",
                 extents: &EXTENTS[$extents],
-                doms: doms!['P':Naux, 'Q':Naux, 'i':O, 'j':O],
+                doms: doms!['i':O, 'v':Ao, 'P':Naux, 'j':O],
             },
-            // ri_jk_response_corpus: o v^2 naux, o^2 v naux.
+            // ri_jk_response_corpus: o v^2 naux, o^2 v naux. K.aux/K.matrix
+            // are the papers' K (exchange kernel) under the frozen corpus ids;
+            // exchange.* in ri_rhf/df_tdhf are the same vocabulary token
+            // (the corpus format's cross-corpus register, cases_csv_format §2.1).
             Case {
                 name: concat!($group, "/K.aux"),
                 group: $group,
