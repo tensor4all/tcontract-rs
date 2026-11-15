@@ -34,10 +34,13 @@ workload.
   depends on the operand scan order, the key is the lexicographic minimum
   over both operand orders, so a duplicate written with A and B swapped
   gets the same key as its twin (adversarial-review finding against the
-  single-order version: swapped forms passed). With the swap the pass is
-  exact: the only corpus-level twin of `b_trial_pair` is
-  ri_rhf_gradient's sequence-5 `gradient.pair_factor` (rung 3, unselected),
-  so a future widening of that corpus's selection re-triggers the rule.
+  single-order version: swapped forms passed); a companion fixture test
+  pins that invariance on the precedent itself. `b_trial_pair`'s
+  unselected corpus twins are ri_rhf_gradient's sequence-5
+  `gradient.pair_factor` and df_tdhf's own sequence-6
+  `response.exchange.occupied_pair` (`vj,ivP->ijP` — the swapped-operand
+  form; both rung 3), so widening either corpus's selection to rung 3
+  re-triggers the rule.
 - **Vocabulary notes only:** `K.aux`/`K.matrix` keep the Neese–Olbrich `K`
   ids — frozen per the corpus format's cross-corpus register
   (`cases_csv_format.md` §2.1: `K` ≡ `exchange`, likewise `J` ≡ `coulomb`

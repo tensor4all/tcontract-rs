@@ -101,100 +101,155 @@ fn selected_einsums_match_the_transcription_table() {
     }
 }
 
+/// One operand order's canonical form: letters relabeled
+/// `<domain><first-appearance>` scanning `first`, then `second`, then the
+/// output, with the two operand labels sorted so the pair is unordered within
+/// this orientation. Valid for this orientation only; `contraction_key`
+/// reduces over both.
+fn orientation_key(
+    case: &Case,
+    first: &str,
+    second: &str,
+) -> ([String; 2], String, Vec<&'static str>) {
+    let dom_tag = |dom: Dom| match dom {
+        Dom::O => "o",
+        Dom::V => "v",
+        Dom::Naux => "naux",
+        Dom::Ao => "ao",
+        Dom::ORoot => "oroot",
+        Dom::VRoot => "vroot",
+        Dom::VSym => "vsym",
+        Dom::AoRoot => "ao_root",
+    };
+    let mut labels: BTreeMap<char, String> = BTreeMap::new();
+    let mut next_per_domain: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut canon = |indices: &str| {
+        indices
+            .chars()
+            .map(|ch| {
+                if let Some(label) = labels.get(&ch) {
+                    return label.clone();
+                }
+                let &(_, dom) = case
+                    .doms
+                    .iter()
+                    .find(|&&(c, _)| c == ch)
+                    .unwrap_or_else(|| panic!("{}: letter {ch} has no domain", case.name));
+                let tag = dom_tag(dom);
+                let next = next_per_domain.get(tag).copied().unwrap_or(0);
+                let label = format!("{tag}{next}");
+                next_per_domain.insert(tag, next + 1);
+                labels.insert(ch, label.clone());
+                label
+            })
+            .collect::<String>()
+    };
+    let first_labels = canon(first);
+    let second_labels = canon(second);
+    let output_labels = canon(case.c);
+    let mut operands = [first_labels, second_labels];
+    operands.sort();
+    let mut summed: Vec<&str> = case
+        .a
+        .chars()
+        .chain(case.b.chars())
+        .filter(|ch| !case.c.contains(*ch))
+        .map(|ch| {
+            dom_tag(
+                case.doms
+                    .iter()
+                    .find(|&&(c, _)| c == ch)
+                    .unwrap_or_else(|| panic!("{}: letter {ch} has no domain", case.name))
+                    .1,
+            )
+        })
+        .collect();
+    summed.sort_unstable();
+    summed.dedup();
+    (operands, output_labels, summed)
+}
+
+/// The operand-order-invariant canonical key: the lexicographic minimum of the
+/// two orientation keys. A contraction's two orientations produce the same
+/// pair of orientation keys (scanning (B, A, C) of one orientation is
+/// scanning (A, B, C) of the other), so equivalent contractions share a min —
+/// and a shared min implies a shared canonical orientation, i.e. a true
+/// equivalence, not a coarsening.
+fn contraction_key(case: &Case) -> ([String; 2], String, Vec<&'static str>) {
+    orientation_key(case, case.a, case.b).min(orientation_key(case, case.b, case.a))
+}
+
 /// The plan's uniqueness rule: no two selected cases may be the same
 /// contraction — identical up to index relabeling and A/B operand swap, with
 /// matching index-domain roles. Precedent: df_tdhf's sequence-3
 /// `response.exchange.metric` (`PQ,ijQ->ijP`, P/Q: naux, i/j: o) was
 /// ri_rhf_gradient's `gradient.X` under this comparison and was backfilled to
-/// sequence-4 `response.exchange.b_trial_pair`; the backfill's own corpus twin
-/// (ri_rhf_gradient's unselected `gradient.pair_factor`) is not in the
-/// selection. Each letter is canonicalized to `<domain><first-appearance>`
-/// (counted per domain, so `o` and `oroot` never collide) — and because that
-/// labeling depends on the operand scan order, the key is the lexicographic
-/// minimum over both operand orders, so a duplicate written with A and B
-/// swapped gets the same key as its twin (adversarial-review finding: a single
-/// scan order let swapped forms through).
+/// sequence-4 `response.exchange.b_trial_pair`; that case's unselected corpus
+/// twins are ri_rhf_gradient's `gradient.pair_factor` (sequence 5) and
+/// df_tdhf's own `response.exchange.occupied_pair` (sequence 6, `vj,ivP->ijP`
+/// — the same contraction with the operands swapped), so widening either
+/// corpus's selection to rung 3 re-triggers the rule (the later-`sequence`
+/// twin drops). Letters are canonicalized per domain, so `o`/`oroot` never
+/// collide; the min over operand orders keeps a swapped duplicate on the same
+/// key as its twin (adversarial-review finding: a single scan order let
+/// swapped forms through).
 #[test]
 fn selected_contractions_are_pairwise_unique() {
-    /// One operand order's canonical form: letters relabeled
-    /// `<domain><first-appearance>` scanning `first`, then `second`, then the
-    /// output, with the two operand labels sorted so the pair is unordered
-    /// within this orientation. Valid for this orientation only; the caller
-    /// reduces over both.
-    fn orientation_key(
-        case: &Case,
-        first: &str,
-        second: &str,
-    ) -> ([String; 2], String, Vec<&'static str>) {
-        let dom_tag = |dom: Dom| match dom {
-            Dom::O => "o",
-            Dom::V => "v",
-            Dom::Naux => "naux",
-            Dom::Ao => "ao",
-            Dom::ORoot => "oroot",
-            Dom::VRoot => "vroot",
-            Dom::VSym => "vsym",
-            Dom::AoRoot => "ao_root",
-        };
-        let mut labels: BTreeMap<char, String> = BTreeMap::new();
-        let mut next_per_domain: BTreeMap<&str, usize> = BTreeMap::new();
-        let mut canon = |indices: &str| {
-            indices
-                .chars()
-                .map(|ch| {
-                    if let Some(label) = labels.get(&ch) {
-                        return label.clone();
-                    }
-                    let &(_, dom) = case
-                        .doms
-                        .iter()
-                        .find(|&&(c, _)| c == ch)
-                        .unwrap_or_else(|| panic!("{}: letter {ch} has no domain", case.name));
-                    let tag = dom_tag(dom);
-                    let next = next_per_domain.get(tag).copied().unwrap_or(0);
-                    let label = format!("{tag}{next}");
-                    next_per_domain.insert(tag, next + 1);
-                    labels.insert(ch, label.clone());
-                    label
-                })
-                .collect::<String>()
-        };
-        let first_labels = canon(first);
-        let second_labels = canon(second);
-        let output_labels = canon(case.c);
-        let mut operands = [first_labels, second_labels];
-        operands.sort();
-        let mut summed: Vec<&str> = case
-            .a
-            .chars()
-            .chain(case.b.chars())
-            .filter(|ch| !case.c.contains(*ch))
-            .map(|ch| {
-                dom_tag(
-                    case.doms
-                        .iter()
-                        .find(|&&(c, _)| c == ch)
-                        .unwrap_or_else(|| panic!("{}: letter {ch} has no domain", case.name))
-                        .1,
-                )
-            })
-            .collect();
-        summed.sort_unstable();
-        summed.dedup();
-        (operands, output_labels, summed)
-    }
     for group in ["ov_03", "ov_10", "ov_20"] {
         let mut seen = BTreeSet::new();
         for case in corpus().iter().filter(|case| case.group == group) {
-            let key =
-                orientation_key(case, case.a, case.b).min(orientation_key(case, case.b, case.a));
             assert!(
-                seen.insert(key),
+                seen.insert(contraction_key(case)),
                 "duplicate contraction in {group}: {}",
                 case.name
             );
         }
     }
+}
+
+/// Pins the operand-order invariance `selected_contractions_are_pairwise_unique`
+/// relies on, using the precedent itself: the real `response.exchange.metric`
+/// (`PQ,ijQ->ijP`) and its A/B-swapped form. The two orientation keys of one
+/// case differ (a single-order key would equate nothing), yet the invariant
+/// key equates the swapped duplicate — so deleting the `min` in
+/// `contraction_key` fails here even though no selected pair differs only by
+/// operand order.
+#[test]
+fn operand_swapped_duplicates_share_one_key() {
+    let doms: &[(char, Dom)] = &[
+        ('P', Dom::Naux),
+        ('Q', Dom::Naux),
+        ('i', Dom::O),
+        ('j', Dom::O),
+    ];
+    let plain = Case {
+        name: "fixture/response.exchange.metric",
+        group: "fixture",
+        c: "ijP",
+        a: "PQ",
+        b: "ijQ",
+        extents: &EXTENTS[0],
+        doms,
+    };
+    let swapped = Case {
+        name: "fixture/response.exchange.metric.swapped",
+        group: "fixture",
+        c: "ijP",
+        a: "ijQ",
+        b: "PQ",
+        extents: &EXTENTS[0],
+        doms,
+    };
+    assert_ne!(
+        orientation_key(&plain, plain.a, plain.b),
+        orientation_key(&plain, plain.b, plain.a),
+        "the fixture is vacuous: one orientation's keys already coincide"
+    );
+    assert_eq!(
+        contraction_key(&plain),
+        contraction_key(&swapped),
+        "a duplicate written with its operands swapped must share the key"
+    );
 }
 
 #[test]

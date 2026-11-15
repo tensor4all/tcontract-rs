@@ -401,12 +401,13 @@ macro_rules! qc_cases {
                 extents: &EXTENTS[$extents],
                 doms: doms!['i':O, 'j':O, 'P':Naux, 'Q':Naux],
             },
-            // df_tdhf_corpus: rungs 1-2 are ao^2 o naux, o^2 naux^2, taken
-            // after the benchmark plan's §4 uniqueness backfill: sequence-3
-            // response.exchange.metric (o^2 naux^2) is ri_rhf_gradient's
-            // gradient.X under canonical comparison (same contraction up to
-            // relabeling/operand swap), so it is dropped and df_tdhf
-            // backfills to sequence-4 b_trial_pair (ao o^2 naux, rung 3).
+            // df_tdhf_corpus: the top-two rungs are ao^2 o naux and
+            // o^2 naux^2; the benchmark plan's §4 uniqueness backfill then
+            // applies: sequence-3 response.exchange.metric (o^2 naux^2) is
+            // ri_rhf_gradient's gradient.X under canonical comparison (same
+            // contraction up to relabeling/operand swap), so it drops and
+            // df_tdhf backfills to sequence-4 b_trial_pair (ao o^2 naux,
+            // rung 3).
             Case {
                 name: concat!($group, "/response.exchange.occupied_half"),
                 group: $group,
