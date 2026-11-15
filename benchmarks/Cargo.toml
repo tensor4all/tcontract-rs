@@ -79,6 +79,10 @@ name = "qcbench"
 path = "benchmarks/qcbench/main.rs"
 
 [[bin]]
+name = "zqcbench"
+path = "benchmarks/zqcbench/main.rs"
+
+[[bin]]
 name = "exec_entry"
 path = "benchmarks/tcontract/exec_entry/exec_entry.rs"
 
