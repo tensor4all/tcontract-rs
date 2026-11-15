@@ -148,6 +148,13 @@ export CARGO_BUILD_JOBS=4
 cargo build --release -p tcontract-bench --bin zqcbench --features tblis
 ```
 
+On the AVX-512 recording host, build that prefix with
+`TBLIS_BLIS_CONFIG_FAMILY=skx`. The build script's default `zen3` is
+AVX2-only and is not a capability-matched baseline on a host where plan
+uses AVX-512. Mainline BLIS has no `zen5` configuration, so `skx` is the
+AVX-512 stand-in, not a Zen5-tuned kernel set. The campaign records the
+actual `config` in `PROVENANCE`; do not mix `zen3` and `skx` pages.
+
 Correctness precedes timing. Pin every process, including 1T:
 
 ```sh
