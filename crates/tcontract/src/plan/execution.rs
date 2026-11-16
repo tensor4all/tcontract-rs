@@ -316,15 +316,18 @@ impl<T: Scalar> Plan<T> {
     ///
     /// # Examples
     /// ```
-    /// use tcontract::{OutputContract, Plan, PlanConfig};
+    /// use tcontract::{ExecutionRoute, OutputContract, Plan, PlanConfig};
     /// use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
     /// use tcontract_exec::Exec;
     /// let l = OperandSpec::new(LayoutSpec::new(&[1], &[1], 0)?);
     /// let p = Problem::from_labels(DType::F64, l.clone(), l.clone(), CSpec::Absent,
     ///     l, &Labels::new(&[0], &[0], &[0]))?;
     /// let plan = Plan::<f64>::new(&p, &PlanConfig::default())?;
-    /// // No output elements: nothing runs, so no width is claimed.
     /// let exec = Exec::serial();
+    /// // Every operand carries every axis, so this is a Hadamard product: the
+    /// // token goes to strided, which splits by its own loop length, and the
+    /// // plan publishes no width for it.
+    /// assert_eq!(plan.execution_route(&exec, 1.0, OutputContract::Fresh)?, ExecutionRoute::Elementwise);
     /// assert_eq!(plan.execution_width(&exec, 4, 1.0, OutputContract::Fresh)?, None);
     /// # Ok::<(), tcontract::Error>(())
     /// ```
@@ -345,8 +348,13 @@ impl<T: Scalar> Plan<T> {
                 let Strategy::Faer(f) = &self.strategy else {
                     unreachable!("the route reports Faer only for a Faer strategy")
                 };
+                // `execute` hands faer a context narrowed to the plan's own
+                // stage-one budget (`Plan::batch_context`), not the whole lane:
+                // the query has to apply the same narrowing or it reports the
+                // lanes a wider budget would fork, which never run.
+                let narrowed = self.batch_budget(exec, budget);
                 Ok(core::num::NonZeroUsize::new(
-                    f.width_within::<T>(exec, budget),
+                    f.width_within::<T>(exec, narrowed),
                 ))
             }
             // The reference rank-k kernel is serial on the calling thread.

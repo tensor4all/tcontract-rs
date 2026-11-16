@@ -33,7 +33,14 @@ and is never a placement input (tcontract#163).
   restating the rule.
 - **The Faer width comes from the decision `run` makes.** `FaerPlan::query` and
   `FaerPlan::decision` are now shared by `run` and by `width_within`, which
-  returns `lanes * (carries_team ? item_threads : 1)`. The consumer's complaint
+  returns `lanes * (carries_team ? item_threads : 1)` on the budget `run` sees:
+  the query applies `Plan::batch_budget(exec, budget)` first, because `execute`
+  hands faer a context narrowed to the plan's stage-one budget
+  (`Plan::batch_context`), not the whole lane. Without that narrowing a
+  non-default `WorkModel` made the query report lanes that never run (an
+  8³ × 64-item plan with a 2000 ns item overhead was reported at 4-6 lanes while
+  `execute_into` ran serially); `the_faer_width_applies_the_stage_one_narrowing_execution_takes`
+  now pins the reported width to the ledger's live count at 1/4/8 slots. The consumer's complaint
   was a restatement of `FAER_GEMM_SECTIONS`, the item-parallel flag and the
   section count in their own code; keeping the query on top of the executed
   decision is the answer to it.

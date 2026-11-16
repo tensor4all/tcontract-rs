@@ -232,3 +232,40 @@ fn routes_that_do_not_decide_a_width_report_none() {
     let inner = Plan::<f64>::new(&batched_dot(64, 4), &PlanConfig::default()).unwrap();
     assert_eq!(inner.execution_width(&exec, 4, 1.0, INIT).unwrap(), None);
 }
+
+/// The faer width is measured on the same budget `execute` leaves faer, not on
+/// the whole lane: `execute` narrows the context to the plan's own stage-one
+/// budget first (`Plan::batch_context`), so a plan that then runs serially must
+/// not be reported at a lane width. With an item overhead in the model and 64
+/// items, the wider lanes are never woken — the ledger says so — and the query
+/// has to agree (tcontract#176 review).
+#[test]
+fn the_faer_width_applies_the_stage_one_narrowing_execution_takes() {
+    use tcontract_exec::batch::{BatchPolicy, WorkModel};
+
+    let dims = [8usize, 8, 8, 64];
+    let policy =
+        BatchPolicy::default().with_model(WorkModel::default().with_item_overhead_ns(2000.0));
+    let sp = pool_with_reference_costs(8);
+    let pool = Pool::borrow(&sp);
+    for budget in [1usize, 4, 8] {
+        let (plan, a, b) = batched(dims[0], dims[1], dims[2], dims[3]);
+        // The lane the query is asked about, as the context the call would get.
+        let mut exec = Exec::new(&pool, 8)
+            .unwrap()
+            .with_batch_policy(policy)
+            .limit(nz(budget));
+        let width = plan
+            .execution_width(&exec, budget, 1.0, INIT)
+            .unwrap()
+            .unwrap_or_else(|| panic!("a faer plan reports a width ({dims:?}, {budget})"));
+        let ledger = root(&mut exec);
+        run(&plan, dims, &a, &b, &mut exec);
+        let live = max_live(ledger).max(1);
+        assert_eq!(
+            width.get(),
+            live,
+            "{dims:?} at {budget}: the query reports {width}, the call occupied {live}"
+        );
+    }
+}
