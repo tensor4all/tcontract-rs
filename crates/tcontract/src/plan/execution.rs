@@ -159,7 +159,8 @@ pub enum PackedRoute {
 }
 
 /// The chosen numerical route. Packed widths are active widths, not budgets.
-/// Faer and elementwise routes do not expose their internal partition width.
+/// For the width a plan takes on a lane narrower than its context — including
+/// the Faer route — see [`Plan::execution_width`].
 ///
 /// # Examples
 /// ```
@@ -261,7 +262,8 @@ impl<T: Scalar> Plan<T> {
     /// cannot co-schedule a barrier team (it was produced by `fork`, or the
     /// caller is a worker of the pool), the same barrier-free fallback
     /// execution takes is applied here, so a grid that would have been `Spmd`
-    /// is reported as `Cells` with its narrower width; see [`PackedRoute`].
+    /// is reported as `Cells` with its narrower width; see [`PackedRoute`]. For
+    /// a lane narrower than this context, ask [`Plan::execution_width`].
     ///
     /// # Errors
     /// Returns `Error::Exec` when a forced batch strategy cannot be honoured by
@@ -285,6 +287,95 @@ impl<T: Scalar> Plan<T> {
         alpha: T,
         output: OutputContract,
     ) -> Result<ExecutionRoute> {
+        self.route_within(exec, exec.budget(), alpha, output)
+    }
+
+    /// The participants a resolved plan occupies on `min(budget, exec.budget())`
+    /// slots of `exec`, for a caller that partitions one engine into lanes and
+    /// has to know what each plan would take on a lane ([#176]).
+    ///
+    /// `budget` has the semantics of [`tcontract_exec::batch::batch_decision_within`]:
+    /// the width is the one this plan takes as if the context were narrowed to
+    /// that many slots, keeping the token's dispatch costs, its team kind, its
+    /// batch policy and the plan's own work estimate. That is what
+    /// [`Plan::execution_route`] answers on an `exec.limit(budget)`, without
+    /// needing a `&mut Exec` per candidate lane. Nothing is allocated and no
+    /// width is reserved.
+    ///
+    /// `Some` is the width the call runs at, after the same barrier-free
+    /// fallback `execution_route` applies; `None` says this route does not
+    /// decide a width from the plan — `Empty` and `OutputOnly` run an
+    /// output-sized pass, `Elementwise` and `InnerProduct` hand the token to
+    /// strided, which splits by its own loop-length rule. A scheduler that gets
+    /// `None` must reserve the width it asks for rather than assume one.
+    /// [`Plan::estimate`] is not a placement answer and must not be read as one.
+    ///
+    /// # Errors
+    /// Returns `Error::Exec` when a forced batch strategy cannot be honoured by
+    /// the packed route.
+    ///
+    /// # Examples
+    /// ```
+    /// use tcontract::{ExecutionRoute, OutputContract, Plan, PlanConfig};
+    /// use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
+    /// use tcontract_exec::Exec;
+    /// let l = OperandSpec::new(LayoutSpec::new(&[1], &[1], 0)?);
+    /// let p = Problem::from_labels(DType::F64, l.clone(), l.clone(), CSpec::Absent,
+    ///     l, &Labels::new(&[0], &[0], &[0]))?;
+    /// let plan = Plan::<f64>::new(&p, &PlanConfig::default())?;
+    /// let exec = Exec::serial();
+    /// // Every operand carries every axis, so this is a Hadamard product: the
+    /// // token goes to strided, which splits by its own loop length, and the
+    /// // plan publishes no width for it.
+    /// assert_eq!(plan.execution_route(&exec, 1.0, OutputContract::Fresh)?, ExecutionRoute::Elementwise);
+    /// assert_eq!(plan.execution_width(&exec, 4, 1.0, OutputContract::Fresh)?, None);
+    /// # Ok::<(), tcontract::Error>(())
+    /// ```
+    pub fn execution_width(
+        &self,
+        exec: &Exec<'_>,
+        budget: usize,
+        alpha: T,
+        output: OutputContract,
+    ) -> Result<Option<core::num::NonZeroUsize>> {
+        // `batch_decision_within`'s clamp: at least one slot, never past the token's.
+        let budget = budget.clamp(1, exec.budget());
+        match self.route_within(exec, budget, alpha, output)? {
+            // INVARIANT: a packed geometry's width is at least one
+            // (`driver::Geometry::width` is a lane count or a grid product).
+            ExecutionRoute::Packed { width, .. } => Ok(core::num::NonZeroUsize::new(width)),
+            ExecutionRoute::Faer => {
+                let Strategy::Faer(f) = &self.strategy else {
+                    unreachable!("the route reports Faer only for a Faer strategy")
+                };
+                // `execute` hands faer a context narrowed to the plan's own
+                // stage-one budget (`Plan::batch_context`), not the whole lane:
+                // the query has to apply the same narrowing or it reports the
+                // lanes a wider budget would fork, which never run.
+                let narrowed = self.batch_budget(exec, budget);
+                Ok(core::num::NonZeroUsize::new(
+                    f.width_within::<T>(exec, narrowed),
+                ))
+            }
+            // The reference rank-k kernel is serial on the calling thread.
+            ExecutionRoute::RankKReference => Ok(core::num::NonZeroUsize::new(1)),
+            ExecutionRoute::Empty
+            | ExecutionRoute::OutputOnly
+            | ExecutionRoute::Elementwise
+            | ExecutionRoute::InnerProduct => Ok(None),
+        }
+    }
+
+    /// [`Plan::execution_route`] as if the context were narrowed to `budget`
+    /// slots: one route decision, shared by the two queries so they cannot
+    /// disagree about the same lane.
+    fn route_within(
+        &self,
+        exec: &Exec<'_>,
+        budget: usize,
+        alpha: T,
+        output: OutputContract,
+    ) -> Result<ExecutionRoute> {
         if self.problem.out_empty() {
             return Ok(ExecutionRoute::Empty);
         }
@@ -305,7 +396,7 @@ impl<T: Scalar> Plan<T> {
             (Strategy::Elementwise, _) => return Ok(ExecutionRoute::Elementwise),
             (Strategy::RankK(_), _) => return Ok(ExecutionRoute::RankKReference),
         };
-        let budget = self.batch_budget(exec);
+        let budget = self.batch_budget(exec, budget);
         let mut geometry = crate::driver::execution_geometry::<T>(
             &pk.plan,
             &pk.rg,
