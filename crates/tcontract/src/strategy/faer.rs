@@ -54,7 +54,9 @@
 //!   limitation of the non-SIMD targets rather than worked around here.
 
 use std::num::NonZeroUsize;
-use tcontract_exec::{with_faer_par, BatchQuery, Exec, ExecError};
+use tcontract_exec::{
+    batch::batch_decision_within, with_faer_par, BatchDecision, BatchQuery, Exec, ExecError,
+};
 use tcontract_kernel::Element;
 
 use crate::api::{CSpec, OperandId, Problem, Scalar};
@@ -172,6 +174,40 @@ impl FaerPlan {
             * if T::IS_COMPLEX { 4.0 } else { 1.0 }
     }
 
+    /// The batch query this plan presents to the shared decision: the plan's own
+    /// per-item estimate, the faer capability's inner route, and the one section
+    /// a GEMM dispatches. Only a team gives faer internal parallelism; a token
+    /// without one runs every item `Par::Seq`, which the query says.
+    fn query<T: Scalar>(&self, exec: &Exec<'_>) -> BatchQuery {
+        BatchQuery::new(self.h.extent, self.item_muladds::<T>())
+            .with_item_parallel(exec.token_ref().carries_team())
+            .with_outer_only_when_item_serial(true)
+            .with_item_sections(FAER_GEMM_SECTIONS)
+    }
+
+    /// The one decision [`FaerPlan::run`] resolves, on `budget` slots of `exec`.
+    fn decision<T: Scalar>(&self, exec: &Exec<'_>, budget: usize) -> BatchDecision {
+        batch_decision_within(exec.batch_policy(), exec, budget, &self.query::<T>(exec))
+    }
+
+    /// Participants one execution occupies on `budget` slots of `exec`: the
+    /// lanes and the item threads faer actually receives ([`FaerPlan::run`]'s
+    /// `item_threads` gate included), for [`crate::Plan::execution_width`].
+    pub(crate) fn width_within<T: Scalar>(&self, exec: &Exec<'_>, budget: usize) -> usize {
+        let decision = self.decision::<T>(exec, budget);
+        // Without a team every item runs `Par::Seq`, so its item threads would
+        // only reserve slots nothing uses.
+        let item_threads = if exec.token_ref().carries_team() {
+            decision.item_threads
+        } else {
+            1
+        };
+        // INVARIANT: a decision never has zero lanes or zero item threads
+        // (`run` relies on the same one), and `run` occupies exactly the lanes
+        // times the item threads it forks or hands to faer.
+        decision.lanes * item_threads
+    }
+
     /// Run the batched GEMM.
     ///
     /// # Safety
@@ -207,16 +243,10 @@ impl FaerPlan {
         // capability keeps the inner route unless one item alone is too small
         // for a team, at which point the items take the lanes. `Auto` reproduces
         // the pre-#123 `inner`/`total` widths exactly, and a forced strategy is
-        // honoured as-is.
-        // Only a team gives faer internal parallelism; a token without one runs
-        // every item `Par::Seq`, so the query describes the route that will run.
+        // honoured as-is. [`FaerPlan::width_within`] answers from this same
+        // decision for a lane narrower than the context (#176).
         let team = exec.token_ref().carries_team();
-        let decision = exec.batch_decision(
-            &BatchQuery::new(count, self.item_muladds::<T>())
-                .with_item_parallel(team)
-                .with_outer_only_when_item_serial(true)
-                .with_item_sections(FAER_GEMM_SECTIONS),
-        );
+        let decision = self.decision::<T>(exec, exec.budget());
         let (ap, bp, dp) = (SendConst(a), SendConst(b), SendMut(d));
         let item = |i: usize, par: faer::Par<'_>| {
             let i = i as isize;

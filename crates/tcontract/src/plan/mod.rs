@@ -687,7 +687,9 @@ impl<T: Scalar> Plan<T> {
     /// width this plan actually runs at is chosen from the same work and the token's dispatch
     /// costs, independently of this call. It is that objective, not a replay of the decision: the
     /// width rule additionally applies the token's payback gate, and a forced batch policy narrows
-    /// the budget before the width is asked for.
+    /// the budget before the width is asked for. A caller that needs placement — which lane a plan
+    /// takes, or what it would take on a narrower one — reads [`Plan::execution_width`], the
+    /// executed width, never a number inferred from this estimate.
     ///
     /// `width` is clamped to `1..=exec.budget()`. A rate that is not a positive finite number is
     /// refused with [`Duration::MAX`], and a sum that overflows saturates there too.
@@ -1116,7 +1118,7 @@ impl<T: Scalar> Plan<T> {
         // A workspace not warmed for every worker of this executor would have a
         // worker allocate its own slot mid-execute: refuse instead. The executor
         // the driver uses is the narrowed one (`Auto`/`Sequential`).
-        let needed_slots = self.batch_budget(exec);
+        let needed_slots = self.batch_budget(exec, exec.budget());
         if !required.covered_by(workspace.req()) || workspace.slots() < needed_slots {
             return Err(crate::api::Error::Workspace {
                 needed: required.bytes(),
@@ -1203,33 +1205,33 @@ impl<T: Scalar> Plan<T> {
         self.muladds() / muladds_per_ns()
     }
 
-    /// The width the work estimate asks for at the executor's budget: the token's
-    /// rule (`Exec::width_for`) over [`Plan::serial_ns`] and the declared sections.
-    fn width(&self, exec: &Exec<'_>) -> usize {
-        exec.width_for(self.serial_ns(), PLAN_SECTIONS)
-    }
-
     /// The context the driver sees: `Auto` narrows the budget over the whole
     /// batch first (the packed two-stage rule's stage one), a forced batch
     /// strategy is left on the original host budget, as
     /// [`tcontract_exec::Exec::batch_decision`] documents.
     fn batch_context<'e>(&self, exec: &'e mut Exec<'_>) -> Exec<'e> {
-        let budget = NonZeroUsize::new(self.batch_budget(exec)).unwrap_or(NonZeroUsize::MIN);
+        let budget =
+            NonZeroUsize::new(self.batch_budget(exec, exec.budget())).unwrap_or(NonZeroUsize::MIN);
         exec.reborrow().limit(budget)
     }
 
     /// The budget [`Plan::batch_context`] leaves the driver, as a number, for
-    /// the reports that need it without a mutable context.
-    fn batch_budget(&self, exec: &Exec<'_>) -> usize {
+    /// the reports that need it without a mutable context. `budget` is the
+    /// lane the caller asks about: the context's own for execution and for
+    /// [`Plan::execution_route`], or the candidate lane of
+    /// [`Plan::execution_width`].
+    fn batch_budget(&self, exec: &Exec<'_>, budget: usize) -> usize {
         match exec.batch_policy().strategy {
             // `Auto` narrows the budget over the whole batch (the packed
             // two-stage rule's stage one).
-            tcontract_exec::BatchStrategy::Auto => self.width(exec),
+            tcontract_exec::BatchStrategy::Auto => {
+                exec.width_for_within(budget, self.serial_ns(), PLAN_SECTIONS)
+            }
             // A forced sequential route is one thread for the whole call,
             // including the faer output pass and any packed team.
             tcontract_exec::BatchStrategy::Sequential => 1,
-            // Every other forced strategy is resolved on the original budget.
-            _ => exec.budget(),
+            // Every other forced strategy is resolved on the lane it is given.
+            _ => budget,
         }
     }
 
