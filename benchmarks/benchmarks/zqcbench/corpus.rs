@@ -664,8 +664,41 @@ impl Stress {
     }
 }
 
+/// The verifier's known-value fixture: `A = B = 1` makes every output element
+/// exactly the contracted extent. The shared `verify` asks `size_case` for this
+/// fixture at a nonzero nominal tensor size; a fixed-extent corpus cannot scale
+/// a family down to that size, so that request is answered with this dedicated
+/// tiny product instead of a full family. A filtered `verify` must not execute
+/// an unselected 444.6-GMAC corpus case for its self-check. Not a census cell;
+/// independent of the case argument and of any `--case`/`--family` filter.
+fn known_value_fixture() -> Sized {
+    let case = Case {
+        name: "known-value",
+        group: "known-value",
+        c: "ij",
+        a: "ik",
+        b: "kj",
+        extents: &KNOWN_VALUE_EXTENTS,
+        family: Family::Spatial,
+        doms: doms!['i': O, 'j': V, 'k': O],
+    };
+    size_case_stressed(&case, 0.0, Stress::None)
+}
+
+/// The fixture's extents: `i`/`k` resolve to `o = 2`, `j` to `v = 3`, so
+/// `A = 2x2`, `B = 2x3`, `C = 2x3` and the contraction has 12 MACs.
+static KNOWN_VALUE_EXTENTS: Extents = Extents { o: 2, v: 3, k: 1.0 };
+
+/// The case at a nominal tensor size. The only nonzero caller is the shared
+/// verifier's known-value check (256 MiB); zqcbench's corpora are fixed-extent,
+/// so that call returns the dedicated [`known_value_fixture`]. Every corpus-path
+/// caller passes `0.0` and gets the case's fixed extents.
 pub fn size_case(case: &Case, tensor_bytes: f64) -> Sized {
-    size_case_stressed(case, tensor_bytes, Stress::None)
+    if tensor_bytes > 0.0 {
+        known_value_fixture()
+    } else {
+        size_case_stressed(case, tensor_bytes, Stress::None)
+    }
 }
 
 pub fn size_case_stressed(case: &Case, tensor_bytes: f64, stress: Stress) -> Sized {

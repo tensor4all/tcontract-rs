@@ -124,15 +124,19 @@ outputs from the planner, the forced packed route and the built baselines using
 relative Frobenius error, requiring finite error at most `1e-10` for c64. It is a
 cross-provider check, not a naive-loop recomputation of the expensive
 contractions. Timed runs also compare each later engine with the first engine's
-full output and fail on `MISMATCH`.
+full output and fail on `MISMATCH`. The known-value self-check runs on a
+dedicated 12-MAC fixture (`2x2 . 2x3 -> 2x3`, `m=2, n=3, k=2`), not on a corpus
+family: `size_case` answers the shared verifier's nonzero nominal-size request
+with that fixture, so a filtered `verify` never executes an unselected
+444.6-GMAC case for it.
 
 The driver accepts exactly `--dtype c64`; the benchmark is complex-orbital
 throughout, and an `f64` request is rejected rather than skipped. The shared
 verifier is not c64-only: before the corpus loop it always runs its known-value
 GEMM (`A = B = 1`, every `D` element exactly `K`) for both `f64` and
 `Complex<f64>` (`engines/verify.rs:66-67`, unconditional), so `zqcbench verify`
-executes one `f64` gemm that no case in this corpus declares — the mirror of
-`qcbench`'s stray `c64` row. `--n 1` is solely the timing-v2 identity sentinel;
+executes one `f64` gemm on the dedicated fixture that no case in this corpus
+declares — the mirror of `qcbench`'s stray `c64` row. `--n 1` is solely the timing-v2 identity sentinel;
 `--batch 1` is the declared unit batch, not the contraction's batch (see
 `ri-krgw/sigma.contract` above). Layout stress is fixed to `none`.
 

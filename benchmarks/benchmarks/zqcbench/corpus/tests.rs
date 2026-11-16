@@ -466,6 +466,44 @@ fn whole_binary_footprints_stay_within_the_twelve_gib_cell_budget() {
     }
 }
 
+/// `verify`'s known-value check must stay off the corpus extents: the shared
+/// verifier asks `size_case` for a fixture at a nonzero nominal size, and that
+/// call must return a dedicated tiny product, not `corpus()[0]` at full extent.
+/// The fixture is not reachable through the selection either, so a filtered
+/// `verify` cannot turn it into an unselected full family.
+#[test]
+fn known_value_fixture_is_tiny_and_not_a_corpus_case() {
+    let first = &corpus()[0];
+    let fixture = size_case(first, 256.0);
+    assert_eq!(fixture.case.name, "known-value");
+    assert_eq!(fixture.macs(), 12);
+    assert_eq!(fixture.mnk(), (2, 3, 2));
+    let bytes = (fixture.elems_a() + fixture.elems_b() + fixture.elems_c()) as i64 * 16;
+    assert!(bytes <= 1024, "fixture footprint {bytes} B");
+    assert!(
+        corpus().iter().all(|c| c.name != fixture.case.name),
+        "fixture name collides with a corpus family"
+    );
+    let min_selected = corpus()
+        .iter()
+        .map(|c| size_case(c, 0.0).macs())
+        .min()
+        .unwrap();
+    assert!(
+        fixture.macs() < min_selected,
+        "fixture {} MACs is not below the smallest selected family {min_selected}",
+        fixture.macs()
+    );
+    // The fixed corpus path is unchanged: a zero nominal size returns the case
+    // at its declared extents.
+    let real = size_case(first, 0.0);
+    assert_eq!(real.case.name, first.name);
+    assert!(
+        real.macs() > 1_000_000,
+        "the zero-size path must keep the full fixed extents"
+    );
+}
+
 /// The corpus `macs` monomial for each selected case, in selection order.
 /// Pinned so a domain-class or extent edit changes the computed product and
 /// fails here, rather than only breaking an internal-consistency check.
