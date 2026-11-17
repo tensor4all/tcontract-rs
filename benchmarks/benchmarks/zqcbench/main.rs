@@ -42,7 +42,7 @@ fn main() -> ExitCode {
     let opts = Options::parse(&args[2.min(args.len())..]);
 
     // Vendor thread pools are created by `configure_threads`, and they must
-    // exist before `BenchThreads` pins its leader (see `from_args_with`).
+    // exist before any team is built (see `from_args_with`).
     let threads =
         tcontract_bench::threads::BenchThreads::from_args_with(engines::configure_threads);
     threads.verify();

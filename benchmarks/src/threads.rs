@@ -71,13 +71,13 @@ impl BenchThreads {
     /// As [`from_args`](Self::from_args), with `configure` run after the flags
     /// are validated and **before** the team is built.
     ///
-    /// A placed team pins its leader to one CPU of the process's set for the
-    /// team's lifetime, and a vendor library (OpenMP, OpenBLAS, TBLIS) builds
-    /// its own thread team from the thread that first calls it. A vendor pool
-    /// created after the pin inherits a one-CPU mask and stays confined to it,
-    /// so a harness that links such a library configures it here: the pools are
-    /// created while the process still owns the whole set, and the pin cannot
-    /// reach them.
+    /// A vendor library (OpenMP, OpenBLAS, TBLIS) builds its own thread team
+    /// from the thread that first calls it, so a harness that links one
+    /// configures it here, before any team exists: the pools inherit the
+    /// process's whole set whichever placement the threadteam build uses.
+    /// (threadteam 0.5 pinned a placed team's leader to one CPU for the team's
+    /// lifetime, and a pool created after that pin stayed confined to it;
+    /// 0.6 places per section and leaves the caller's set alone.)
     pub fn from_args_with(configure: impl FnOnce(usize)) -> Self {
         let args: Vec<String> = std::env::args().collect();
         let requested = parse_threads(&args).unwrap_or_else(|e| fail(&e));
@@ -102,7 +102,7 @@ impl BenchThreads {
     pub fn new(requested: usize, configure: impl FnOnce(usize)) -> Self {
         let requested = requested.max(1);
         // Vendor thread pools must see the whole CPU set, so they are created
-        // before the team pins its leader. See the type's placement note.
+        // before any team exists. See the type's placement note.
         configure(requested);
         // tcontract paths run on this pool and start no ambient one.
         let team = (requested > 1).then(|| {
