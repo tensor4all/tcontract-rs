@@ -20,7 +20,7 @@
 //!
 //! In-place accumulation reads the previous `D` through the destination with
 //! strided-basic's `map_update_into`, `zip_update2_into` and `zip_update3_into`
-//! (no second view over `D`); `axpy` and `fma` cover the unit-scalar forms. The
+//! (no second view over `D`); `axpy_acc` and `fma_acc` cover the unit-scalar forms. The
 //! write-only forms (overwrite and a separate `C`) never form a `&mut [T]` over
 //! `D`: they build a `StridedViewMut<MaybeUninit<T>>` and store
 //! `MaybeUninit::new(value)`, so a fresh, uninitialized destination is never
@@ -37,7 +37,7 @@
 use core::mem::MaybeUninit;
 
 use strided_basic::{
-    axpy, fma, map_into, map_update_into, mul_into_uninit, zip_map2_into, zip_map3_into,
+    axpy_acc, fma_acc, map_into, map_update_into, mul_into_uninit, zip_map2_into, zip_map3_into,
     zip_update2_into, zip_update3_into, ElementOp, Identity, RawStridedMut, RawStridedRef,
     StridedError, UpdatePlan,
 };
@@ -576,7 +576,7 @@ impl<T: Scalar> Job<'_, T> {
                 Mode::InPlace => {
                     let mut dv = write_view(self.d.get(), dims, st[3]);
                     if beta == <T as Element>::one() && OC::IS_IDENTITY {
-                        axpy(&mut dv, &av, alpha, ex)
+                        axpy_acc(&mut dv, &av, alpha, ex)
                     } else {
                         zip_update2_into::<T, T, OC, OA>(
                             &mut dv,
@@ -636,7 +636,7 @@ impl<T: Scalar> Job<'_, T> {
                 Mode::InPlace => {
                     let mut dv = write_view(self.d.get(), dims, st[3]);
                     if alpha == one && beta == one && OC::IS_IDENTITY {
-                        fma(&mut dv, &av, &bv, ex)
+                        fma_acc(&mut dv, &av, &bv, ex)
                     } else {
                         zip_update3_into::<T, T, T, OC, OA, OB>(
                             &mut dv,

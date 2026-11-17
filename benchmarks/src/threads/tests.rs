@@ -75,12 +75,12 @@ fn allowed_cpus() -> usize {
 }
 
 /// A vendor library creates its thread pool from the calling thread, so the
-/// harness must configure it before the benchmark team pins its leader. This
-/// test fails if the hook runs after the pin (the leader would see one CPU), or
-/// if the pin stops happening (the leader would keep the whole set).
+/// harness must configure it before any team exists. This test fails if the hook
+/// runs with a narrowed set, or if building the team narrows the caller's set
+/// (threadteam 0.5 pinned the leader to one CPU; 0.6 does not).
 #[cfg(target_os = "linux")]
 #[test]
-fn vendor_configuration_runs_before_the_team_pins_the_leader() {
+fn vendor_configuration_runs_before_the_team_is_built() {
     let available = allowed_cpus();
     if available < 4 {
         return;
@@ -95,8 +95,8 @@ fn vendor_configuration_runs_before_the_team_pins_the_leader() {
     );
     assert_eq!(
         allowed_cpus(),
-        1,
-        "the placed team pins its leader to one CPU"
+        available,
+        "the team leaves the caller's CPU set alone"
     );
     drop(threads);
 }

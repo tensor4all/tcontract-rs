@@ -18,7 +18,7 @@
 //! threshold:
 //!
 //! * the batch axis is the unit-stride axis in A, B and D: one pass per
-//!   contracted element over the output axis (`fma`, or `zip_update3_into`
+//!   contracted element over the output axis (`fma_acc`, or `zip_update3_into`
 //!   when `alpha` is not one). Every output still accumulates in ascending k,
 //!   so this traversal matches a sequential *fused* dot; it does not reproduce
 //!   the faer route's own accumulation bit for bit, which the tests bound;
@@ -36,7 +36,7 @@
 use core::mem::MaybeUninit;
 
 use strided_basic::{
-    fma, mul_into_uninit, zip_map2_into, zip_reduce, zip_update3_into, ElementOp, Identity,
+    fma_acc, mul_into_uninit, zip_map2_into, zip_reduce, zip_update3_into, ElementOp, Identity,
 };
 use tcontract_exec::Exec;
 use tcontract_kernel::Element;
@@ -227,7 +227,7 @@ impl InnerProductPlan {
                     // the first pass or by the caller's C term).
                     let mut dv = unsafe { write_view(d, &dims_h, &d_h) };
                     if alpha == one {
-                        fma(&mut dv, &av, &bv, exec.token()).map_err(Error::backend)?;
+                        fma_acc(&mut dv, &av, &bv, exec.token()).map_err(Error::backend)?;
                     } else {
                         zip_update3_into::<T, T, T, Identity, OA, OB>(
                             &mut dv,
