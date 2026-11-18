@@ -11,6 +11,7 @@ many at once, belongs to [`threadteam`](https://crates.io/crates/threadteam)
 | `Exec<'a>` | The per-call resource bundle: one `threadteam::Exec` token, an optional workspace, and the `BatchPolicy`. Not `Clone`, not `Copy`; operations take `&mut Exec`. |
 | `ArenaProvider`, `Workspace`, `WorkspaceReq`, `TeamLease` | Reusable scratch, owned by a `Pool` or lent by a serial caller. |
 | `BatchPolicy`, `BatchQuery`, `BatchDecision`, `batch_decision`, `batch_decision_within`, `WorkModel` | The one lane decision (`lanes * item_threads <= budget`) every batch-owning operation shares; its widths are the token's. |
+| `host::CpuClass` | The CPU class (vendor, family, model, logical CPUs from `/proc/cpuinfo`) a provider keys its offline-fitted rows by; `CpuClass::detect()` reads it once per process. |
 | `ItemTime`, `BatchQuery::with_item_time` | A provider's time for one item at a width; with it, the item width is the argmin of that time plus the token's dispatch cost instead of ideal division. |
 | `Exec::width_for(ns, sections)`, `Exec::width_for_within`, `Exec::pays(ns, sections, width)` | The partition width, and the gate, for work estimated at `serial_ns` that performs `sections` dispatches: the token's rule (`threadteam`'s dispatch cost of the token's kind, times `PAYS`). |
 

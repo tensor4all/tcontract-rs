@@ -29,7 +29,7 @@
 //! `muladds_per_ns` and `fixed_ns` are faer's own serial rate and per-call cost on
 //! that class; they replace the host table's rate for this decision only.
 //!
-//! The class is the CPU vendor, family, model and logical CPU count read from
+//! The class is `tcontract_exec::host::CpuClass`: the CPU vendor, family, model and logical CPU count read from
 //! `/proc/cpuinfo` (Linux), so two SKUs of one microarchitecture with different
 //! core counts are different classes. A host or dtype without a row — any other
 //! CPU, another OS, and f64 on the fitted class for now — supplies no time, and the decision keeps its ideal-division rule
@@ -38,20 +38,10 @@
 //! The rows, the fitting script and the raw measurements are in
 //! `experiments/faer-item-width/` (`fit.py`, `results/`).
 
-use std::sync::OnceLock;
-
+use tcontract_exec::host::CpuClass;
 use tcontract_exec::ItemTime;
 
 use crate::api::DType;
-
-/// A host class: what `/proc/cpuinfo` says about the CPU.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct HostKey {
-    vendor: String,
-    family: u32,
-    model: u32,
-    cpus: usize,
-}
 
 /// One fitted row (see the module documentation).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -141,7 +131,7 @@ const XEON_9242_2S: [(DType, Row); 4] = [
 const XEON_9242_2S_SHIPPED: [DType; 3] = [DType::F32, DType::C32, DType::C64];
 
 /// The row of `dtype` on the host class `key`, if the decision uses one.
-pub(crate) fn row_of(key: &HostKey, dtype: DType) -> Option<Row> {
+pub(crate) fn row_of(key: &CpuClass, dtype: DType) -> Option<Row> {
     let xeon_9242_2s =
         key.vendor == "GenuineIntel" && key.family == 6 && key.model == 85 && key.cpus == 96;
     if !xeon_9242_2s || !XEON_9242_2S_SHIPPED.contains(&dtype) {
@@ -155,10 +145,7 @@ pub(crate) fn row_of(key: &HostKey, dtype: DType) -> Option<Row> {
 
 /// The row of `dtype` on this host, if its class has one.
 pub(crate) fn host_row(dtype: DType) -> Option<Row> {
-    static KEY: OnceLock<Option<HostKey>> = OnceLock::new();
-    KEY.get_or_init(detect)
-        .as_ref()
-        .and_then(|key| row_of(key, dtype))
+    CpuClass::detect().and_then(|key| row_of(key, dtype))
 }
 
 /// faer's time under `row` for one product of `muladds` multiply-adds on an
@@ -175,41 +162,6 @@ pub(crate) fn item_time(row: Row, m: usize, n: usize, muladds: f64) -> ItemTime 
             row.slow * work,
             row.slow_per_width * work,
         )
-}
-
-#[cfg(target_os = "linux")]
-fn detect() -> Option<HostKey> {
-    parse_cpuinfo(&std::fs::read_to_string("/proc/cpuinfo").ok()?)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn detect() -> Option<HostKey> {
-    None
-}
-
-/// The class from the text of `/proc/cpuinfo`: the first CPU's vendor, family
-/// and model, and the number of `processor` entries.
-#[cfg(any(target_os = "linux", test))]
-fn parse_cpuinfo(text: &str) -> Option<HostKey> {
-    let field = |name: &str| {
-        text.lines().find_map(|line| {
-            let (key, value) = line.split_once(':')?;
-            (key.trim() == name).then(|| value.trim())
-        })
-    };
-    let cpus = text
-        .lines()
-        .filter(|line| {
-            line.split_once(':')
-                .is_some_and(|(k, _)| k.trim() == "processor")
-        })
-        .count();
-    Some(HostKey {
-        vendor: field("vendor_id")?.to_owned(),
-        family: field("cpu family")?.parse().ok()?,
-        model: field("model")?.parse().ok()?,
-        cpus,
-    })
 }
 
 #[cfg(test)]

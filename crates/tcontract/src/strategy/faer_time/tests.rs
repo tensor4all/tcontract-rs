@@ -1,29 +1,20 @@
 use super::*;
 
-const XEON: &str = "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 85\n\
-model name\t: Intel(R) Xeon(R) Platinum 9242 CPU @ 2.30GHz\n\nprocessor\t: 1\n\
-vendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 85\n";
-
-#[test]
-fn cpuinfo_gives_vendor_family_model_and_cpu_count() {
-    let key = parse_cpuinfo(XEON).unwrap();
-    assert_eq!(
-        key,
-        HostKey {
-            vendor: "GenuineIntel".into(),
-            family: 6,
-            model: 85,
-            cpus: 2
-        }
-    );
-    assert_eq!(parse_cpuinfo("processor : 0\n"), None);
+/// The fitted class with `cpus` logical CPUs.
+fn xeon(cpus: usize) -> CpuClass {
+    CpuClass {
+        vendor: "GenuineIntel".into(),
+        family: 6,
+        model: 85,
+        cpus,
+    }
 }
 
 /// Only the fitted class has rows: another model or CPU count has none, so its
 /// faer plans supply no item time and keep the ideal-division rule.
 #[test]
 fn only_the_fitted_class_has_rows() {
-    let mut key = parse_cpuinfo(XEON).unwrap();
+    let mut key = xeon(2);
     assert_eq!(row_of(&key, DType::C64), None, "96 CPUs, not 2");
     key.cpus = 96;
     assert!(row_of(&key, DType::C64).is_some());
@@ -117,8 +108,7 @@ fn check_execution_width<T: crate::api::Scalar>(
 /// a small one, which stays at width one.
 #[test]
 fn the_fitted_class_ships_rows_for_all_but_f64() {
-    let mut key = parse_cpuinfo(XEON).unwrap();
-    key.cpus = 96;
+    let key = xeon(96);
     for dtype in [DType::F32, DType::C32, DType::C64] {
         assert!(row_of(&key, dtype).is_some(), "{dtype:?}");
     }
