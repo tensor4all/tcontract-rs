@@ -24,23 +24,19 @@ fn cpuinfo_gives_vendor_family_model_and_cpu_count() {
 #[test]
 fn only_the_fitted_class_has_rows() {
     let mut key = parse_cpuinfo(XEON).unwrap();
-    assert_eq!(row_of(&key, DType::F64), None, "96 CPUs, not 2");
+    assert_eq!(row_of(&key, DType::C64), None, "96 CPUs, not 2");
     key.cpus = 96;
-    assert!(row_of(&key, DType::F64).is_some());
+    assert!(row_of(&key, DType::C64).is_some());
     key.model = 106;
-    assert_eq!(row_of(&key, DType::F64), None);
+    assert_eq!(row_of(&key, DType::C64), None);
 }
 
 /// The width `Plan::execution_width` reports for a Faer plan on a team is the
 /// argmin of this host's faer time plus the team's dispatch cost over the whole
-/// lane on a fitted class, and the ideal-division width the token's rule gives
-/// on any other host.
+/// lane where the host has a row for the dtype, and the ideal-division width the
+/// token's rule gives otherwise (any unfitted host, and f64 on the fitted one).
 #[test]
 fn execution_width_is_the_argmin_of_the_host_row() {
-    use crate::api::{CSpec, Labels, LayoutSpec, OperandSpec, Problem};
-    use crate::{OutputContract, Plan, PlanConfig};
-    use tcontract_exec::{BatchPolicy, Exec};
-
     let pool = threadteam::Pool::builder()
         .threads(4)
         .acquire_timeout(std::time::Duration::from_secs(10))
@@ -50,60 +46,90 @@ fn execution_width_is_the_argmin_of_the_host_row() {
         // The host could not reserve the members.
         return;
     };
-    let exec = Exec::from_token(team.exec(4), None, BatchPolicy::default());
+    let exec = tcontract_exec::Exec::from_token(
+        team.exec(4),
+        None,
+        tcontract_exec::BatchPolicy::default(),
+    );
     for (m, n, k) in [(16, 16, 16), (64, 256, 32), (384, 384, 384)] {
-        let l = |d: &[usize]| OperandSpec::new(LayoutSpec::new(d, &[1, d[0] as isize], 0).unwrap());
-        let problem = Problem::from_labels(
-            DType::F64,
-            l(&[m, k]),
-            l(&[k, n]),
-            CSpec::Absent,
-            l(&[m, n]),
-            &Labels::new(&[0, 2], &[2, 1], &[0, 1]),
-        )
-        .unwrap();
-        let plan = Plan::<f64>::new(&problem, &PlanConfig::default()).unwrap();
-        let muladds = (m * n * k) as f64;
-        let want = match host_row(DType::F64) {
-            Some(row) => {
-                let time = item_time(row, m, n, muladds);
-                let objective = |w: usize| {
-                    let dispatch = std::num::NonZeroUsize::new(w)
-                        .filter(|_| w > 1)
-                        .map_or(0.0, |w| {
-                            exec.token_ref().dispatch_cost(w).as_secs_f64() * 1e9
-                        });
-                    time.at(w) + dispatch
-                };
-                (1..=4)
-                    .min_by(|&a, &b| objective(a).total_cmp(&objective(b)))
-                    .unwrap()
-            }
-            None => exec.width_for_within(4, muladds / tcontract_exec::host::muladds_per_ns(), 1),
-        };
-        let got = plan
-            .execution_width(&exec, 4, 1.0, OutputContract::Initialized)
-            .unwrap()
-            .map(|w| w.get());
-        assert_eq!(got, Some(want), "{m}x{n}x{k}");
+        check_execution_width::<f64>(&exec, m, n, k);
+        check_execution_width::<num_complex::Complex<f64>>(&exec, m, n, k);
     }
 }
 
-/// The fitted class has a row for every storage type, and on it a large
-/// product is wider than a small one, which stays at width one.
+fn check_execution_width<T: crate::api::Scalar>(
+    exec: &tcontract_exec::Exec<'_>,
+    m: usize,
+    n: usize,
+    k: usize,
+) {
+    use crate::api::{CSpec, Labels, LayoutSpec, OperandSpec, Problem};
+    use crate::{FaerLimit, OutputContract, Plan, PlanConfig};
+
+    let l = |d: &[usize]| OperandSpec::new(LayoutSpec::new(d, &[1, d[0] as isize], 0).unwrap());
+    let problem = Problem::from_labels(
+        T::STORAGE,
+        l(&[m, k]),
+        l(&[k, n]),
+        CSpec::Absent,
+        l(&[m, n]),
+        &Labels::new(&[0, 2], &[2, 1], &[0, 1]),
+    )
+    .unwrap();
+    // Every shape a Faer plan, also above the default c64 volume bound.
+    let config = PlanConfig {
+        faer_limit: FaerLimit::NONE,
+        ..PlanConfig::default()
+    };
+    let plan = Plan::<T>::new(&problem, &config).unwrap();
+    let muladds = plan.muladds();
+    let want = match host_row(T::STORAGE) {
+        Some(row) => {
+            let time = item_time(row, m, n, muladds);
+            let objective = |w: usize| {
+                let dispatch = std::num::NonZeroUsize::new(w)
+                    .filter(|_| w > 1)
+                    .map_or(0.0, |w| {
+                        exec.token_ref().dispatch_cost(w).as_secs_f64() * 1e9
+                    });
+                time.at(w) + dispatch
+            };
+            (1..=4)
+                .min_by(|&a, &b| objective(a).total_cmp(&objective(b)))
+                .unwrap()
+        }
+        None => exec.width_for_within(4, muladds / tcontract_exec::host::muladds_per_ns(), 1),
+    };
+    let got = plan
+        .execution_width(
+            exec,
+            4,
+            <T as num_traits::One>::one(),
+            OutputContract::Initialized,
+        )
+        .unwrap()
+        .map(|w| w.get());
+    assert_eq!(got, Some(want), "{:?} {m}x{n}x{k}", T::STORAGE);
+}
+
+/// The fitted class has rows for f32, c32 and c64, and none for f64, which
+/// keeps the ideal-division rule there; on a row a large product is wider than
+/// a small one, which stays at width one.
 #[test]
-fn the_fitted_class_has_a_row_per_dtype() {
+fn the_fitted_class_ships_rows_for_all_but_f64() {
     let mut key = parse_cpuinfo(XEON).unwrap();
     key.cpus = 96;
-    for dtype in [DType::F32, DType::F64, DType::C32, DType::C64] {
+    for dtype in [DType::F32, DType::C32, DType::C64] {
         assert!(row_of(&key, dtype).is_some(), "{dtype:?}");
     }
-    let row = row_of(&key, DType::F64).unwrap();
+    assert_eq!(row_of(&key, DType::F64), None);
+    let row = row_of(&key, DType::C64).unwrap();
     let argmin = |t: ItemTime| {
         (1..=96)
             .min_by(|&a, &b| t.at(a).total_cmp(&t.at(b)))
             .unwrap()
     };
-    assert_eq!(argmin(item_time(row, 32, 32, 32.0 * 32.0 * 32.0)), 1);
-    assert!(argmin(item_time(row, 512, 512, 512.0 * 512.0 * 512.0)) >= 24);
+    let c = 4.0;
+    assert_eq!(argmin(item_time(row, 32, 32, c * 32.0 * 32.0 * 32.0)), 1);
+    assert!(argmin(item_time(row, 512, 512, c * 512.0 * 512.0 * 512.0)) >= 24);
 }

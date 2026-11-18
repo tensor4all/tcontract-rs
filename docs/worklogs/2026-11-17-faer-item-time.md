@@ -64,6 +64,12 @@
   starts with at least 40 ms of untimed calls; the round-to-round noise fell
   from a median 7-9% to 3-4%.
 
+- **f64 is withheld.** The second acceptance run met the 1.25x gate for f32,
+  c32 and c64 but left four f64 products above it, the worst a single slow
+  width of faer's partition (`80 x 512 x 40` at width 16). The maintainer kept
+  f64 on the ideal-division rule; its row stays in the table behind
+  `XEON_9242_2S_SHIPPED`, so enabling it is one line.
+
 ## Verification
 
 Results, the acceptance table and the remaining limitations are in the pull

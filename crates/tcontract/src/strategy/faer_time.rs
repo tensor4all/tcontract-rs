@@ -31,8 +31,8 @@
 //!
 //! The class is the CPU vendor, family, model and logical CPU count read from
 //! `/proc/cpuinfo` (Linux), so two SKUs of one microarchitecture with different
-//! core counts are different classes. A host without a row — any other CPU,
-//! another OS — supplies no time, and the decision keeps its ideal-division rule
+//! core counts are different classes. A host or dtype without a row — any other
+//! CPU, another OS, and f64 on the fitted class for now — supplies no time, and the decision keeps its ideal-division rule
 //! there, exactly as before.
 //!
 //! The rows, the fitting script and the raw measurements are in
@@ -132,11 +132,19 @@ const XEON_9242_2S: [(DType, Row); 4] = [
     ),
 ];
 
-/// The row of `dtype` on the host class `key`.
+/// The dtypes whose fitted row the decision uses on that class. The f64 row is
+/// fitted but withheld: on the 512-shape acceptance sweep it left four products
+/// above 1.25x width 1 (a single slow width of faer's partition, `80 x 512 x 40`
+/// at width 16, and narrow-`n` products such as `80 x 40 x 512`), so f64 keeps
+/// the ideal-division rule until those are priced. Adding `DType::F64` here
+/// re-enables it.
+const XEON_9242_2S_SHIPPED: [DType; 3] = [DType::F32, DType::C32, DType::C64];
+
+/// The row of `dtype` on the host class `key`, if the decision uses one.
 pub(crate) fn row_of(key: &HostKey, dtype: DType) -> Option<Row> {
     let xeon_9242_2s =
         key.vendor == "GenuineIntel" && key.family == 6 && key.model == 85 && key.cpus == 96;
-    if !xeon_9242_2s {
+    if !xeon_9242_2s || !XEON_9242_2S_SHIPPED.contains(&dtype) {
         return None;
     }
     XEON_9242_2S

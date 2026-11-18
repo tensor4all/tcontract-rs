@@ -36,6 +36,9 @@ Platinum 9242 (`GenuineIntel` family 6 model 85), 96 CPUs, one thread per core,
 4 NUMA nodes of 24 CPUs; `threadteam::HostClass::X86_64Avx512`. Release profile
 of the workspace (thin LTO, one codegen unit), rustc 1.96.0, threadteam 0.5.1,
 t4a-faer 0.33.0, t4a-private-gemm-x86 0.1.28. A team of 96 (`into_team(96)`).
+These are the versions of the recorded runs. The probe's manifest and lock now
+follow the workspace (threadteam 0.6, colmat 0.34.0 over the same x86 kernel),
+so a new run measures that stack.
 Each `job.log` records the node, `lscpu`, the binary's checksum and revision and
 the load at start and end. Two rounds per job on one node, the second with the
 shape, dtype and width order reversed.
@@ -75,6 +78,9 @@ points is 0.029 to 0.040 per dtype.
 ## Acceptance
 
 Gate (maintainer, #194): no shape above about 1.25 x width 1 outside noise.
+f32, c32 and c64 meet it and ship. f64 does not (the four shapes below), so its
+row is fitted but not used: f64 keeps the ideal-division rule on this class
+until those are priced (`XEON_9242_2S_SHIPPED` in `strategy/faer_time.rs`).
 "Within 5% of the best width" is reported as the model's target. Medians over
 the two rounds; `python3 accept.py results/accept2-<dtype>`.
 

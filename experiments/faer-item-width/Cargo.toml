@@ -9,10 +9,10 @@ description = "Time per call of a rank-2 Faer plan at each item width, and the w
 # under `experiments/`. Its lock is the root lock plus this package.
 [dependencies]
 num-complex = "0.4"
-strided-view = "0.7.1"
+strided-view = "0.8.1"
 tcontract = { path = "../../crates/tcontract" }
 tcontract-exec = { path = "../../crates/tcontract-exec" }
-threadteam = "0.5.1"
+threadteam = "0.6"
 
 # Same release profile as the root workspace, so the probe measures the
 # shipped codegen.
