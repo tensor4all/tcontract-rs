@@ -22,6 +22,7 @@ AI-assisted contributions are welcome; see [AGENTS.md](AGENTS.md) and
 
 | Crate | Owns |
 | --- | --- |
+| `t4a-cost` | The neutral cost-model types, with no dependency at all: the host CPU class of offline-fitted rows (`CpuClass`), a provider's item time at a width (`ItemTime`) and the generic fitted row behind it (`ItemFit`). No scheduler, pool or scratch type. |
 | `tcontract-exec` | Execution resources over `threadteam`: the per-call `Exec` bundle (placement token, optional workspace, batch policy), the `Pool` wrapper (a `threadteam::Pool` plus reusable scratch), width chosen from work. Starts no task. |
 | `tcontract-kernel` | The kernel layer: packed formats, kernel-family descriptors and their registry, resolution with frozen blocking, packing and write-back, cache blocking, and every microkernel family (scalar, AVX2, AVX-512 and NEON register-tile kernels, portable reference kernels, native complex kernels). |
 | `tcontract` | Binary contraction over one validated `Problem` (from `DotGeneral` or from labels): `Plan<T>`, `PlanConfig`, the packed, faer and elementwise strategies chosen by the planner, `contract_batched`, the labels-based unary update (`unary`), shared errors, and the backend trait. |
@@ -51,6 +52,7 @@ flowchart TB
     CT["<b>tcontract</b><br/>Problem, Plan, strategies"]
     GK["<b>tcontract-kernel</b><br/>families, registry, packing, microkernels"]
     EX["<b>tcontract-exec</b><br/>execution context"]
+    COST["<b>t4a-cost</b><br/>CPU class, ItemTime, the item fit"]
     FA["faer"]
     ST["strided-rs (external)"]
     TK["tcontract-testkit"]
@@ -61,12 +63,14 @@ flowchart TB
     CT --> FA
     EX -. "feature faer" .-> FA
     CT --> ST
+    EX --> COST
+    CT --> COST
     TK --> CT
     TK --> GK
     TK --> EX
     classDef own fill:#e8f2ff,stroke:#2563a6,color:#132f50
     classDef ext fill:#edf0f4,stroke:#536477,color:#233244
-    class CAPI,CT,GK,EX,TK own
+    class CAPI,CT,GK,EX,TK,COST own
     class FA,ST ext
 ```
 
