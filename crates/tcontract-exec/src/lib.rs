@@ -30,7 +30,7 @@ pub mod host;
 mod pool;
 mod workspace;
 
-pub use batch::{BatchDecision, BatchPolicy, BatchQuery, BatchStrategy, WorkModel};
+pub use batch::{BatchDecision, BatchPolicy, BatchQuery, BatchStrategy, ItemTime, WorkModel};
 pub use error::ExecError;
 pub use exec::Exec;
 #[cfg(feature = "faer")]
