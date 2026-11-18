@@ -66,6 +66,11 @@ mapping onto `ItemTime` are in the module documentation of
 `strategy/faer_time.rs`. Tried and not selected: a NUMA-domain term, a row-block
 factor on the slow-regime threshold, and capping the width at the split.
 
+The fit itself is provider-neutral: `item_fit.py` fits any `ItemTime` row from
+rows in this probe's format, and `fit.py` supplies only faer GEMM's features
+(its multiply-adds, the output-tile split `TM, TN` and the packing band `X`). A
+provider with another kernel passes its own features object to `item_fit.fit`.
+
 ```bash
 uv run --with numpy python fit.py f64 results/fit-f64/round*.csv.gz
 python3 accept.py results/accept-f64          # the acceptance table
