@@ -1,0 +1,21 @@
+=== 267001.CPUcluster-PRISM on CPUcluster040 2026-11-17T00:38:03+09:00 nproc=96 tag=base807c args=--dtypes c32 --extents 16,24,32,48,64,96,128,192,256,384,512 --widths 1,2,3,4,6,8,12,16,24,32,48,64,96 --budgets 16,96 --threads 96 --target-ms 100
+load start: 0.01 2.42 2.70 2/1167 3956409
+CPU(s):              96
+Thread(s) per core:  1
+Socket(s):           2
+NUMA node(s):        4
+Vendor ID:           GenuineIntel
+CPU family:          6
+Model:               85
+Model name:          Intel(R) Xeon(R) Platinum 9242 CPU @ 2.30GHz
+NUMA node0 CPU(s):   0-23
+NUMA node1 CPU(s):   24-47
+NUMA node2 CPU(s):   48-71
+NUMA node3 CPU(s):   72-95
+faer-item-width: OK
+807183f57ce77622f0af197b8c4fa3dced9a84c5
+team 96 host_class X86_64Avx512 muladds_per_ns 15.6
+round1 rc=0 2026-11-17T00:53:08+09:00
+team 96 host_class X86_64Avx512 muladds_per_ns 15.6
+round2 rc=0 2026-11-17T01:08:13+09:00
+load end: 9.06 16.40 18.11 1/1168 3956887

@@ -27,7 +27,10 @@ fn bd(policy: &BatchPolicy, budget: NonZeroUsize, query: &BatchQuery) -> BatchDe
     decide(
         policy,
         b,
-        &|ns, sections| test_width(ns, sections, b),
+        &Rules {
+            widths: &|ns, sections| test_width(ns, sections, b),
+            dispatch_ns: &|w| test_cost_ns(w) as f64,
+        },
         query,
     )
 }
@@ -394,4 +397,88 @@ fn balanced_lanes_can_hold_a_lane_back() {
     );
     assert_eq!(packed.lanes, 1);
     assert!(generic.lanes > 1, "{generic:?}");
+}
+
+/// With an item time, the item width is the argmin of `at(w) + D(w)` over the
+/// budget, not the ideal-division width. Hand values: 64 µs of work split over at
+/// most 4, 2 µs of parallel setup, D(w) = 500 w ns:
+/// w=1: 64000; w=2: 2000 + 32000 + 1000 = 35000; w=3: 2000 + 21333 + 1500 = 24833;
+/// w=4: 2000 + 16000 + 2000 = 20000; w=5..8: 2000 + 16000 + 500 w > 20000.
+#[test]
+fn an_item_time_is_minimised_over_the_budget() {
+    let time = ItemTime::new(0.0, 64_000.0).with_parallel(2_000.0, 4, 0.0);
+    let policy = BatchPolicy::default();
+    for strategy_query in [
+        BatchQuery::new(1, 1.0).with_outer_only_when_item_serial(true),
+        BatchQuery::new(1, 1.0),
+    ] {
+        let query = strategy_query.with_item_time(time);
+        assert_eq!(bd(&policy, budget(8), &query).item_threads, 4);
+        assert_eq!(bd(&policy, budget(3), &query).item_threads, 3);
+    }
+    // The ideal rule would take the whole budget for the same 64 µs.
+    let ideal = BatchQuery::new(1, 64_000.0 * crate::host::muladds_per_ns())
+        .with_outer_only_when_item_serial(true);
+    assert_eq!(bd(&policy, budget(8), &ideal).item_threads, 8);
+}
+
+/// A slow regime below a width moves the argmin past it.
+#[test]
+fn a_slow_regime_below_a_width_is_skipped() {
+    let time = ItemTime::new(0.0, 64_000.0)
+        .with_parallel(0.0, 8, 0.0)
+        .with_slow_below(8, 64_000.0, 0.0);
+    let query = BatchQuery::new(1, 1.0)
+        .with_outer_only_when_item_serial(true)
+        .with_item_time(time);
+    assert_eq!(
+        bd(&BatchPolicy::default(), budget(8), &query).item_threads,
+        8
+    );
+    assert_eq!(
+        bd(&BatchPolicy::default(), budget(7), &query).item_threads,
+        1
+    );
+}
+
+/// The slow path's per-participant term moves the argmin to the narrower end of
+/// the slow band: 64 µs over at most 8, slow below 8 by 4 µs per participant
+/// beyond the first, D(w) = 500 w ns. w=2: 32000 + 4000 + 1000 = 37000;
+/// w=3: 21333 + 8000 + 1500 = 30833; w=4: 16000 + 12000 + 2000 = 30000;
+/// w=5: 12800 + 16000 + 2500 = 31300; w=8: 8000 + 4000 = 12000.
+#[test]
+fn a_slow_path_growing_with_the_width_is_priced_per_participant() {
+    let time = ItemTime::new(0.0, 64_000.0)
+        .with_parallel(0.0, 8, 0.0)
+        .with_slow_below(8, 0.0, 4_000.0);
+    let query = BatchQuery::new(1, 1.0)
+        .with_outer_only_when_item_serial(true)
+        .with_item_time(time);
+    assert_eq!(
+        bd(&BatchPolicy::default(), budget(7), &query).item_threads,
+        4
+    );
+    assert_eq!(
+        bd(&BatchPolicy::default(), budget(8), &query).item_threads,
+        8
+    );
+}
+
+/// An item time no width divides keeps width one however large the item, and a
+/// batch of such items still takes lanes (the lanes divide independent items
+/// ideally).
+#[test]
+fn an_undivided_item_time_keeps_width_one_and_leaves_the_lanes_alone() {
+    let item_muladds = 1e9;
+    let serial = ItemTime::new(0.0, item_muladds / crate::host::muladds_per_ns());
+    let one = BatchQuery::new(1, item_muladds)
+        .with_outer_only_when_item_serial(true)
+        .with_item_time(serial);
+    let d = bd(&BatchPolicy::default(), budget(8), &one);
+    assert_eq!((d.lanes, d.item_threads), (1, 1));
+    let many = BatchQuery::new(16, item_muladds)
+        .with_outer_only_when_item_serial(true)
+        .with_item_time(serial);
+    let d = bd(&BatchPolicy::default(), budget(8), &many);
+    assert_eq!((d.lanes, d.item_threads), (8, 1));
 }

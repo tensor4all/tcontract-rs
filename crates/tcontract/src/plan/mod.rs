@@ -687,7 +687,11 @@ impl<T: Scalar> Plan<T> {
     /// width this plan actually runs at is chosen from the same work and the token's dispatch
     /// costs, independently of this call. It is that objective, not a replay of the decision: the
     /// width rule additionally applies the token's payback gate, and a forced batch policy narrows
-    /// the budget before the width is asked for. A caller that needs placement — which lane a plan
+    /// the budget before the width is asked for. On the Faer route the executed item width is not
+    /// this objective's on a host class with a fitted row: it is the argmin of faer's time at a
+    /// width fitted for that class (tensor4all/tcontract-rs#194), because faer's
+    /// parallel GEMM does not divide ideally, so this estimate can promise a speed-up the route
+    /// declines. A caller that needs placement — which lane a plan
     /// takes, or what it would take on a narrower one — reads [`Plan::execution_width`], the
     /// executed width, never a number inferred from this estimate.
     ///
@@ -1224,6 +1228,19 @@ impl<T: Scalar> Plan<T> {
         match exec.batch_policy().strategy {
             // `Auto` narrows the budget over the whole batch (the packed
             // two-stage rule's stage one).
+            // A faer plan on a team of a host class with a fitted row is not
+            // narrowed: its item width is faer's fitted time at a width
+            // (`strategy::faer_time`), and an ideal-division cap here would
+            // exclude the widths that time picks past a slow regime. Without a
+            // team faer runs items serially in lanes, which this narrowing still
+            // bounds; without a row the ideal rule applies as before.
+            tcontract_exec::BatchStrategy::Auto
+                if matches!(self.strategy, Strategy::Faer(_))
+                    && exec.token_ref().carries_team()
+                    && crate::strategy::faer_time::host_row(T::STORAGE).is_some() =>
+            {
+                budget
+            }
             tcontract_exec::BatchStrategy::Auto => {
                 exec.width_for_within(budget, self.serial_ns(), PLAN_SECTIONS)
             }

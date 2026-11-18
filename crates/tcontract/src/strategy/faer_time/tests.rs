@@ -1,0 +1,135 @@
+use super::*;
+
+const XEON: &str = "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 85\n\
+model name\t: Intel(R) Xeon(R) Platinum 9242 CPU @ 2.30GHz\n\nprocessor\t: 1\n\
+vendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 85\n";
+
+#[test]
+fn cpuinfo_gives_vendor_family_model_and_cpu_count() {
+    let key = parse_cpuinfo(XEON).unwrap();
+    assert_eq!(
+        key,
+        HostKey {
+            vendor: "GenuineIntel".into(),
+            family: 6,
+            model: 85,
+            cpus: 2
+        }
+    );
+    assert_eq!(parse_cpuinfo("processor : 0\n"), None);
+}
+
+/// Only the fitted class has rows: another model or CPU count has none, so its
+/// faer plans supply no item time and keep the ideal-division rule.
+#[test]
+fn only_the_fitted_class_has_rows() {
+    let mut key = parse_cpuinfo(XEON).unwrap();
+    assert_eq!(row_of(&key, DType::C64), None, "96 CPUs, not 2");
+    key.cpus = 96;
+    assert!(row_of(&key, DType::C64).is_some());
+    key.model = 106;
+    assert_eq!(row_of(&key, DType::C64), None);
+}
+
+/// The width `Plan::execution_width` reports for a Faer plan on a team is the
+/// argmin of this host's faer time plus the team's dispatch cost over the whole
+/// lane where the host has a row for the dtype, and the ideal-division width the
+/// token's rule gives otherwise (any unfitted host, and f64 on the fitted one).
+#[test]
+fn execution_width_is_the_argmin_of_the_host_row() {
+    let pool = threadteam::Pool::builder()
+        .threads(4)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("pool");
+    let Ok(team) = pool.into_team(4) else {
+        // The host could not reserve the members.
+        return;
+    };
+    let exec = tcontract_exec::Exec::from_token(
+        team.exec(4),
+        None,
+        tcontract_exec::BatchPolicy::default(),
+    );
+    for (m, n, k) in [(16, 16, 16), (64, 256, 32), (384, 384, 384)] {
+        check_execution_width::<f64>(&exec, m, n, k);
+        check_execution_width::<num_complex::Complex<f64>>(&exec, m, n, k);
+    }
+}
+
+fn check_execution_width<T: crate::api::Scalar>(
+    exec: &tcontract_exec::Exec<'_>,
+    m: usize,
+    n: usize,
+    k: usize,
+) {
+    use crate::api::{CSpec, Labels, LayoutSpec, OperandSpec, Problem};
+    use crate::{FaerLimit, OutputContract, Plan, PlanConfig};
+
+    let l = |d: &[usize]| OperandSpec::new(LayoutSpec::new(d, &[1, d[0] as isize], 0).unwrap());
+    let problem = Problem::from_labels(
+        T::STORAGE,
+        l(&[m, k]),
+        l(&[k, n]),
+        CSpec::Absent,
+        l(&[m, n]),
+        &Labels::new(&[0, 2], &[2, 1], &[0, 1]),
+    )
+    .unwrap();
+    // Every shape a Faer plan, also above the default c64 volume bound.
+    let config = PlanConfig {
+        faer_limit: FaerLimit::NONE,
+        ..PlanConfig::default()
+    };
+    let plan = Plan::<T>::new(&problem, &config).unwrap();
+    let muladds = plan.muladds();
+    let want = match host_row(T::STORAGE) {
+        Some(row) => {
+            let time = item_time(row, m, n, muladds);
+            let objective = |w: usize| {
+                let dispatch = std::num::NonZeroUsize::new(w)
+                    .filter(|_| w > 1)
+                    .map_or(0.0, |w| {
+                        exec.token_ref().dispatch_cost(w).as_secs_f64() * 1e9
+                    });
+                time.at(w) + dispatch
+            };
+            (1..=4)
+                .min_by(|&a, &b| objective(a).total_cmp(&objective(b)))
+                .unwrap()
+        }
+        None => exec.width_for_within(4, muladds / tcontract_exec::host::muladds_per_ns(), 1),
+    };
+    let got = plan
+        .execution_width(
+            exec,
+            4,
+            <T as num_traits::One>::one(),
+            OutputContract::Initialized,
+        )
+        .unwrap()
+        .map(|w| w.get());
+    assert_eq!(got, Some(want), "{:?} {m}x{n}x{k}", T::STORAGE);
+}
+
+/// The fitted class has rows for f32, c32 and c64, and none for f64, which
+/// keeps the ideal-division rule there; on a row a large product is wider than
+/// a small one, which stays at width one.
+#[test]
+fn the_fitted_class_ships_rows_for_all_but_f64() {
+    let mut key = parse_cpuinfo(XEON).unwrap();
+    key.cpus = 96;
+    for dtype in [DType::F32, DType::C32, DType::C64] {
+        assert!(row_of(&key, dtype).is_some(), "{dtype:?}");
+    }
+    assert_eq!(row_of(&key, DType::F64), None);
+    let row = row_of(&key, DType::C64).unwrap();
+    let argmin = |t: ItemTime| {
+        (1..=96)
+            .min_by(|&a, &b| t.at(a).total_cmp(&t.at(b)))
+            .unwrap()
+    };
+    let c = 4.0;
+    assert_eq!(argmin(item_time(row, 32, 32, c * 32.0 * 32.0 * 32.0)), 1);
+    assert!(argmin(item_time(row, 512, 512, c * 512.0 * 512.0 * 512.0)) >= 24);
+}

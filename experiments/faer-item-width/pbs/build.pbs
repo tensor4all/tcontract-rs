@@ -1,0 +1,17 @@
+#!/bin/bash
+#PBS -q workq
+#PBS -j oe
+#PBS -l select=1:ncpus=16
+#PBS -l walltime=01:00:00
+# qsub -v TAG=<tag>: builds ~/t194/src/$TAG.tgz (worktree snapshot) -> ~/t194/bin/$TAG/faer-item-width. Target dir lives only in the job.
+set -uo pipefail
+[ "$(hostname -s)" != CPUcluster009 ] || { echo "refusing CPUcluster009" >&2; exit 97; }
+export PATH=$HOME/.cargo/bin:$PATH CARGO_BUILD_JOBS=16
+G=$HOME/t194; D=$G/bin/$TAG; WK=$G/work/${PBS_JOBID:-local}
+trap 'rm -rf $WK' EXIT
+mkdir -p $WK $D; tar -xzf $G/src/$TAG.tgz -C $WK || exit 1
+cd $WK/experiments/faer-item-width
+cargo fetch --locked > $D/build.log 2>&1
+CARGO_TARGET_DIR=$WK/t cargo build --release --locked --offline >> $D/build.log 2>&1 || { tail -30 $D/build.log; exit 1; }
+cp $WK/t/release/faer-item-width $D/; cp $WK/REV $D/ 2>/dev/null; (cd $D && sha256sum faer-item-width > sha256.txt); rm -f $G/src/$TAG.tgz
+echo "built $D"

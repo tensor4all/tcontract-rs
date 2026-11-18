@@ -1,0 +1,16 @@
+#!/bin/bash
+#PBS -q workq
+#PBS -j oe
+#PBS -l place=excl
+#PBS -l select=1:ncpus=96
+#PBS -l walltime=06:00:00
+# qsub -v TAG=<bin tag>,OUT=<dir> (probe args in $OUT/args): two rounds (forward, reversed) of the probe from a prebuilt binary; no cargo here.
+set -uo pipefail
+[ "$(hostname -s)" != CPUcluster009 ] || { echo "refusing CPUcluster009" >&2; exit 97; }
+ARGS=$(cat $OUT/args); B=$HOME/t194/bin/$TAG/faer-item-width; mkdir -p $OUT; LOG=$OUT/job.log
+{ echo "=== ${PBS_JOBID:-local} on $(hostname) $(date -Is) nproc=$(nproc) tag=$TAG args=$ARGS"
+  echo "load start: $(cat /proc/loadavg)"; lscpu | grep -E 'Vendor ID|Model name|CPU family|^Model:|^CPU\(s\)|NUMA node|Thread|Socket'
+  (cd $(dirname $B) && sha256sum -c sha256.txt); cat $(dirname $B)/REV 2>/dev/null; } >> $LOG
+$B $ARGS > $OUT/round1.csv 2>> $LOG; echo "round1 rc=$? $(date -Is)" >> $LOG
+$B $ARGS --reverse > $OUT/round2.csv 2>> $LOG; echo "round2 rc=$? $(date -Is)" >> $LOG
+echo "load end: $(cat /proc/loadavg)" >> $LOG

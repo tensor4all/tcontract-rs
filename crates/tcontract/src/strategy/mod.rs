@@ -3,6 +3,7 @@
 
 pub(crate) mod elementwise;
 pub(crate) mod faer;
+pub(crate) mod faer_time;
 pub(crate) mod fuse;
 pub(crate) mod inner_product;
 pub(crate) mod rank_k;

@@ -1,0 +1,4 @@
+c32: F=310 ns, R=84.699 muladds/ns, O=5000 ns, C=25 ns, TM=64, TN=32, X=12, Q0=0.5, Q1=0.05
+  within 5% of w1 and best: 1903/2662; > 1.05 x w1: 29; > 1.25 x w1: 0
+    budget 16: max t/t1 1.19, max t/best 2.78, median t/best 1.000
+    budget 96: max t/t1 1.19, max t/best 1.72, median t/best 1.000
