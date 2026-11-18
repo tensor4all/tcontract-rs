@@ -173,7 +173,9 @@ operation that owns batch lanes calls: `Auto` applies the `WorkModel`,
 items and the budget; a forced route the backend cannot serve is refused with
 `StrategyUnavailable` before any output write. The packed driver presents a balanced-lanes query
 (`Auto` reproduces its two-stage narrowing), the faer batched GEMM an
-item-serial-outer query (reproducing its inner/item-width rule), and
+item-serial-outer query whose item width is the argmin of faer's fitted
+time at a width on a host class with a fitted row (`ItemTime`; ideal
+division as before elsewhere, tensor4all/tcontract-rs#194), and
 `contract_batched` maps its default `Auto` to `Outer`/`Inner` by item count.
 A returned decision is binding (see `BatchDecision`'s route contract):
 `lanes × item_threads ≤ budget`, and a route that cannot nest refuses a `Split`

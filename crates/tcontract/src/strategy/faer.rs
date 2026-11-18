@@ -60,6 +60,7 @@ use tcontract_exec::{
 use tcontract_kernel::Element;
 
 use crate::api::{CSpec, OperandId, Problem, Scalar};
+use crate::strategy::faer_time;
 use crate::strategy::fuse::{fuse_group, Fused};
 
 /// What the product may assume about the destination when it starts, decided
@@ -175,14 +176,25 @@ impl FaerPlan {
     }
 
     /// The batch query this plan presents to the shared decision: the plan's own
-    /// per-item estimate, the faer capability's inner route, and the one section
-    /// a GEMM dispatches. Only a team gives faer internal parallelism; a token
-    /// without one runs every item `Par::Seq`, which the query says.
+    /// per-item estimate, the faer capability's inner route, the one section
+    /// a GEMM dispatches and, on a host class with a fitted row, faer's time at a
+    /// width ([`super::faer_time`]; without one, ideal division). Only a team gives faer internal parallelism; a
+    /// token without one runs every item `Par::Seq`, which the query says.
     fn query<T: Scalar>(&self, exec: &Exec<'_>) -> BatchQuery {
-        BatchQuery::new(self.h.extent, self.item_muladds::<T>())
+        let muladds = self.item_muladds::<T>();
+        let query = BatchQuery::new(self.h.extent, muladds)
             .with_item_parallel(exec.token_ref().carries_team())
             .with_outer_only_when_item_serial(true)
-            .with_item_sections(FAER_GEMM_SECTIONS)
+            .with_item_sections(FAER_GEMM_SECTIONS);
+        match faer_time::host_row(T::STORAGE) {
+            Some(row) => query.with_item_time(faer_time::item_time(
+                row,
+                self.m.extent,
+                self.n.extent,
+                muladds,
+            )),
+            None => query,
+        }
     }
 
     /// The one decision [`FaerPlan::run`] resolves, on `budget` slots of `exec`.
