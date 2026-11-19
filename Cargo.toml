@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/tcontract-kernel",
     "crates/t4a-cost",
+    "crates/t4a-desc",
     "crates/tcontract-exec",
     "crates/tcontract",
     "crates/tcontract-testkit",

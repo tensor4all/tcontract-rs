@@ -1,0 +1,17 @@
+[package]
+name = "t4a-desc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+publish = true
+description = "Device-neutral kernel descriptors for the tensor4all stack: a validated grouped-GEMM job list in NVIDIA's grouped-GEMM model (per-problem m, n, k, lda, ldb, ldc; ops N/T/C), with its groups and strided runs"
+readme = "README.md"
+
+# Like t4a-cost (#205): no dependency at all, so CPU and GPU backends in
+# different libraries can share the descriptor without depending on each other
+# (tensor4all/tcontract-rs#209).
+[dependencies]
+
+[lints]
+workspace = true

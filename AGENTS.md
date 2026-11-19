@@ -21,7 +21,8 @@ This is a research repository, not a production tensor-algebra library. Read `RE
 ## Layout
 
 - `crates/`: `tcontract-exec`, `tcontract-kernel`, `tcontract`, `tcontract-testkit`
-  and `tcontract-capi` (libtcontract_capi). Much of the kernel, driver and C ABI code is
+  and `tcontract-capi` (libtcontract_capi), plus the dependency-free shared
+  leaves `t4a-cost` (cost model) and `t4a-desc` (kernel descriptors). Much of the kernel, driver and C ABI code is
   tensorprimitives-rs by Lukas Devos, moved here with history and authorship
   (`docs/provenance.md`); the old tree is archived in
   `docs/archive/tensorprimitives/`.

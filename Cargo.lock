@@ -880,6 +880,10 @@ name = "t4a-cost"
 version = "0.1.0"
 
 [[package]]
+name = "t4a-desc"
+version = "0.1.0"
+
+[[package]]
 name = "t4a-gemm"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
