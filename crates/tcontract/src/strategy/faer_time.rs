@@ -40,7 +40,10 @@
 //! `80 x 512 x 40`, 16 tasks: 0.82-0.90x width 1 at widths 5 to 11, 2.3x at 16,
 //! 0.44x at 43, out of the band). The fitted `muladds_per_ns` and `fixed_ns` are
 //! faer's own serial rate and per-call cost on that class; they replace the
-//! host table's rate for this decision only.
+//! host table's rate for this decision only. `gain_margin` is the row's median
+//! relative error at the widths it chooses on the fit grid, derived after the
+//! fit (`item_fit.py`, `margin`): a width above one has to beat width one by
+//! more than it.
 //!
 //! The class is `t4a_cost::CpuClass`: the CPU vendor, family, model and logical CPU count read from
 //! `/proc/cpuinfo` (Linux), so two SKUs of one microarchitecture with different
@@ -82,6 +85,7 @@ const XEON_9242_2S: [(DType, Row); 4] = [
                 per_width_ns: 100.0,
                 slow: 0.5,
                 slow_per_width_ns: 8000.0,
+                gain_margin: 0.202,
             },
             task_elem_ns: 0.0,
         },
@@ -96,6 +100,7 @@ const XEON_9242_2S: [(DType, Row); 4] = [
                 per_width_ns: 200.0,
                 slow: 0.5,
                 slow_per_width_ns: 6000.0,
+                gain_margin: 0.264,
             },
             task_elem_ns: 0.1,
         },
@@ -110,6 +115,7 @@ const XEON_9242_2S: [(DType, Row); 4] = [
                 per_width_ns: 50.0,
                 slow: 0.5,
                 slow_per_width_ns: 8000.0,
+                gain_margin: 0.254,
             },
             task_elem_ns: 0.2,
         },
@@ -124,6 +130,7 @@ const XEON_9242_2S: [(DType, Row); 4] = [
                 per_width_ns: 100.0,
                 slow: 0.5,
                 slow_per_width_ns: 6000.0,
+                gain_margin: 0.287,
             },
             task_elem_ns: 0.6,
         },

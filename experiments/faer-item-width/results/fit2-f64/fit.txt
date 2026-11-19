@@ -2,3 +2,4 @@ f64: F=254 ns, R=41.994 muladds/ns, O=13000 ns, C=200 ns, E=0.1, Q0=0.5, Q1=6000
   within 5% of w1 and best: 2367/2662; > 1.05 x w1: 18; > 1.25 x w1: 1
     budget 16: max t/t1 1.24, max t/best 2.53, median t/best 1.000
     budget 96: max t/t1 1.29, max t/best 2.53, median t/best 1.000
+  gain margin (median |model/measured - 1| at chosen widths > 1): 0.264

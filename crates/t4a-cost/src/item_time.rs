@@ -19,7 +19,9 @@
 /// `parallel_ns` is the setup a parallel call adds once, `per_width_ns` what
 /// each further participant adds, and `slow_ns` plus `slow_per_width_ns` per
 /// further participant what a width below `slow_below` adds when the provider
-/// takes a slower path there. A provider fits these per host class offline as
+/// takes a slower path there. `gain_margin` is the time's own relative error: a
+/// width above one is taken only when its time plus dispatch, raised by that
+/// share, is still below width one's. A provider fits these per host class offline as
 /// an [`crate::ItemFit`] row; the batch decision of the crate that consumes this
 /// type only minimises them. A provider without a fitted time supplies none,
 /// and the query keeps ideal division.
@@ -67,6 +69,9 @@ pub struct ItemTime {
     pub slow_ns: f64,
     /// Nanoseconds that slower path adds per participant beyond the first.
     pub slow_per_width_ns: f64,
+    /// Relative error of this time; a width above one must beat width one by
+    /// more than it. Zero by default.
+    pub gain_margin: f64,
 }
 
 impl ItemTime {
@@ -85,6 +90,7 @@ impl ItemTime {
             slow_below: 0,
             slow_ns: 0.0,
             slow_per_width_ns: 0.0,
+            gain_margin: 0.0,
         }
     }
 
@@ -121,6 +127,14 @@ impl ItemTime {
         self.slow_below = slow_below;
         self.slow_ns = slow_ns;
         self.slow_per_width_ns = slow_per_width_ns;
+        self
+    }
+
+    /// Return this time with a width above one taken only when its time plus
+    /// dispatch, times `1 + gain_margin`, is below width one's.
+    #[must_use]
+    pub fn with_gain_margin(mut self, gain_margin: f64) -> Self {
+        self.gain_margin = gain_margin;
         self
     }
 

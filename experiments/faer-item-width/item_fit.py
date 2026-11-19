@@ -29,6 +29,11 @@ measured widths <= budget of t(w) + D(w). Score = pairs within 5% of width 1 and
 of the best width, minus 3 per pair above 1.05 x width 1 and 30 more per pair
 above 1.25 x width 1 (the merge bound).
 
+The gain margin is the fitted row's median relative error at the widths above
+one it chooses on the fit grid (both budgets). It is derived after the fit, not
+part of the search: the decision takes a width above one only when its time
+times (1 + margin) is still below width one's.
+
 The probe rows are those `load.py` reads. `fit.py` is the faer GEMM features.
 """
 import itertools
@@ -82,6 +87,18 @@ def score(res):
     tail = sum((r1 > 1.25).sum() for r1, _, _ in res)
     return both - 3 * reg - 30 * tail, both, reg, tail
 
+def margin(features, p, S, W, Tm, D):
+    """The row's own error: median |model / measured - 1| at the widths above one
+    it chooses on the fit grid, both budgets pooled. Derived, never searched."""
+    tm = model(features, p, S, W) + np.array([D[w] for w in ANCHORS])[None, :]
+    errs = []
+    for B in BUDGETS:
+        inb = np.array(ANCHORS) <= B
+        ch = np.argmin(np.where(inb[None, :], tm, np.inf), 1)
+        i = np.arange(len(W))[ch > 0]
+        errs.append(np.abs(tm[i, ch[i]] / Tm[i, ch[i]] - 1))
+    return float(np.median(np.concatenate(errs)))
+
 def fit(features, dt, paths):
     """Fit and print the row of `dt` from the probe files `paths`."""
     T, A, D = load(paths)
@@ -101,3 +118,4 @@ def fit(features, dt, paths):
     print(f"  within 5% of w1 and best: {both}/{tot}; > 1.05 x w1: {reg}; > 1.25 x w1: {tail}")
     for B, (r1, rb, ch) in zip(BUDGETS, evaluate(features, p, S, W, Tm, D)):
         print(f"    budget {B}: max t/t1 {r1.max():.2f}, max t/best {rb.max():.2f}, median t/best {np.median(rb):.3f}")
+    print(f"  gain margin (median |model/measured - 1| at chosen widths > 1): {margin(features, p, S, W, Tm, D):.3f}")

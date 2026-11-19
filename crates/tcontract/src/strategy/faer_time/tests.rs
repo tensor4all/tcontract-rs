@@ -85,9 +85,14 @@ fn check_execution_width<T: crate::api::Scalar>(
                     });
                 time.at(w) + dispatch
             };
-            (1..=4)
+            let w = (1..=4)
                 .min_by(|&a, &b| objective(a).total_cmp(&objective(b)))
-                .unwrap()
+                .unwrap();
+            if objective(w) * (1.0 + time.gain_margin) < objective(1) {
+                w
+            } else {
+                1
+            }
         }
         None => exec.width_for_within(4, muladds / tcontract_exec::host::muladds_per_ns(), 1),
     };
@@ -135,4 +140,7 @@ fn the_fitted_class_ships_rows_for_all_but_f64() {
     assert!(at(DType::C64, 512, 512, 512) >= 24);
     assert_eq!(at(DType::F64, 80, 40, 512), 1);
     assert!(at(DType::F64, 512, 32, 512) > 1);
+    let row = fitted(DType::C64);
+    let time = item_time(row, DType::C64, (16, 16, 16), 4.0 * 4096.0);
+    assert_eq!(time.gain_margin, row.fit.gain_margin);
 }

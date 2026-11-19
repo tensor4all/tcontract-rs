@@ -7,6 +7,7 @@ const ROW: ItemFit = ItemFit {
     per_width_ns: 10.0,
     slow: 0.5,
     slow_per_width_ns: 2_000.0,
+    gain_margin: 0.25,
 };
 
 /// The row prices the fit's model: the work at the fitted rate in rounds of
@@ -18,6 +19,7 @@ fn a_row_prices_the_fit_model() {
     // largest 0.4 of it, 300 ns per round.
     let t = ROW.item_time(4e5, 4, 0.4, 300.0, 6);
     assert_eq!(t.work_ns, 8_000.0);
+    assert_eq!(t.gain_margin, 0.25);
     assert_eq!(t.at(1), 8_100.0);
     // Width 3: two rounds, capped at the whole work; in the slow band.
     assert_eq!(

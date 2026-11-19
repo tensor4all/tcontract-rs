@@ -33,7 +33,8 @@ use crate::ItemTime;
 /// path (`slow_below`) are the provider's *features*, supplied per item to
 /// [`ItemFit::item_time`]; the fields are the fitted parameters `F`, `R`, `O`,
 /// `C`, `Q0` and `Q1` of `item_fit.py`: the slow band's fixed part a share of
-/// the work, its per-participant part in nanoseconds, as the fit fits them.
+/// the work, its per-participant part in nanoseconds, as the fit fits them,
+/// and the margin the fit derives from its own error.
 ///
 /// # Examples
 ///
@@ -49,6 +50,7 @@ use crate::ItemTime;
 ///     per_width_ns: 10.0,
 ///     slow: 0.5,
 ///     slow_per_width_ns: 2_000.0,
+///     gain_margin: 0.25,
 /// };
 /// let t = row.item_time(4e5, 4, 0.25, 0.0, 6);
 /// assert_eq!(t.at(1), 8_100.0);
@@ -71,6 +73,10 @@ pub struct ItemFit {
     /// `Q1`: nanoseconds the slower path adds per participant beyond the
     /// first.
     pub slow_per_width_ns: f64,
+    /// The row's own error, derived after the fit: the median
+    /// `|model / measured - 1|` at the widths above one it chooses on the fit
+    /// grid. A width above one must beat width one by more than it.
+    pub gain_margin: f64,
 }
 
 impl ItemFit {
@@ -96,6 +102,7 @@ impl ItemFit {
             .with_parallel(self.parallel_ns, tasks, self.per_width_ns)
             .with_largest_task(largest_share, task_ns)
             .with_slow_below(slow_below, self.slow * work, self.slow_per_width_ns)
+            .with_gain_margin(self.gain_margin)
     }
 }
 

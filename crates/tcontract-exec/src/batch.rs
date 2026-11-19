@@ -700,7 +700,8 @@ fn packed_auto(
 /// The width of one item on `budget` slots: the token's ideal-division rule over
 /// the estimate `item_ns`, or the argmin of the provider's [`ItemTime`] plus the
 /// dispatch cost of the item's sections when the query carries one. Ties keep
-/// the narrower width.
+/// the narrower width, and a width above one has to beat width one by more than
+/// the time's [`ItemTime::gain_margin`].
 fn item_width(rules: Widths<'_>, budget: usize, query: &BatchQuery, item_ns: f64) -> usize {
     let Some(time) = query.item_time else {
         return (rules.widths)(item_ns, query.item_sections);
@@ -713,7 +714,11 @@ fn item_width(rules: Widths<'_>, budget: usize, query: &BatchQuery, item_ns: f64
             best = (w, t);
         }
     }
-    best.0
+    if best.1 * (1.0 + time.gain_margin) < time.at(1) {
+        best.0
+    } else {
+        1
+    }
 }
 
 /// Most lanes the estimated total work can fill, given

@@ -423,6 +423,22 @@ fn an_item_time_is_minimised_over_the_budget() {
     assert_eq!(bd(&policy, budget(8), &ideal).item_threads, 8);
 }
 
+/// A width above one must beat width one by more than the time's gain margin.
+/// Hand values as above: w=4 is 20000 against 64000. A margin of 2 keeps it
+/// (20000 * 3 = 60000 < 64000), one of 2.2 does not (20000 * 3.2 = 64000).
+#[test]
+fn a_gain_margin_keeps_width_one_unless_the_gain_exceeds_it() {
+    let time = ItemTime::new(0.0, 64_000.0).with_parallel(2_000.0, 4, 0.0);
+    let query = |margin| {
+        BatchQuery::new(1, 1.0)
+            .with_outer_only_when_item_serial(true)
+            .with_item_time(time.with_gain_margin(margin))
+    };
+    let policy = BatchPolicy::default();
+    assert_eq!(bd(&policy, budget(8), &query(2.0)).item_threads, 4);
+    assert_eq!(bd(&policy, budget(8), &query(2.2)).item_threads, 1);
+}
+
 /// A slow regime below a width moves the argmin past it.
 #[test]
 fn a_slow_regime_below_a_width_is_skipped() {
