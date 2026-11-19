@@ -48,7 +48,7 @@
 //! The class is `t4a_cost::CpuClass`: the CPU vendor, family, model and logical CPU count read from
 //! `/proc/cpuinfo` (Linux), so two SKUs of one microarchitecture with different
 //! core counts are different classes. A host or dtype without a row — any other
-//! CPU, another OS, and f64 on the fitted class for now — supplies no time, and the decision keeps its ideal-division rule
+//! CPU or another OS — supplies no time, and the decision keeps its ideal-division rule
 //! there, exactly as before.
 //!
 //! The rows, the fitting script and the raw measurements are in
@@ -137,13 +137,13 @@ const XEON_9242_2S: [(DType, Row); 4] = [
     ),
 ];
 
-/// The dtypes whose fitted row the decision uses on that class. The f64 row is
-/// fitted but withheld: on threadteam 0.6 / colmat 0.34 even the best measured
-/// width per shape leaves the 512-shape acceptance sweep's f64 geo-mean
-/// t(best)/t(1) at 0.65 for budget 16, above the 0.592 the row must reach
-/// (tensor4all/tcontract-rs#203), so f64 keeps the ideal-division rule until
-/// that gate is restated for this stack. Adding `DType::F64` here enables it.
-const XEON_9242_2S_SHIPPED: [DType; 3] = [DType::F32, DType::C32, DType::C64];
+/// The dtypes whose fitted row the decision uses on that class. A row ships when,
+/// on the 512-shape acceptance sweep measured against main in the same run on
+/// the same stack, no product is above about 1.25x width 1 and the geo-mean
+/// t(chosen)/t(1) beats main's (tensor4all/tcontract-rs#203). f64 does: at most
+/// 1.17x, 0.714 / 0.541 at budgets 16 / 96 against main's ideal-division
+/// 0.965 / 0.767 (`experiments/faer-item-width/results/accept3m-f64`).
+const XEON_9242_2S_SHIPPED: [DType; 4] = [DType::F32, DType::F64, DType::C32, DType::C64];
 
 /// The row of `dtype` on the host class `key`, if the decision uses one.
 pub(crate) fn row_of(key: &CpuClass, dtype: DType) -> Option<Row> {

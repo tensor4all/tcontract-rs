@@ -25,7 +25,7 @@ fn only_the_fitted_class_has_rows() {
 /// The width `Plan::execution_width` reports for a Faer plan on a team is the
 /// argmin of this host's faer time plus the team's dispatch cost over the whole
 /// lane where the host has a row for the dtype, and the ideal-division width the
-/// token's rule gives otherwise (any unfitted host, and f64 on the fitted one).
+/// token's rule gives otherwise (any unfitted host).
 #[test]
 fn execution_width_is_the_argmin_of_the_host_row() {
     let pool = threadteam::Pool::builder()
@@ -108,19 +108,17 @@ fn check_execution_width<T: crate::api::Scalar>(
     assert_eq!(got, Some(want), "{:?} {m}x{n}x{k}", T::STORAGE);
 }
 
-/// The fitted class ships rows for f32, c32 and c64; the f64 row is fitted but
-/// withheld, so f64 keeps the ideal-division rule there. On a row a large
+/// The fitted class ships a row for every dtype. On a row a large
 /// product is wider than a small one, which stays at width one, and a product
 /// whose largest task is most of the work stays at width one however large (f64
 /// `80 x 40 x 512`: two tasks of 32 and 8 columns), while a tall one of the same
 /// `n` does not (`512 x 32 x 512`: six tasks).
 #[test]
-fn the_fitted_class_ships_rows_for_all_but_f64() {
+fn the_fitted_class_ships_rows_for_every_dtype() {
     let key = xeon(96);
-    for dtype in [DType::F32, DType::C32, DType::C64] {
+    for dtype in [DType::F32, DType::F64, DType::C32, DType::C64] {
         assert!(row_of(&key, dtype).is_some(), "{dtype:?}");
     }
-    assert_eq!(row_of(&key, DType::F64), None);
     let argmin = |t: ItemTime| {
         (1..=96)
             .min_by(|&a, &b| t.at(a).total_cmp(&t.at(b)))

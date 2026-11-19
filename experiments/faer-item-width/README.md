@@ -69,9 +69,9 @@ The acceptance shapes are off the fitting grid except for 16 and 512. Forced
 rows do not depend on the model, so `fit2-` was measured with the first
 candidate binary. `f7814e7`, `ef1c4d7` and `0cd8071` are measurement builds
 (their revisions are in each `job.log`; they are not in the merged history):
-`ef1c4d7` and `0cd8071` are the two #203 commits with `DType::F64` added to
-`XEON_9242_2S_SHIPPED`, and `f7814e7` the first of them with rows fitted on
-`fit-`.
+`ef1c4d7` is the first #203 commit and `0cd8071` the second (the rows as
+shipped), both with `DType::F64` in `XEON_9242_2S_SHIPPED`, and `f7814e7` the first
+with rows fitted on `fit-`.
 
 ## Fit
 
@@ -112,12 +112,13 @@ to 0.040 per dtype on stack 1 and 0.040 to 0.063 on stack 2 (`fit2-`).
 
 ## Acceptance (stack 2, #203)
 
-Gate (maintainer, #203): on the 512-shape sweep no product above about 1.25 x
-width 1 outside noise, and an f64 geo-mean t(chosen)/t(1) not worse than 0.592
-(budget 16) / 0.549 (budget 96). Medians over the two rounds.
+Gate (maintainer, #203): relative to main, measured in the same run on the same
+stack: no product above about 1.25 x width 1 outside noise, and a geo-mean
+t(chosen)/t(1) over the sweep better than main's. An absolute geo-mean is not a
+gate, because it depends on the stack and the environment. Medians over the
+two rounds.
 
-With the gain margin (`results/accept3m-<dtype>`, the rows as shipped; f64 measured
-with its row enabled):
+With the gain margin (`results/accept3m-<dtype>`, the rows as shipped):
 
 | dtype | budget | shapes | pass both | > 1.05 x width 1 | > 1.05 x best | chose width 1 | max t/t(1) | max t/best | median t/best |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -176,10 +177,10 @@ main ships the #194 rows for f32, c32 and c64 and the ideal rule for f64):
 The best measured width per shape bounds what any width choice can reach. Its
 f64 geo-mean t(best)/t(1) is 0.508 / 0.434 (budget 16 / 96) on stack 1
 (`accept2-f64`) and 0.646-0.657 / 0.513-0.533 on stack 2 (`accept3-old-f64`,
-`accept3-f64`, `accept3m-f64`), so the issue's 0.592 at budget 16 cannot be met on
-stack 2 by any rule. f64 therefore stays withheld (`XEON_9242_2S_SHIPPED`) until
-the gate is restated for this stack; with its row it passes the 1.25 x bound and
-the budget-96 number and is 0.714 / 0.541 against main's 0.965 / 0.767.
+`accept3-f64`, `accept3m-f64`): stack 2 leaves every rule less to gain, which is
+why the gate compares against main on the same stack. Every dtype passes it; f64
+(main: the ideal rule) goes from 0.965 / 0.767 to 0.714 / 0.541 with no product
+above 1.17 x width 1, and ships.
 
 Products above 1.10 x width 1 (all runs on stack 2 with the #203 model; ratio is
 the median of the rounds):
