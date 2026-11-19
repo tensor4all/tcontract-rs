@@ -1,22 +1,28 @@
 //! A provider's time of one item at a width.
 
 /// A provider's time for one item at a width, without the token's dispatch cost
-/// (tensor4all/tcontract-rs#194).
+/// (tensor4all/tcontract-rs#194, #203).
 ///
 /// ```text
 /// at(1) = fixed_ns + work_ns
-/// at(w) = fixed_ns + parallel_ns + work_ns / min(w, split) + per_width_ns * (w - 1)
+/// at(w) = fixed_ns + parallel_ns + work_ns * min(1, r * task_share) + r * task_ns
+///         + per_width_ns * (w - 1)
 ///         + (slow_ns + slow_per_width_ns * (w - 1) if w < slow_below)
+/// r     = ceil(split / w)
 /// ```
 ///
-/// `work_ns` is the item's serial compute time, divided over at most `split`
-/// participants; `parallel_ns` is the setup a parallel call adds once,
-/// `per_width_ns` what each further participant adds, and `slow_ns` plus
-/// `slow_per_width_ns` per further participant what a width below `slow_below`
-/// adds when the provider takes a slower path there. A provider fits these per
-/// host class offline as an [`crate::ItemFit`] row; the batch decision of the
-/// crate that consumes this type only minimises them. A provider without a
-/// fitted time supplies none, and the query keeps ideal division.
+/// `work_ns` is the item's serial compute time. It runs as `split` tasks that
+/// the `w` participants take in turn, so width `w` finishes after `r` rounds of
+/// at most the largest task, a share `task_share` of the work (`1 / split` when
+/// the tasks are equal); each round also adds `task_ns`, what one task costs
+/// besides its share (moving its operands to the participant, say).
+/// `parallel_ns` is the setup a parallel call adds once, `per_width_ns` what
+/// each further participant adds, and `slow_ns` plus `slow_per_width_ns` per
+/// further participant what a width below `slow_below` adds when the provider
+/// takes a slower path there. A provider fits these per host class offline as
+/// an [`crate::ItemFit`] row; the batch decision of the crate that consumes this
+/// type only minimises them. A provider without a fitted time supplies none,
+/// and the query keeps ideal division.
 ///
 /// # Examples
 ///
@@ -26,8 +32,13 @@
 /// let t = ItemTime::new(100.0, 8_000.0).with_parallel(1_000.0, 4, 50.0);
 /// assert_eq!(t.at(1), 8_100.0);
 /// assert_eq!(t.at(4), 100.0 + 1_000.0 + 2_000.0 + 150.0);
+/// // Three participants still take two rounds of four equal tasks.
+/// assert_eq!(t.at(3), 100.0 + 1_000.0 + 4_000.0 + 100.0);
 /// // Beyond `split` a participant only adds its cost.
 /// assert!(t.at(8) > t.at(4));
+/// // The largest task is half the work and each round adds 200 ns.
+/// let uneven = t.with_largest_task(0.5, 200.0);
+/// assert_eq!(uneven.at(4), 100.0 + 1_000.0 + 4_000.0 + 200.0 + 150.0);
 /// // Below width 8 a slower path adds 1 µs and 100 ns per further participant.
 /// let slow = t.with_slow_below(8, 1_000.0, 100.0);
 /// assert_eq!(slow.at(4), t.at(4) + 1_000.0 + 300.0);
@@ -42,8 +53,12 @@ pub struct ItemTime {
     pub work_ns: f64,
     /// Nanoseconds a width above one adds once.
     pub parallel_ns: f64,
-    /// Most participants `work_ns` divides over; at least one.
+    /// Tasks `work_ns` runs as; at least one.
     pub split: usize,
+    /// Share of `work_ns` in the largest task, in `(0, 1]`.
+    pub task_share: f64,
+    /// Nanoseconds each round of tasks adds besides its share of `work_ns`.
+    pub task_ns: f64,
     /// Nanoseconds each participant beyond the first adds.
     pub per_width_ns: f64,
     /// Widths `2..slow_below` take the provider's slower path.
@@ -64,6 +79,8 @@ impl ItemTime {
             work_ns,
             parallel_ns: 0.0,
             split: 1,
+            task_share: 1.0,
+            task_ns: 0.0,
             per_width_ns: 0.0,
             slow_below: 0,
             slow_ns: 0.0,
@@ -72,13 +89,23 @@ impl ItemTime {
     }
 
     /// Return this time with its parallel terms: `parallel_ns` once above width
-    /// one, the work divided over at most `split` participants, and
-    /// `per_width_ns` for each participant beyond the first.
+    /// one, the work as `split` equal tasks taken in turn, and `per_width_ns`
+    /// for each participant beyond the first.
     #[must_use]
     pub fn with_parallel(mut self, parallel_ns: f64, split: usize, per_width_ns: f64) -> Self {
         self.parallel_ns = parallel_ns;
         self.split = split.max(1);
+        self.task_share = 1.0 / self.split as f64;
         self.per_width_ns = per_width_ns;
+        self
+    }
+
+    /// Return this time with the largest task a share `task_share` of the work
+    /// instead of `1 / split`, and `task_ns` added per round of tasks.
+    #[must_use]
+    pub fn with_largest_task(mut self, task_share: f64, task_ns: f64) -> Self {
+        self.task_share = task_share;
+        self.task_ns = task_ns;
         self
     }
 
@@ -108,9 +135,11 @@ impl ItemTime {
         } else {
             0.0
         };
+        let rounds = self.split.max(1).div_ceil(width) as f64;
         self.fixed_ns
             + self.parallel_ns
-            + self.work_ns / width.min(self.split.max(1)) as f64
+            + self.work_ns * (rounds * self.task_share).min(1.0)
+            + rounds * self.task_ns
             + self.per_width_ns * (width - 1) as f64
             + slow
     }

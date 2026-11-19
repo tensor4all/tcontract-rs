@@ -4,18 +4,23 @@
 token's dispatch cost D(w):
 
     t(1) = F + work
-    t(w) = F + O + work / min(w, P) + C (w - 1) + [slow(w)] (Q0 + Q1 (w - 1)) work
+    t(w) = F + O + work min(1, ceil(P / w) L) + C (w - 1) + [slow(w)] (Q0 + Q1 (w - 1)) work
     work = W / R
 
+The work runs as P tasks taken in turn by the w participants, the largest a
+share L of it (L = 1 / P for equal tasks), so width w finishes after
+ceil(P / w) rounds of at most the largest task.
+
 F and R are fitted for every provider in the same way; O, C, Q0 and Q1 are
-searched on a grid. W (the item's multiply-adds), P (its split) and slow(w)
+searched on a grid. W (the item's multiply-adds), P and L (its tasks) and slow(w)
 (the widths of the provider's slower path) are the provider's *features*: an
 object with
 
     muladds(dtype, *shape) -> float      W of one shape
     grid: dict name -> values            the feature's own parameters, searched
                                          between C and Q0
-    split(S, *feat) -> array             P per shape (S: one row per shape)
+    split(S, *feat) -> (P, L)            tasks and largest share per shape
+                                         (S: one row per shape)
     slow(S, w, *feat) -> array           slow(w) per shape and width
 
 F, R: least squares on the relative error of t(1). The rest: grid search over
@@ -32,10 +37,10 @@ from load import load
 
 ANCHORS = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96]
 BUDGETS = [16, 96]
-O_GRID = np.arange(0, 16001, 1000)
-C_GRID = [0, 10, 25, 50, 100]
-Q0_GRID = [0, 0.5, 1, 2]
-Q1_GRID = [0, 0.05, 0.1, 0.2, 0.4]
+O_GRID = np.arange(0, 24001, 1000)
+C_GRID = [0, 10, 25, 50, 100, 200, 400]
+Q0_GRID = [0, 0.25, 0.5, 1, 2]
+Q1_GRID = [0, 500, 1000, 2000, 3000, 4000, 6000, 8000, 12000, 16000]
 
 def arrays(features, T, dt):
     shapes = sorted({k[1:4] for k in T if k[0] == dt})
@@ -54,9 +59,10 @@ def model(features, p, S, W):
     F, R, O, C, *feat, Q0, Q1 = p
     w = np.array(ANCHORS, dtype=float)[None, :]
     work = (W / R)[:, None]
-    P = features.split(S, *feat)
-    t = F + O + work / np.minimum(w, P[:, None]) + C * (w - 1)
-    t = t + features.slow(S, w, *feat) * (Q0 + Q1 * (w - 1)) * work
+    P, L, E = features.split(S, *feat)
+    rounds = np.ceil(P[:, None] / w)
+    t = F + O + work * np.minimum(1, rounds * L[:, None]) + rounds * E[:, None] + C * (w - 1)
+    t = t + features.slow(S, w, *feat) * (Q0 * work + Q1 * (w - 1))
     t[:, 0] = F + W / R
     return t
 

@@ -76,7 +76,7 @@ fn check_execution_width<T: crate::api::Scalar>(
     let muladds = plan.muladds();
     let want = match host_row(T::STORAGE) {
         Some(row) => {
-            let time = item_time(row, m, n, muladds);
+            let time = item_time(row, T::STORAGE, (m, n, k), muladds);
             let objective = |w: usize| {
                 let dispatch = std::num::NonZeroUsize::new(w)
                     .filter(|_| w > 1)
@@ -103,9 +103,12 @@ fn check_execution_width<T: crate::api::Scalar>(
     assert_eq!(got, Some(want), "{:?} {m}x{n}x{k}", T::STORAGE);
 }
 
-/// The fitted class has rows for f32, c32 and c64, and none for f64, which
-/// keeps the ideal-division rule there; on a row a large product is wider than
-/// a small one, which stays at width one.
+/// The fitted class ships rows for f32, c32 and c64; the f64 row is fitted but
+/// withheld, so f64 keeps the ideal-division rule there. On a row a large
+/// product is wider than a small one, which stays at width one, and a product
+/// whose largest task is most of the work stays at width one however large (f64
+/// `80 x 40 x 512`: two tasks of 32 and 8 columns), while a tall one of the same
+/// `n` does not (`512 x 32 x 512`: six tasks).
 #[test]
 fn the_fitted_class_ships_rows_for_all_but_f64() {
     let key = xeon(96);
@@ -113,13 +116,23 @@ fn the_fitted_class_ships_rows_for_all_but_f64() {
         assert!(row_of(&key, dtype).is_some(), "{dtype:?}");
     }
     assert_eq!(row_of(&key, DType::F64), None);
-    let row = row_of(&key, DType::C64).unwrap();
     let argmin = |t: ItemTime| {
         (1..=96)
             .min_by(|&a, &b| t.at(a).total_cmp(&t.at(b)))
             .unwrap()
     };
-    let c = 4.0;
-    assert_eq!(argmin(item_time(row, 32, 32, c * 32.0 * 32.0 * 32.0)), 1);
-    assert!(argmin(item_time(row, 512, 512, c * 512.0 * 512.0 * 512.0)) >= 24);
+    let fitted = |dtype| XEON_9242_2S.iter().find(|(d, _)| *d == dtype).unwrap().1;
+    let at = |dtype, m: usize, n: usize, k: usize| {
+        let c = if dtype == DType::C64 { 4.0 } else { 1.0 };
+        argmin(item_time(
+            fitted(dtype),
+            dtype,
+            (m, n, k),
+            c * (m * n * k) as f64,
+        ))
+    };
+    assert_eq!(at(DType::C64, 32, 32, 32), 1);
+    assert!(at(DType::C64, 512, 512, 512) >= 24);
+    assert_eq!(at(DType::F64, 80, 40, 512), 1);
+    assert!(at(DType::F64, 512, 32, 512) > 1);
 }

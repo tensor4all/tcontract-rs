@@ -400,10 +400,11 @@ fn balanced_lanes_can_hold_a_lane_back() {
 }
 
 /// With an item time, the item width is the argmin of `at(w) + D(w)` over the
-/// budget, not the ideal-division width. Hand values: 64 µs of work split over at
-/// most 4, 2 µs of parallel setup, D(w) = 500 w ns:
-/// w=1: 64000; w=2: 2000 + 32000 + 1000 = 35000; w=3: 2000 + 21333 + 1500 = 24833;
-/// w=4: 2000 + 16000 + 2000 = 20000; w=5..8: 2000 + 16000 + 500 w > 20000.
+/// budget, not the ideal-division width. Hand values: 64 µs of work as 4 equal
+/// tasks, 2 µs of parallel setup, D(w) = 500 w ns:
+/// w=1: 64000; w=2: 2000 + 32000 + 1000 = 35000; w=3 (two rounds):
+/// 2000 + 32000 + 1500 = 35500; w=4: 2000 + 16000 + 2000 = 20000;
+/// w=5..8: 2000 + 16000 + 500 w > 20000.
 #[test]
 fn an_item_time_is_minimised_over_the_budget() {
     let time = ItemTime::new(0.0, 64_000.0).with_parallel(2_000.0, 4, 0.0);
@@ -414,7 +415,7 @@ fn an_item_time_is_minimised_over_the_budget() {
     ] {
         let query = strategy_query.with_item_time(time);
         assert_eq!(bd(&policy, budget(8), &query).item_threads, 4);
-        assert_eq!(bd(&policy, budget(3), &query).item_threads, 3);
+        assert_eq!(bd(&policy, budget(3), &query).item_threads, 2);
     }
     // The ideal rule would take the whole budget for the same 64 µs.
     let ideal = BatchQuery::new(1, 64_000.0 * crate::host::muladds_per_ns())
@@ -442,10 +443,10 @@ fn a_slow_regime_below_a_width_is_skipped() {
 }
 
 /// The slow path's per-participant term moves the argmin to the narrower end of
-/// the slow band: 64 µs over at most 8, slow below 8 by 4 µs per participant
+/// the slow band: 64 µs as 8 equal tasks, slow below 8 by 4 µs per participant
 /// beyond the first, D(w) = 500 w ns. w=2: 32000 + 4000 + 1000 = 37000;
-/// w=3: 21333 + 8000 + 1500 = 30833; w=4: 16000 + 12000 + 2000 = 30000;
-/// w=5: 12800 + 16000 + 2500 = 31300; w=8: 8000 + 4000 = 12000.
+/// w=3 (three rounds): 24000 + 8000 + 1500 = 33500; w=4: 16000 + 12000 + 2000 =
+/// 30000; w=5 (two rounds): 16000 + 16000 + 2500 = 34500; w=8: 8000 + 4000 = 12000.
 #[test]
 fn a_slow_path_growing_with_the_width_is_priced_per_participant() {
     let time = ItemTime::new(0.0, 64_000.0)
