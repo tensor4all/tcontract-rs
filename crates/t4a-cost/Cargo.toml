@@ -1,0 +1,17 @@
+[package]
+name = "t4a-cost"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+publish = true
+description = "Neutral cost-model types for the tensor4all stack: the host CPU class of offline-fitted rows, a provider's item time at a width, and the generic fitted row behind it"
+readme = "README.md"
+
+# The neutrality constraint of #205: no scheduler, pool or scratch type, and no
+# dependency at all — a cost model shared between libraries must not drag the
+# placement stack with it.
+[dependencies]
+
+[lints]
+workspace = true

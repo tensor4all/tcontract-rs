@@ -876,6 +876,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "t4a-cost"
+version = "0.1.0"
+
+[[package]]
 name = "t4a-gemm"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1021,6 +1025,7 @@ dependencies = [
  "rand_chacha",
  "strided-basic",
  "strided-view",
+ "t4a-cost",
  "tcontract-exec",
  "tcontract-kernel",
  "tcontract-testkit",
@@ -1066,6 +1071,7 @@ name = "tcontract-exec"
 version = "0.13.0"
 dependencies = [
  "colmat",
+ "t4a-cost",
  "thiserror",
  "threadteam",
 ]

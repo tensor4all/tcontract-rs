@@ -16,7 +16,7 @@ Every crate has a separate consumer or a stable interface; there is no umbrella 
 
 ## 2. One direction of dependency
 
-The dependency graph is acyclic: `tcontract-exec` and `tcontract-kernel` at the bottom, `tcontract` on top of both, `tcontract-capi` on top of `tcontract`; `tcontract-testkit` and the benchmarks consume them.
+The dependency graph is acyclic: `t4a-cost` at the bottom (no dependency at all), `tcontract-exec` and `tcontract-kernel` above it, `tcontract` on top of both, `tcontract-capi` on top of `tcontract`; `tcontract-testkit` and the benchmarks consume them.
 
 - A lower crate never learns about a higher one.
 - A crate depends on the narrowest lower contract it needs. `tcontract` depends on the packed-kernel contract of `tcontract-kernel`, because that is what direct contraction requires.
@@ -27,7 +27,7 @@ A contraction is one lowered, role-grouped `Problem` with `Labels` and `DotGener
 
 ## 4. Short names under one prefix
 
-Crates are named `tcontract-<part>` with a part name that says what it does: `tcontract-exec`, `tcontract-kernel`, `tcontract`, `tcontract-capi`.
+Contraction crates are named `tcontract-<part>` with a part name that says what it does: `tcontract-exec`, `tcontract-kernel`, `tcontract`, `tcontract-capi`. The one exception is the leaf another stack shares below them, `t4a-cost` (#205), whose name follows the shared `t4a-` family instead.
 
 - The prefix identifies the family and avoids claiming generic crates.io names.
 - The prefix is neutral: no consumer or project name, because the library is meant for users beyond its original project.

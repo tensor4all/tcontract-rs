@@ -29,7 +29,7 @@
 //! `muladds_per_ns` and `fixed_ns` are faer's own serial rate and per-call cost on
 //! that class; they replace the host table's rate for this decision only.
 //!
-//! The class is `tcontract_exec::host::CpuClass`: the CPU vendor, family, model and logical CPU count read from
+//! The class is `t4a_cost::CpuClass`: the CPU vendor, family, model and logical CPU count read from
 //! `/proc/cpuinfo` (Linux), so two SKUs of one microarchitecture with different
 //! core counts are different classes. A host or dtype without a row — any other
 //! CPU, another OS, and f64 on the fitted class for now — supplies no time, and the decision keeps its ideal-division rule
@@ -38,23 +38,19 @@
 //! The rows, the fitting script and the raw measurements are in
 //! `experiments/faer-item-width/` (`fit.py`, `results/`).
 
-use tcontract_exec::host::CpuClass;
-use tcontract_exec::ItemTime;
+use t4a_cost::{CpuClass, ItemFit, ItemTime};
 
 use crate::api::DType;
 
-/// One fitted row (see the module documentation).
+/// One fitted row (see the module documentation): the fit's parameters in an
+/// `ItemFit`, faer's GEMM features — the output tiles that bound the split and
+/// the slow band's column rule — beside them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Row {
-    fixed_ns: f64,
-    muladds_per_ns: f64,
-    parallel_ns: f64,
-    per_width_ns: f64,
+    fit: ItemFit,
     tile_m: usize,
     tile_n: usize,
     slow_cols: usize,
-    slow: f64,
-    slow_per_width: f64,
 }
 
 /// `GenuineIntel` family 6 model 85 with 96 logical CPUs: 2 x Xeon Platinum 9242
@@ -67,57 +63,65 @@ const XEON_9242_2S: [(DType, Row); 4] = [
     (
         DType::F32,
         Row {
-            fixed_ns: 340.0,
-            muladds_per_ns: 83.804,
-            parallel_ns: 2000.0,
-            per_width_ns: 50.0,
+            fit: ItemFit {
+                fixed_ns: 340.0,
+                muladds_per_ns: 83.804,
+                parallel_ns: 2000.0,
+                per_width_ns: 50.0,
+                slow: 0.5,
+                slow_per_width: 0.1,
+            },
             tile_m: usize::MAX,
             tile_n: 48,
             slow_cols: 12,
-            slow: 0.5,
-            slow_per_width: 0.1,
         },
     ),
     (
         DType::F64,
         Row {
-            fixed_ns: 216.0,
-            muladds_per_ns: 41.672,
-            parallel_ns: 15000.0,
-            per_width_ns: 10.0,
+            fit: ItemFit {
+                fixed_ns: 216.0,
+                muladds_per_ns: 41.672,
+                parallel_ns: 15000.0,
+                per_width_ns: 10.0,
+                slow: 0.5,
+                slow_per_width: 0.0,
+            },
             tile_m: 64,
             tile_n: 48,
             slow_cols: 12,
-            slow: 0.5,
-            slow_per_width: 0.0,
         },
     ),
     (
         DType::C32,
         Row {
-            fixed_ns: 310.0,
-            muladds_per_ns: 84.699,
-            parallel_ns: 5000.0,
-            per_width_ns: 25.0,
+            fit: ItemFit {
+                fixed_ns: 310.0,
+                muladds_per_ns: 84.699,
+                parallel_ns: 5000.0,
+                per_width_ns: 25.0,
+                slow: 0.5,
+                slow_per_width: 0.05,
+            },
             tile_m: 64,
             tile_n: 32,
             slow_cols: 12,
-            slow: 0.5,
-            slow_per_width: 0.05,
         },
     ),
     (
         DType::C64,
         Row {
-            fixed_ns: 353.0,
-            muladds_per_ns: 41.282,
-            parallel_ns: 6000.0,
-            per_width_ns: 0.0,
+            fit: ItemFit {
+                fixed_ns: 353.0,
+                muladds_per_ns: 41.282,
+                parallel_ns: 6000.0,
+                per_width_ns: 0.0,
+                slow: 0.5,
+                slow_per_width: 0.05,
+            },
             tile_m: 64,
             tile_n: 24,
             slow_cols: 12,
-            slow: 0.5,
-            slow_per_width: 0.05,
         },
     ),
 ];
@@ -151,17 +155,12 @@ pub(crate) fn host_row(dtype: DType) -> Option<Row> {
 /// faer's time under `row` for one product of `muladds` multiply-adds on an
 /// `m x n` output.
 pub(crate) fn item_time(row: Row, m: usize, n: usize, muladds: f64) -> ItemTime {
-    let work = muladds / row.muladds_per_ns;
+    // faer's features: the output tiles that bound the split, and the slow
+    // band of the kernel's left-operand packing.
     let split = m
         .div_ceil(row.tile_m)
         .saturating_mul(n.div_ceil(row.tile_n));
-    ItemTime::new(row.fixed_ns, work)
-        .with_parallel(row.parallel_ns, split, row.per_width_ns)
-        .with_slow_below(
-            n.div_ceil(row.slow_cols),
-            row.slow * work,
-            row.slow_per_width * work,
-        )
+    row.fit.item_time(muladds, split, n.div_ceil(row.slow_cols))
 }
 
 #[cfg(test)]

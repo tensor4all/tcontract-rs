@@ -11,6 +11,9 @@ readme = "README.md"
 [dependencies]
 # `faer`: `with_faer_par`, the one mapping from a placement token to `faer::Par`.
 faer = { workspace = true, optional = true }
+# `t4a-cost`: the CPU class and the item time a batch query carries (#205);
+# re-exported from `host` and `batch` for this crate's own API.
+t4a-cost = { workspace = true }
 threadteam = { workspace = true }
 thiserror = { workspace = true }
 
