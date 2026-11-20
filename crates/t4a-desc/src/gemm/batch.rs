@@ -99,7 +99,10 @@ pub struct GemmGroup<'b> {
 /// job `first + i` has offsets `offset(first) + i·stride` for `A`, `B` and `C`
 /// in that order. The `C` stride is positive and at least the `C` footprint
 /// `(n-1)·ldc + m`, so the run's outputs are disjoint by construction. The `A`
-/// and `B` strides may be any value, zero included (a shared input).
+/// and `B` strides are not constrained: they may be positive, zero (a shared
+/// input) or negative (inputs at descending offsets). A consumer that lowers a
+/// run to a strided batch or a rank-3 view must accept zero and negative `A`
+/// and `B` strides, or split the run.
 ///
 /// Runs are found greedily from the left and cover every job; a job that
 /// cannot extend a run is a run of length 1 with stride `[0, 0, 0]`.
