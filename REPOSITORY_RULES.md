@@ -121,7 +121,10 @@ Maintainer protocol.
   explicit approval for that specific package; a general request to finish a
   PR does not authorize it.
 - strided-rs crates are published from their own repository; the tcontract crates
-  are not published yet.
+  are published from this one (`t4a-cost`, `tcontract-exec`, `tcontract`,
+  `tcontract-kernel`), while `tcontract-capi` and `tcontract-testkit` carry
+  `publish = false`. Release notes are [CHANGELOG.md](CHANGELOG.md), and the
+  published commit carries the `vX.Y.Z` tag.
 - Before any `cargo publish`, inspect the packaged files (`cargo package
   --list`) and the metadata: name, version, description, license, repository,
   homepage, documentation, README, `rust-version`, keywords, categories.
