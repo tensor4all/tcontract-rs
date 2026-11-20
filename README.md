@@ -272,7 +272,10 @@ benchmark harness. faer is an internal strategy, not API. Phase 2 optimizes the
 packed driver until it can replace faer, leaving one route for contractions
 with a K role that differs only by kernel family (all-batch problems stay
 delegated to strided-rs); `hadamard.json` must not
-regress. There is no stable API or ABI yet and no crate has been published.
+regress. There is no stable API or ABI yet. Published crates: `t4a-cost` 0.1.0,
+`tcontract-exec` 0.13.0, `tcontract` 0.13.0 and `tcontract-kernel` 0.3.1
+([CHANGELOG.md](CHANGELOG.md)); `t4a-desc` has no dependent yet, and
+`tcontract-capi` and `tcontract-testkit` are not published.
 Performance claims need recorded measurements ([PERFORMANCE_TIPS.md](PERFORMANCE_TIPS.md),
 [docs/experiments.md](docs/experiments.md)). The source integration that
 produced this layout is described in [docs/migration-2026-10.md](docs/migration-2026-10.md)
