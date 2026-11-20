@@ -16,7 +16,7 @@ Every crate has a separate consumer or a stable interface; there is no umbrella 
 
 ## 2. One direction of dependency
 
-The dependency graph is acyclic: `t4a-cost` at the bottom (no dependency at all), `tcontract-exec` and `tcontract-kernel` above it, `tcontract` on top of both, `tcontract-capi` on top of `tcontract`; `tcontract-testkit` and the benchmarks consume them.
+The dependency graph is acyclic: the shared leaves `t4a-cost` and `t4a-desc` at the bottom (no dependency at all), `tcontract-exec` and `tcontract-kernel` above `t4a-cost`, `tcontract` on top of both, `tcontract-capi` on top of `tcontract`; `tcontract-testkit` and the benchmarks consume them.
 
 - A lower crate never learns about a higher one.
 - A crate depends on the narrowest lower contract it needs. `tcontract` depends on the packed-kernel contract of `tcontract-kernel`, because that is what direct contraction requires.
@@ -27,7 +27,7 @@ A contraction is one lowered, role-grouped `Problem` with `Labels` and `DotGener
 
 ## 4. Short names under one prefix
 
-Contraction crates are named `tcontract-<part>` with a part name that says what it does: `tcontract-exec`, `tcontract-kernel`, `tcontract`, `tcontract-capi`. The one exception is the leaf another stack shares below them, `t4a-cost` (#205), whose name follows the shared `t4a-` family instead.
+Contraction crates are named `tcontract-<part>` with a part name that says what it does: `tcontract-exec`, `tcontract-kernel`, `tcontract`, `tcontract-capi`. The exception is a dependency-free leaf that other stacks share below them, named `t4a-<part>` after the shared `t4a-` family: `t4a-cost` (#205) and `t4a-desc` (#209). Such a leaf carries no execution, contraction or C-ABI code; the 2026-09-29 "no `t4a` naming" decision still holds for every other crate (see the [decision log](decision-log.md#2026-11-20-the-device-neutral-job-descriptor-209)).
 
 - The prefix identifies the family and avoids claiming generic crates.io names.
 - The prefix is neutral: no consumer or project name, because the library is meant for users beyond its original project.
