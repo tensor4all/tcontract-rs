@@ -1,0 +1,5 @@
+f32: F=416 ns, R=83.449 muladds/ns, O=18000 ns, C=100 ns, E=0, Q0=0.5, Q1=8000
+  within 5% of w1 and best: 2457/2662; > 1.05 x w1: 6; > 1.25 x w1: 2
+    budget 16: max t/t1 1.04, max t/best 2.09, median t/best 1.000
+    budget 96: max t/t1 1.50, max t/best 1.84, median t/best 1.000
+  gain margin (median |model/measured - 1| at chosen widths > 1): 0.202

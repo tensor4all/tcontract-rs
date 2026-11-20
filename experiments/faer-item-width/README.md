@@ -34,58 +34,183 @@ width-1 result (relative `1e-10`, `1e-4` for `f32`/`c32`); a mismatch aborts.
 `lg` cluster nodes, exclusive (`place=excl`, `select=1:ncpus=96`): 2 x Intel Xeon
 Platinum 9242 (`GenuineIntel` family 6 model 85), 96 CPUs, one thread per core,
 4 NUMA nodes of 24 CPUs; `threadteam::HostClass::X86_64Avx512`. Release profile
-of the workspace (thin LTO, one codegen unit), rustc 1.96.0, threadteam 0.5.1,
-t4a-faer 0.33.0, t4a-private-gemm-x86 0.1.28. A team of 96 (`into_team(96)`).
-These are the versions of the recorded runs. The probe's manifest and lock now
-follow the workspace (threadteam 0.6, colmat 0.34.0 over the same x86 kernel),
-so a new run measures that stack.
+of the workspace (thin LTO, one codegen unit), rustc 1.96.0. A team of 96
+(`into_team(96)`). Two stacks were measured:
+
+- **stack 1** (the `fit-`, `accept-base-`, `accept-` and `accept2-` runs, #194):
+  threadteam 0.5.1, t4a-faer 0.33.0, t4a-private-gemm-x86 0.1.28;
+- **stack 2** (the `fit2-` and `accept3*-` runs, #203, the stack of this tree):
+  threadteam 0.6.0, colmat 0.34.0, t4a-private-gemm-x86 0.1.28.
+
+The serial times are the same on both, but on stack 2 a parallel faer call of a
+small product costs 5-7 us more (median `t(w) - t(1)` over the products with
+`t(1) < 20 us`, f64: 0.9-1.8 us at widths 2 to 16 on `accept2-f64`, 5.6-8.9 us on
+`accept3-old-f64`; c64 the same), so stack-1 rows do not describe stack 2. The
+shipped rows are fitted on stack 2.
 Each `job.log` records the node, `lscpu`, the binary's checksum and revision and
 the load at start and end. Two rounds per job on one node, the second with the
 shape, dtype and width order reversed.
 
 ## Runs
 
-| directory | binary | shapes | widths | budgets |
-| --- | --- | --- | --- | --- |
-| `results/fit-<dtype>` | base `807183f` | `m, n, k` in {16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512} (1331) | 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96 | 16, 96 |
-| `results/accept-base-<dtype>` | base `807183f` | `m, n, k` in {16, 20, 40, 80, 160, 320, 448, 512} (512) | 1 (+ chosen) | 16, 96 |
-| `results/accept-<dtype>` | candidate, first rows (constant slow share) | the same 512 | 1..=16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96 (+ chosen) | 16, 96 |
-| `results/accept2-<dtype>` | candidate, final rows | the same 512 | the same | 16, 96 |
+| directory | stack | binary | shapes | widths | budgets |
+| --- | --- | --- | --- | --- | --- |
+| `results/fit-<dtype>` | 1 | base `807183f` | `m, n, k` in {16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512} (1331) | 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96 | 16, 96 |
+| `results/accept-base-<dtype>` | 1 | base `807183f` | `m, n, k` in {16, 20, 40, 80, 160, 320, 448, 512} (512) | 1 (+ chosen) | 16, 96 |
+| `results/accept-<dtype>` | 1 | #194 candidate, first rows (constant slow share) | the same 512 | 1..=16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96 (+ chosen) | 16, 96 |
+| `results/accept2-<dtype>` | 1 | #194 rows (main `20afa9d`) | the same 512 | the same | 16, 96 |
+| `results/fit2-<dtype>` | 2 | `f7814e7` (forced rows only) | the 1331 of `fit-` | the 13 of `fit-` | 16, 96 |
+| `results/accept3-base-<dtype>` | 2 | main `20afa9d` (#194 rows, f64 ideal) | the 512 | 1..=16, 20, ..., 96 (+ chosen) | 16, 96 |
+| `results/accept3-old-<dtype>` | 2 | `f7814e7`: the #203 model with rows fitted on `fit-` (stack 1), f64 shipped | the same | the same | 16, 96 |
+| `results/accept3-<dtype>` | 2 | `ef1c4d7`: the #203 model, rows fitted on `fit2-`, no gain margin, f64 shipped | the same | the same | 16, 96 |
+| `results/accept3m-<dtype>` | 2 | `0cd8071`: the same rows with the gain margin, f64 shipped | the same | the same | 16, 96 |
 
-The acceptance shapes are off the fitting grid except for 16 and 512.
+The acceptance shapes are off the fitting grid except for 16 and 512. Forced
+rows do not depend on the model, so `fit2-` was measured with the first
+candidate binary. `f7814e7`, `ef1c4d7` and `0cd8071` are measurement builds
+(their revisions are in each `job.log`; they are not in the merged history):
+`ef1c4d7` is the first #203 commit and `0cd8071` the second (the rows as
+shipped), both with `DType::F64` in `XEON_9242_2S_SHIPPED`, and `f7814e7` the first
+with rows fitted on `fit-`.
 
 ## Fit
 
 `fit.py` fits, per dtype, `F` and `R` by least squares on the relative error of
-the width-1 times, then grid-searches `O, C, TM, TN, X, Q0, Q1` over the
-(shape, budget) pairs, the model's argmin taken over the measured widths
-<= budget of the model plus the measured dispatch cost. The score counts the
-pairs within 5% of width 1 and of the best measured width, minus 3 per pair above
-1.05 x width 1 and 30 more per pair above 1.25 x width 1. The model and its
-mapping onto `ItemTime` are in the module documentation of
-`strategy/faer_time.rs`. Tried and not selected: a NUMA-domain term, a row-block
-factor on the slow-regime threshold, and capping the width at the split.
+the width-1 times, then grid-searches `O, C, E, Q0, Q1` over the (shape, budget)
+pairs, the model's argmin taken over the measured widths <= budget of the model
+plus the measured dispatch cost. The score counts the pairs within 5% of width 1
+and of the best measured width, minus 3 per pair above 1.05 x width 1 and 30 more
+per pair above 1.25 x width 1. The model and its mapping onto `ItemTime` are in
+the module documentation of `strategy/faer_time.rs`: the task count, the largest
+task's share and the packing band are faer's own partition rule
+(`t4a-private-gemm-x86` 0.1.28 `lib.rs`, `gemm_impl` and `MilliPar::call`), not
+fitted. `E` is the per-element cost of moving a task's operands, and `Q1` the
+packing band's cost per participant in ns. After the fit, `item_fit.py` prints
+the row's gain margin: the median `|model / measured - 1|` at the widths above
+one it chooses (both budgets), which the decision uses as is.
+
+Tried before: a NUMA-domain term, a row-block factor on the slow-regime
+threshold, capping the width at the split (#194), and fitted output tiles
+`TM, TN` with a packing band priced as a share of the work (the #194 rows).
 
 The fit itself is provider-neutral: `item_fit.py` fits any `ItemTime` row from
 rows in this probe's format, and `fit.py` supplies only faer GEMM's features
-(its multiply-adds, the output-tile split `TM, TN` and the packing band `X`). A
-provider with another kernel passes its own features object to `item_fit.fit`.
+(its multiply-adds, its task partition, its per-task operand elements and its
+packing band). A provider with another kernel passes its own features object to
+`item_fit.fit`.
 
 ```bash
-uv run --with numpy python fit.py f64 results/fit-f64/round*.csv.gz
-python3 accept.py results/accept-f64          # the acceptance table
+uv run --with numpy python fit.py f64 results/fit2-f64/round*.csv.gz
+python3 accept.py results/accept3m-f64          # the acceptance table
+python3 compare.py results/accept3-base-f64 results/accept3m-f64
 ```
 
-`fit.txt` in each `results/fit-<dtype>` is that output. The within-round noise
-floor (round 1 against round 2, same node): the median `|t1/t2 - 1|` over all
-points is 0.029 to 0.040 per dtype.
+`fit.txt` in each `results/fit2-<dtype>` is that output; the `fit.txt` in
+`results/fit-<dtype>` is the #194 fit. The within-round noise floor (round 1
+against round 2, same node): the median `|t1/t2 - 1|` over all points is 0.029
+to 0.040 per dtype on stack 1 and 0.040 to 0.063 on stack 2 (`fit2-`).
 
-## Acceptance
+## Acceptance (stack 2, #203)
 
-Gate (maintainer, #194): no shape above about 1.25 x width 1 outside noise.
-f32, c32 and c64 meet it and ship. f64 does not (the four shapes below), so its
-row is fitted but not used: f64 keeps the ideal-division rule on this class
-until those are priced (`XEON_9242_2S_SHIPPED` in `strategy/faer_time.rs`).
+Gate (maintainer, #203): relative to main, measured in the same run on the same
+stack: no product above about 1.25 x width 1 outside noise, and a geo-mean
+t(chosen)/t(1) over the sweep better than main's. An absolute geo-mean is not a
+gate, because it depends on the stack and the environment. Medians over the
+two rounds.
+
+With the gain margin (`results/accept3m-<dtype>`, the rows as shipped):
+
+| dtype | budget | shapes | pass both | > 1.05 x width 1 | > 1.05 x best | chose width 1 | max t/t(1) | max t/best | median t/best |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| c32 | 16 | 512 | 339 | 0 | 173 | 328 | 1.00 | 3.90 | 1.007 |
+| c32 | 96 | 512 | 418 | 0 | 94 | 230 | 1.00 | 1.94 | 1.000 |
+| c64 | 16 | 512 | 316 | 0 | 196 | 261 | 1.00 | 4.06 | 1.013 |
+| c64 | 96 | 512 | 430 | 0 | 82 | 172 | 1.00 | 3.36 | 1.001 |
+| f32 | 16 | 512 | 435 | 0 | 77 | 422 | 1.00 | 2.98 | 1.000 |
+| f32 | 96 | 512 | 457 | 2 | 55 | 337 | 1.07 | 2.79 | 1.000 |
+| f64 | 16 | 512 | 370 | 2 | 142 | 356 | 1.17 | 2.90 | 1.000 |
+| f64 | 96 | 512 | 447 | 2 | 65 | 271 | 1.17 | 2.17 | 1.000 |
+
+Without the margin (`results/accept3-<dtype>`, the first commit's rows):
+
+| dtype | budget | shapes | pass both | > 1.05 x width 1 | > 1.05 x best | chose width 1 | max t/t(1) | max t/best | median t/best |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| c32 | 16 | 512 | 354 | 2 | 158 | 281 | 1.45 | 2.51 | 1.002 |
+| c32 | 96 | 512 | 452 | 0 | 60 | 208 | 1.00 | 1.87 | 1.000 |
+| c64 | 16 | 512 | 328 | 5 | 184 | 193 | 1.21 | 2.04 | 1.013 |
+| c64 | 96 | 512 | 398 | 5 | 114 | 147 | 1.21 | 2.85 | 1.003 |
+| f32 | 16 | 512 | 440 | 0 | 72 | 393 | 1.00 | 1.84 | 1.000 |
+| f32 | 96 | 512 | 472 | 1 | 40 | 318 | 1.11 | 2.24 | 1.000 |
+| f64 | 16 | 512 | 386 | 3 | 126 | 312 | 1.28 | 1.80 | 1.000 |
+| f64 | 96 | 512 | 464 | 4 | 48 | 248 | 1.28 | 1.80 | 1.000 |
+
+Against main on the same stack (`python3 compare.py results/accept3-base-<dtype> results/<run>-<dtype>`;
+main ships the #194 rows for f32, c32 and c64 and the ideal rule for f64):
+
+| run | dtype | budget | shapes | main: > 1.05 x w1 | main: max t/t(1) | main: geo-mean t/t(1) | main: est. > 1.05 x best | run: > 1.05 x w1 | run: max t/t(1) | run: geo-mean t/t(1) | run: > 1.05 x best |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `accept3m` | f64 | 16 | 512 | 226 | 12.56 | 0.965 | 269 | 2 | 1.17 | 0.714 | 142 |
+| `accept3m` | f64 | 96 | 512 | 207 | 12.56 | 0.767 | 347 | 2 | 1.17 | 0.541 | 65 |
+| `accept3m` | c64 | 16 | 512 | 52 | 2.76 | 0.568 | 246 | 0 | 1.00 | 0.487 | 196 |
+| `accept3m` | c64 | 96 | 512 | 35 | 1.65 | 0.330 | 130 | 0 | 1.00 | 0.321 | 82 |
+| `accept3m` | f32 | 16 | 512 | 24 | 2.07 | 0.940 | 122 | 0 | 1.00 | 0.851 | 77 |
+| `accept3m` | f32 | 96 | 512 | 44 | 2.07 | 0.706 | 129 | 2 | 1.07 | 0.682 | 55 |
+| `accept3m` | c32 | 16 | 512 | 81 | 3.67 | 0.702 | 271 | 0 | 1.00 | 0.624 | 173 |
+| `accept3m` | c32 | 96 | 512 | 51 | 1.86 | 0.445 | 223 | 0 | 1.00 | 0.434 | 94 |
+| `accept3` | f64 | 16 | 512 | 226 | 12.56 | 0.965 | 283 | 3 | 1.28 | 0.684 | 126 |
+| `accept3` | f64 | 96 | 512 | 207 | 12.56 | 0.767 | 369 | 4 | 1.28 | 0.524 | 48 |
+| `accept3` | c64 | 16 | 512 | 52 | 2.76 | 0.568 | 248 | 5 | 1.21 | 0.459 | 184 |
+| `accept3` | c64 | 96 | 512 | 35 | 1.65 | 0.330 | 120 | 5 | 1.21 | 0.334 | 114 |
+| `accept3` | f32 | 16 | 512 | 24 | 2.07 | 0.940 | 128 | 0 | 1.00 | 0.829 | 72 |
+| `accept3` | f32 | 96 | 512 | 44 | 2.07 | 0.706 | 149 | 1 | 1.11 | 0.667 | 40 |
+| `accept3` | c32 | 16 | 512 | 81 | 3.67 | 0.702 | 273 | 2 | 1.45 | 0.590 | 158 |
+| `accept3` | c32 | 96 | 512 | 51 | 1.86 | 0.445 | 263 | 0 | 1.00 | 0.414 | 60 |
+| `accept3-old` | f64 | 16 | 512 | 226 | 12.56 | 0.965 | 265 | 73 | 2.42 | 0.716 | 149 |
+| `accept3-old` | f64 | 96 | 512 | 207 | 12.56 | 0.767 | 333 | 67 | 2.42 | 0.570 | 102 |
+| `accept3-old` | c64 | 16 | 512 | 52 | 2.76 | 0.568 | 237 | 64 | 4.66 | 0.477 | 190 |
+| `accept3-old` | c64 | 96 | 512 | 35 | 1.65 | 0.330 | 111 | 52 | 2.38 | 0.352 | 127 |
+| `accept3-old` | f32 | 16 | 512 | 24 | 2.07 | 0.940 | 123 | 51 | 3.09 | 0.842 | 80 |
+| `accept3-old` | f32 | 96 | 512 | 44 | 2.07 | 0.706 | 112 | 57 | 11.62 | 0.697 | 70 |
+| `accept3-old` | c32 | 16 | 512 | 81 | 3.67 | 0.702 | 246 | 64 | 4.18 | 0.608 | 176 |
+| `accept3-old` | c32 | 96 | 512 | 51 | 1.86 | 0.445 | 182 | 50 | 4.47 | 0.448 | 102 |
+
+The best measured width per shape bounds what any width choice can reach. Its
+f64 geo-mean t(best)/t(1) is 0.508 / 0.434 (budget 16 / 96) on stack 1
+(`accept2-f64`) and 0.646-0.657 / 0.513-0.533 on stack 2 (`accept3-old-f64`,
+`accept3-f64`, `accept3m-f64`): stack 2 leaves every rule less to gain, which is
+why the gate compares against main on the same stack. Every dtype passes it; f64
+(main: the ideal rule) goes from 0.965 / 0.767 to 0.714 / 0.541 with no product
+above 1.17 x width 1, and ships.
+
+Products above 1.10 x width 1 (all runs on stack 2 with the #203 model; ratio is
+the median of the rounds):
+
+| run | dtype | budget | shape m x n x k | chosen width | t(1) us | t(chosen) us | ratio | ratio round 1 / round 2 |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| `accept3m` | f64 | 16 | 448 x 160 x 16 | 14 | 37.1 | 43.3 | 1.17 | 1.16 / 1.17 |
+| `accept3m` | f64 | 96 | 448 x 160 x 16 | 14 | 37.1 | 43.3 | 1.17 | 1.16 / 1.17 |
+| `accept3` | f64 | 16 | 320 x 160 x 20 | 14 | 28.4 | 32.2 | 1.13 | 1.26 / 1.02 |
+| `accept3` | f64 | 96 | 320 x 160 x 20 | 14 | 28.4 | 32.2 | 1.13 | 1.26 / 1.02 |
+| `accept3` | f64 | 16 | 448 x 160 x 16 | 14 | 37.6 | 41.8 | 1.11 | 1.19 / 1.03 |
+| `accept3` | f64 | 96 | 448 x 160 x 16 | 14 | 37.6 | 41.8 | 1.11 | 1.19 / 1.03 |
+| `accept3` | f64 | 16 | 512 x 80 x 20 | 9 | 25.7 | 32.9 | 1.28 | 1.41 / 1.15 |
+| `accept3` | f64 | 96 | 512 x 80 x 20 | 9 | 25.7 | 32.9 | 1.28 | 1.41 / 1.15 |
+| `accept3` | c64 | 16 | 320 x 40 x 16 | 14 | 24.2 | 29.3 | 1.21 | 1.13 / 1.29 |
+| `accept3` | c64 | 96 | 320 x 40 x 16 | 14 | 24.2 | 29.3 | 1.21 | 1.13 / 1.29 |
+| `accept3` | c64 | 16 | 512 x 20 x 16 | 11 | 20.3 | 23.7 | 1.17 | 1.15 / 1.18 |
+| `accept3` | c64 | 96 | 512 x 20 x 16 | 11 | 20.3 | 23.7 | 1.17 | 1.15 / 1.18 |
+| `accept3` | f32 | 96 | 448 x 320 x 16 | 30 | 34.4 | 38.2 | 1.11 | 1.18 / 1.05 |
+| `accept3` | c32 | 16 | 40 x 320 x 320 | 5 | 178.0 | 207.4 | 1.17 | 1.19 / 1.14 |
+| `accept3` | c32 | 16 | 80 x 320 x 160 | 5 | 177.2 | 256.2 | 1.45 | 1.60 / 1.29 |
+
+The `accept3-old` rows (the #203 model with stack-1 rows) leave 51-73 products per dtype above 1.05 x width 1 on stack 2 (max 2.4-11.6 x), which is what the refit removes.
+
+
+## Acceptance (stack 1, #194)
+
+The #194 rows on their own stack. Gate (maintainer, #194): no shape above about
+1.25 x width 1 outside noise. f32, c32 and c64 met it and shipped; f64 did not
+(the four shapes below), which #203 prices.
 "Within 5% of the best width" is reported as the model's target. Medians over
 the two rounds; `python3 accept.py results/accept2-<dtype>`.
 

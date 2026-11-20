@@ -189,8 +189,8 @@ impl FaerPlan {
         match faer_time::host_row(T::STORAGE) {
             Some(row) => query.with_item_time(faer_time::item_time(
                 row,
-                self.m.extent,
-                self.n.extent,
+                T::STORAGE,
+                (self.m.extent, self.n.extent, self.k.extent),
                 muladds,
             )),
             None => query,
