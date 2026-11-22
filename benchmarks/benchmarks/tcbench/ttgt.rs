@@ -123,6 +123,13 @@ pub fn ttgt<T>(
 {
     use tcontract_kernel::Element;
     let (m, n, k) = (plan.m, plan.n, plan.k);
+    // C is read only when `beta` is nonzero; a caller that overwrites passes no C
+    // at all, which is what the benchmark does. Checked here so a later nonzero
+    // beta cannot index an empty slice.
+    debug_assert!(
+        beta == <T as Element>::zero() || !c.is_empty(),
+        "a nonzero beta reads C, so the caller must supply it"
+    );
     if m == 0 || n == 0 {
         return;
     }
