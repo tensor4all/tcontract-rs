@@ -123,16 +123,18 @@ pub fn ttgt<T>(
 {
     use tcontract_kernel::Element;
     let (m, n, k) = (plan.m, plan.n, plan.k);
-    // C is read only when `beta` is nonzero; a caller that overwrites passes no C
-    // at all, which is what the benchmark does. Checked here so a later nonzero
-    // beta cannot index an empty slice.
+    // No work, no read: an empty output extent or an empty batch returns here,
+    // before anything is indexed, even for a nonzero beta.
+    if m == 0 || n == 0 || plan.batch == 0 {
+        return;
+    }
+    // With work to do, C is read only when `beta` is nonzero; a caller that
+    // overwrites passes no C at all, which is what the benchmark does. Checked
+    // here so a later nonzero beta cannot index an empty slice.
     debug_assert!(
         beta == <T as Element>::zero() || !c.is_empty(),
         "a nonzero beta reads C, so the caller must supply it"
     );
-    if m == 0 || n == 0 {
-        return;
-    }
 
     for h in 0..plan.batch {
         let (oa, ob, oc, od) = (plan.h_a[h], plan.h_b[h], plan.h_c[h], plan.h_d[h]);
@@ -182,5 +184,81 @@ pub fn ttgt<T>(
                 d[(od + dm + dn) as usize] = v;
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "blas"))]
+mod tests {
+    //! The two empty-output routes and the overwrite route the benchmark takes.
+    //!
+    //! The regression these pin: a `debug_assert` used to reject an empty `C`
+    //! before the no-op return, so a valid call with a zero output extent (or an
+    //! empty batch) panicked in debug builds even though it reads no `C`.
+
+    use super::*;
+    use tcontract::api::{CSpec, DType, Labels, LayoutSpec, Op, OperandSpec};
+
+    fn operand(dims: &[usize], strides: &[isize]) -> OperandSpec {
+        OperandSpec::new(LayoutSpec::new(dims, strides, 0).expect("valid layout"))
+    }
+
+    /// `D[a,b] = sum_c A[a,c] B[c,b]` with `a = 0`: m = 0, nothing to read or write.
+    #[test]
+    fn a_zero_output_extent_returns_before_c_is_consulted() {
+        let problem = Problem::from_labels(
+            DType::F64,
+            operand(&[0, 1], &[1, 1]),
+            operand(&[1, 1], &[1, 1]),
+            CSpec::Output(Op::Identity),
+            operand(&[0, 1], &[1, 1]),
+            &Labels::new(&[0, 2], &[2, 1], &[0, 1]),
+        )
+        .expect("a zero extent is a valid problem");
+        let plan = TtgtPlan::new(&problem);
+        assert_eq!(plan.m, 0);
+        let mut scratch = TtgtScratch::<f64>::new(&plan);
+        let mut d: Vec<f64> = Vec::new();
+        ttgt(&plan, 1.0, &[], &[1.0], 1.0, &[], &mut d, &mut scratch);
+        assert!(d.is_empty());
+    }
+
+    /// `D[a,b,h] = sum_c A[a,c,h] B[c,b,h]` with `h = 0`: batch = 0, same route.
+    #[test]
+    fn an_empty_batch_returns_before_c_is_consulted() {
+        let problem = Problem::from_labels(
+            DType::F64,
+            operand(&[1, 1, 0], &[1, 1, 1]),
+            operand(&[1, 1, 0], &[1, 1, 1]),
+            CSpec::Output(Op::Identity),
+            operand(&[1, 1, 0], &[1, 1, 1]),
+            &Labels::new(&[0, 2, 3], &[2, 1, 3], &[0, 1, 3]),
+        )
+        .expect("a zero batch extent is a valid problem");
+        let plan = TtgtPlan::new(&problem);
+        assert_eq!((plan.m, plan.n, plan.k, plan.batch), (1, 1, 1, 0));
+        let mut scratch = TtgtScratch::<f64>::new(&plan);
+        let mut d: Vec<f64> = Vec::new();
+        ttgt(&plan, 1.0, &[1.0], &[1.0], 1.0, &[], &mut d, &mut scratch);
+        assert!(d.is_empty());
+    }
+
+    /// The route the timed arm takes: overwrite (`beta = 0`), so no `C` is passed
+    /// and none is read -- and the result is still the product.
+    #[test]
+    fn an_overwrite_with_no_c_computes_the_product() {
+        let problem = Problem::from_labels(
+            DType::F64,
+            operand(&[1, 1], &[1, 1]),
+            operand(&[1, 1], &[1, 1]),
+            CSpec::Absent,
+            operand(&[1, 1], &[1, 1]),
+            &Labels::new(&[0, 2], &[2, 1], &[0, 1]),
+        )
+        .expect("1x1x1 is a valid problem");
+        let plan = TtgtPlan::new(&problem);
+        let mut scratch = TtgtScratch::<f64>::new(&plan);
+        let mut d = vec![0.0f64];
+        ttgt(&plan, 1.0, &[2.0], &[3.0], 0.0, &[], &mut d, &mut scratch);
+        assert_eq!(d, vec![6.0]);
     }
 }
