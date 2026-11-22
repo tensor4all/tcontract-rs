@@ -3,7 +3,8 @@
 //! geometry), at an enforced thread count.
 //!
 //! Usage: `fused_gemm --threads N [--list]`. CSV
-//! `case,variant,threads,median_ns,samples`. Variants: `fused`;
+//! `case,variant,threads,median_ns,samples`, each row followed by a
+//! `# spread case variant threads min p25 p75 max` line (ns). Variants: `fused`;
 //! `per_job_packed` (each geometry's `Plan` with the packed driver forced, the
 //! per-job reference the fused route must reproduce bitwise); and
 //! `per_job_default` (the planner's own strategy per geometry). Before timing a
@@ -152,10 +153,20 @@ fn run_per_job(
     contract_batched(&mut items, exec).expect("contract_batched");
 }
 
-/// Median of the samples, after `prime` of wall time and `warmup` calls.
-fn median(cfg: &Cfg, f: impl FnMut()) -> f64 {
-    let samples = samples_ns(cfg.prime, cfg.warmup, cfg.runs, f);
-    samples[samples.len() / 2]
+/// Time `f` (after `prime` of wall time and `warmup` calls) and print its CSV
+/// row and its `# spread` line (min, p25, p75, max in ns), as `contract` does.
+fn timed(cfg: &Cfg, case: &str, variant: &str, f: impl FnMut()) {
+    let s = samples_ns(cfg.prime, cfg.warmup, cfg.runs, f);
+    let q = |k: usize| s[(s.len() - 1) * k / 4];
+    cfg.row(case, variant, s[s.len() / 2]);
+    println!(
+        "# spread {case} {variant} {} {:.0} {:.0} {:.0} {:.0}",
+        cfg.threads,
+        q(0),
+        q(1),
+        q(3),
+        q(4)
+    );
 }
 
 /// Abort before any timing unless `got` equals `want` exactly: bitwise when
@@ -253,17 +264,16 @@ fn main() {
             );
 
             // Every arm gets the same wall-clock priming and call count.
-            let ns = median(&cfg, || {
+            timed(&cfg, &name, "fused", || {
                 fused
                     .execute_into(exec, 1.0, black_box(&a), black_box(&b), black_box(&mut c))
                     .expect("fused run");
             });
-            cfg.row(&name, "fused", ns);
             for (variant, plans) in [
                 ("per_job_packed", &packed_plans),
                 ("per_job_default", &default_plans),
             ] {
-                let ns = median(&cfg, || {
+                timed(&cfg, &name, variant, || {
                     run_per_job(
                         exec,
                         &jobs,
@@ -273,7 +283,6 @@ fn main() {
                         black_box(&mut c),
                     )
                 });
-                cfg.row(&name, variant, ns);
             }
         }
     });

@@ -17,7 +17,7 @@ to back, each pinned to idle cores of one L3 domain by `scripts/pinned.sh`
 (Linux only; elsewhere record that the run was unpinned):
 
 ```bash
-cargo build --release -p tcontract-bench --bin fused_gemm
+RUSTFLAGS="-C target-cpu=native" cargo build --release -p tcontract-bench --bin fused_gemm
 benchmarks/scripts/paired.sh target/release/fused_gemm out/fused 8-15 1 4
 ```
 
@@ -28,7 +28,7 @@ status 1, so a wrong route produces no rows. Environment: `BENCH_RUNS`
 (default 50), `BENCH_WARMUP_MS` (default 1500 ms of untimed calls per arm,
 the top of the PERFORMANCE_TIPS range for short calls), `BENCH_WARMUP`
 (default 5 more calls), `BENCH_CASE` (exact name, as `paired.sh` passes it),
-`BENCH_FILTER` (substring). Timed boundary: one execute of every job; inputs
+`BENCH_FILTER` (substring). Each CSV row is followed by a `# spread case variant threads min p25 p75 max` line (ns), so an unsettled arm shows. Timed boundary: one execute of every job; inputs
 and output pass through `black_box` on every call. Plans are built outside
 the timed region; the per-job route builds its `BatchItem` views inside it,
 as its callers do.
