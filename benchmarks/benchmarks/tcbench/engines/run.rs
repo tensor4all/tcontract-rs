@@ -327,6 +327,11 @@ pub fn run_case<T>(
                     (tp, scratch)
                 });
                 let mut dt: Vec<T> = vec![<T as Element>::zero(); s.elems_c()];
+                // `beta = 0` reads no C, so the timed call passes none. This used to
+                // pass `&dt.clone()`, to satisfy the borrow checker: one allocation
+                // and one full copy of the output *inside* every timed call (up to
+                // 37.7 MB at c64), which the timing policy excludes and which the
+                // verify path never paid -- it passes an empty slice.
                 let (_, spread, samples) = timed(opts.reps, opts.prime_ms, || {
                     ttgt(
                         &tp,
@@ -334,7 +339,7 @@ pub fn run_case<T>(
                         &a,
                         &b,
                         <T as Element>::zero(),
-                        &dt.clone(),
+                        &[],
                         &mut dt,
                         &mut scratch,
                     )
