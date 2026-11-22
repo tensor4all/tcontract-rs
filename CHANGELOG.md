@@ -8,6 +8,22 @@ released together and one tag (`vX.Y.Z`) marks the commit it was published
 from. Releases before 0.13.0 are recorded in their annotated tags
 (`git tag -l -n1 'v0.*'`) and release commits.
 
+## [Unreleased]
+
+### Added — `tcontract`: the fused grouped-GEMM route (#208)
+
+- `FusedGemmPlan<T>`: prepares a `t4a_desc::gemm::GemmBatch` once (one
+  forced-packed serial resolution per distinct geometry, one LPT-ordered work
+  list) and runs every job's `(job, MC band, NC panel)` items in one
+  barrier-free traversal claimed from one counter. Each job's result is bitwise
+  the job alone through the packed driver on one thread, at every width.
+  Entries: `execute_into`, `execute_into_accum`, `execute_uninit`,
+  `execution_route`, `workspace_req`, `work_items`, `batch`.
+- `ExecutionRoute::FusedTiles { width }` and `Error::Gemm(GemmError)` (both
+  enums are `#[non_exhaustive]`).
+- `tcontract` now depends on `t4a-desc`, so `t4a-desc` 0.1.0 has to be
+  published with or before the next `tcontract` release.
+
 ## [0.13.0] - 2026-11-20
 
 Released together: `t4a-cost` 0.1.0 (first release), `tcontract-exec` 0.13.0 and

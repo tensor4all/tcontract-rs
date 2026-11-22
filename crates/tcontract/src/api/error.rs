@@ -291,6 +291,11 @@ pub enum Error {
     /// The execution context refused the request.
     #[error("execution context: {0}")]
     Exec(#[from] ExecError),
+    /// A grouped-GEMM job list or buffer was rejected (the
+    /// [`FusedGemmPlan`](crate::FusedGemmPlan) entries); nothing was written.
+    /// The error names the lowest failing original job id.
+    #[error(transparent)]
+    Gemm(#[from] t4a_desc::gemm::GemmError),
     /// A supplied [`Workspace`](tcontract_exec::Workspace) is smaller than the
     /// execution needs; nothing was written.
     #[error("workspace too small: need {needed} bytes, have {have}")]

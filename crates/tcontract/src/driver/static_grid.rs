@@ -76,7 +76,9 @@ impl BPart<'_> {
 /// Loops 5 through 1 over one cell of the `pm x pn` partition.
 ///
 /// `[m_lo, m_hi)` are whole `MR` panels; `bpart` selects whole `NR` slivers
-/// within each `jc` block.
+/// within each `jc` block. `[jc_lo, jc_hi)` are the loop-5 column blocks to
+/// walk: `0..n` for every caller but the fused grouped-GEMM route, which runs
+/// one `NC` panel per work item (`jc_lo` is then a multiple of `NC`).
 ///
 /// **Loops 5 and 4 are traversed identically by every thread** — the same `h`,
 /// the same `jc`, the same `pc`, over the whole of `N` and `K` — and the
@@ -100,6 +102,8 @@ pub(super) unsafe fn run_strip<T>(
     items: std::ops::Range<usize>,
     m_lo: usize,
     m_hi: usize,
+    jc_lo: usize,
+    jc_hi: usize,
     ap_ptr: *mut T::Real,
     tile_ptr: *mut T::Real,
     scratch_ptr: *mut T::Real,
@@ -131,8 +135,8 @@ pub(super) unsafe fn run_strip<T>(
         let dh = d.offset(plan.h_d[h] as isize);
 
         // ---- loop 5: N blocking -------------------------------------------
-        let mut jc = 0;
-        while jc < n {
+        let mut jc = jc_lo;
+        while jc < jc_hi {
             let jc_len = nc.min(n - jc);
 
             // ---- loop 4: K blocking ---------------------------------------

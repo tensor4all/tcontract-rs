@@ -372,6 +372,21 @@ added as one more table row later (advisor rule `R-performance-64`).
 | Is a Faer plan still narrowed first? | **No, on a team of a fitted class.** `Plan::batch_budget` no longer applies the ideal stage-one narrowing to a Faer plan whose token carries a team on a class with a row: it would cap the argmin below the widths past the slow regime. Without a team, or without a row, the narrowing stays. | `crates/tcontract/src/plan/mod.rs`; `tests/execution_width.rs` |
 | Does `Plan::estimate` follow? | **No.** It stays the advisory ideal-division number (#163); its documentation says the Faer route's executed width is the provider argmin. `Plan::execution_width` reads the same decision, so it reports that argmin. | `Plan::estimate` doc; `strategy/faer_time/tests.rs` |
 
+## 2026-11-22 The fused grouped-GEMM route ([#208](https://github.com/tensor4all/tcontract-rs/issues/208))
+
+The public surface was proposed on the issue before implementation and approved by the maintainer; worklog `docs/worklogs/2026-11-22-fused-gemm.md`.
+
+| Question | Position | Evidence |
+| --- | --- | --- |
+| Entry point and input? | **Decided (maintainer, proposal on #208):** `tcontract::FusedGemmPlan<T>`, prepared from a `t4a_desc::gemm::GemmBatch` taken by value (every call needs its lengths, offsets and leading dimensions); buffers are lent per call as slices. `t4a-desc` is not re-exported. | `crates/tcontract/src/fused.rs` |
+| One resolution per call or per geometry? | **Decided:** per distinct geometry, as exactly the `Plan` that job alone gets with the packed driver forced (`Partition::StaticGrid`), at serial width. `RowBlock::Auto` and the orientation depend on the shape, so one family per call would break the per-job bitwise invariant. | `tests/fused_gemm.rs` (`*_matches_both_oracles`) |
+| What is a work item, and how is it scheduled? | **Decided:** one `MC` band by one `NC` panel of one job (the whole job when the blocked outer traversal applies), all `KC` slabs in order on one worker; items share no packed panel, so workers are barrier-free and claim from one monotonic counter. The list is ordered by multiply-adds, largest first, ties by `(job, band, panel)`. Results are bitwise identical for every width. | `driver/fused.rs`; `tests/fused_gemm.rs` (`bitwise_identical_across_widths`) |
+| Which batch policies? | **Decided:** the work items are the batch items, with `item_parallel = false`: `Auto` (the work model), `Sequential` (1) and `Outer` (`min(budget, items)`) are honoured; a decision with threads inside an item (`Inner`, or `Split` on a budget above one) is refused with `ExecError::StrategyUnavailable` before any write. | `FusedGemmPlan::execution_route` |
+| `PlanConfig::partition = Some(_)`? | **Refused** with `ConfigError::Option`: the route has its own claim. | `tests/fused_gemm.rs` (`configuration_and_policy_refusals`) |
+| Error reporting? | Descriptor errors (`Bounds`, `FreshLayout`, `FreshCoverage`) come back as `Error::Gemm` naming the lowest job id, before any write; overlap and overflow are rejected earlier by `GemmBatch::new`. | `tests/fused_gemm.rs` (`errors_are_reported_before_any_write`) |
+| Deviations from the proposal | `execution_route` takes no `OutputContract` and `workspace_req` takes no `Exec`: neither affects the result on this route, and an unused parameter would be public surface without meaning. | this PR |
+| Is the route faster than per-job execution? | **Open.** No measurement yet. The diagnostic bench of the issue (fused against per-job `contract_batched`, widths 1/4/8, the issue46 and uniform-block shapes) is a follow-up; route selection stays in tensor4all/cpueinsum-rs#80. | — |
+
 ## 2026-11-20 The device-neutral job descriptor ([#209](https://github.com/tensor4all/tcontract-rs/issues/209))
 
 The public surface was proposed on the issue before implementation and approved by the maintainer on 2026-11-20; worklog `docs/worklogs/2026-11-20-t4a-desc.md`.

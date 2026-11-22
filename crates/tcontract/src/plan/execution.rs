@@ -194,6 +194,13 @@ pub enum ExecutionRoute {
         /// Active participants (batch lanes for BatchLanes).
         width: usize,
     },
+    /// Fused grouped GEMM ([`FusedGemmPlan`](crate::FusedGemmPlan)): `width`
+    /// barrier-free workers claimed the work items of every job from one
+    /// counter (1 = on the calling thread, no claims).
+    FusedTiles {
+        /// Active workers.
+        width: usize,
+    },
 }
 
 /// A slice-based accumulation source with runtime element origins.
@@ -359,6 +366,9 @@ impl<T: Scalar> Plan<T> {
             }
             // The reference rank-k kernel is serial on the calling thread.
             ExecutionRoute::RankKReference => Ok(core::num::NonZeroUsize::new(1)),
+            ExecutionRoute::FusedTiles { .. } => {
+                unreachable!("a Plan never reports the fused grouped-GEMM route")
+            }
             ExecutionRoute::Empty
             | ExecutionRoute::OutputOnly
             | ExecutionRoute::Elementwise

@@ -1030,6 +1030,7 @@ dependencies = [
  "strided-basic",
  "strided-view",
  "t4a-cost",
+ "t4a-desc",
  "tcontract-exec",
  "tcontract-kernel",
  "tcontract-testkit",
