@@ -163,6 +163,11 @@ impl<T: Scalar> FusedGemmPlan<T> {
         let mut worker = (0, 0);
         for group in batch.groups() {
             let s = group.shape;
+            // Every geometry is planned, including those that take no item, so a
+            // kernel or configuration error is reported as the per-job `Plan`
+            // reports it (zero-size problems are selected and validated too)
+            // instead of being skipped on a no-op path.
+            let plan = Plan::<T>::from_problem(job_problem(dtype, ops, s)?, &group_config)?;
             if s.m == 0 || s.n == 0 {
                 continue;
             }
@@ -171,7 +176,6 @@ impl<T: Scalar> FusedGemmPlan<T> {
                 k_empty.extend_from_slice(group.ids);
                 continue;
             }
-            let plan = Plan::<T>::from_problem(job_problem(dtype, ops, s)?, &group_config)?;
             let Some((packed, rg)) = plan.packed_parts() else {
                 return Err(Error::Internal(
                     "a forced-packed plan did not resolve to the packed driver",
@@ -256,7 +260,8 @@ impl<T: Scalar> FusedGemmPlan<T> {
     /// # Errors
     ///
     /// [`ExecError::StrategyUnavailable`] for a policy that asks for threads
-    /// inside an item (`Inner` or `Split` on a budget above one), which this
+    /// inside an item (`Inner` on a budget above one, or a `Split` that leaves
+    /// more than one thread per lane), which this
     /// route cannot honour and does not silently serialize.
     pub fn execution_route(&self, exec: &Exec<'_>, alpha: T) -> Result<ExecutionRoute> {
         if !self.has_output {
@@ -300,7 +305,8 @@ impl<T: Scalar> FusedGemmPlan<T> {
     /// # Errors
     ///
     /// [`Error::Gemm`] with [`GemmError::Bounds`](t4a_desc::gemm::GemmError::Bounds)
-    /// naming the lowest job whose footprint a slice does not cover, and the
+    /// naming the lowest job whose footprint the first short slice (checked
+    /// in the order `A`, `B`, `C`) does not cover, and the
     /// [`FusedGemmPlan::execution_route`] errors; nothing is written.
     pub fn execute_into(
         &self,

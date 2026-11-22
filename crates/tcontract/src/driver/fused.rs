@@ -57,7 +57,12 @@ pub(crate) struct FusedGroup {
     /// Reals of the packed `A` block, rounded up to a 64-byte line so the `B`
     /// panel after it in the same worker region starts on a line.
     ap_reals: usize,
-    /// Reals of one worker's packed `B` panel (zero for a direct-B group).
+    /// Reals of one column group's slice of the packed `B` panel, sized as
+    /// `execute_once` sizes it, also for a direct-B group: `run_strip` checks
+    /// every epoch's slivers against it, whether or not a panel is written.
+    b_group: usize,
+    /// Reals of one worker's packed `B` panel: `b_group`, or zero for a
+    /// direct-B group, which reads `B` in place and allocates no panel.
     bp_reals: usize,
     /// Reals of one worker's tile region: tile, induced scratch, tile grids.
     tile_reals: usize,
@@ -101,9 +106,12 @@ impl FusedGroup {
             None => (mc, nc),
         };
         let line = (64 / core::mem::size_of::<T::Real>()).max(1);
+        // One column group at `pn = 1`: `execute_once`'s `b_group`, computed
+        // whether or not the call reads `B` in place.
+        let b_group = panel_len(nc.div_ceil(nr) * nr, nr, kd, fam.b_pack);
         let bp_reals = match direct_b {
             true => 0,
-            false => panel_len(nc.div_ceil(nr) * nr, nr, kd, fam.b_pack),
+            false => b_group,
         };
         let mut scatter = Vec::new();
         let runs = ScatterRuns {
@@ -128,6 +136,7 @@ impl FusedGroup {
             item_m,
             item_n,
             ap_reals: ap_len.next_multiple_of(line),
+            b_group,
             bp_reals,
             tile_reals: fam.tile + fam.induced_scratch(kc) + 2 * grid_elems,
             scatter,
@@ -224,7 +233,7 @@ pub(crate) unsafe fn run_item<T: Element>(
         m: g.m,
         n: g.n,
         k: g.k,
-        b_group: g.bp_reals,
+        b_group: g.b_group,
         am: o.am,
         ak: o.ak,
         bk: o.bk,

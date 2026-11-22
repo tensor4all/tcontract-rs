@@ -293,7 +293,9 @@ pub enum Error {
     Exec(#[from] ExecError),
     /// A grouped-GEMM job list or buffer was rejected (the
     /// [`FusedGemmPlan`](crate::FusedGemmPlan) entries); nothing was written.
-    /// The error names the lowest failing original job id.
+    /// Job ids in it are original ids; each check reports the lowest job it
+    /// rejects (see [`GemmError`](t4a_desc::gemm::GemmError) for the order of
+    /// the checks).
     #[error(transparent)]
     Gemm(#[from] t4a_desc::gemm::GemmError),
     /// A supplied [`Workspace`](tcontract_exec::Workspace) is smaller than the

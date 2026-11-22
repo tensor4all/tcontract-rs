@@ -18,7 +18,7 @@ use tcontract::{
     Error, ExecutionRoute, FusedGemmPlan, Partition, Plan, PlanConfig, SliceAccumulationSource,
 };
 use tcontract_exec::{BatchPolicy, BatchStrategy, Exec, ExecError, Pool};
-use tcontract_kernel::{BlockingOverride, Element, Real};
+use tcontract_kernel::{BlockingOverride, Element, KernelChoice, Real};
 
 mod common;
 
@@ -693,4 +693,65 @@ fn plan_is_send_sync_and_debug_summarizes() {
     let text = format!("{plan:?}");
     assert!(text.contains("work_items: 1"), "{text}");
     assert!(plan.workspace_req().a_bytes > 0);
+}
+
+fn kernel(id: &str) -> PlanConfig {
+    PlanConfig {
+        kernel: KernelChoice::Id(id.into()),
+        ..PlanConfig::default()
+    }
+}
+
+/// The GLM review's reproducer on #216: a family that reads `B` in place
+/// (`direct-b`) used to hand `run_strip` a zero `b_group` and trip its panel
+/// check ("column group overruns its slice of the packed B panel").
+#[test]
+fn direct_b_family_runs_and_matches_the_per_job_plan() {
+    let ops = GemmOps {
+        a: Trans::N,
+        b: Trans::N,
+    };
+    let jobs = vec![GemmJob::compact(ops, [0, 0, 0], 4, 4, 4)];
+    let batch = GemmBatch::new(ScalarKind::F64, ops, jobs).unwrap();
+    let plan = FusedGemmPlan::<f64>::new(batch, &kernel("ref.f64.direct-b.4x4")).unwrap();
+    let (a, b) = (ints::<f64>(16, 1), ints::<f64>(16, 2));
+    let mut c = vec![0.0; 16];
+    plan.execute_into(&mut Exec::serial(), 1.0, &a, &b, &mut c)
+        .unwrap();
+
+    // The mixed batch, both oracles, with B read in place (op N on B keeps its
+    // k stride one; op T does not, so that case packs B as before).
+    for id in ["ref.f64.direct-b.4x4", "ref.f64.direct.4x4"] {
+        for o in [
+            ops,
+            GemmOps {
+                a: Trans::T,
+                b: Trans::N,
+            },
+            GemmOps {
+                a: Trans::N,
+                b: Trans::T,
+            },
+        ] {
+            for pad in [0, 2] {
+                check::<f64>(o, MIXED, pad, &kernel(id), 0.0);
+                check::<f64>(o, MIXED, pad, &kernel(id), -2.0);
+            }
+        }
+    }
+    let f32_direct_b = kernel("ref.f32.direct-b.4x4");
+    check::<f32>(ops, MIXED, 1, &f32_direct_b, 3.0);
+}
+
+/// A geometry that takes no work item is still planned, so an unusable kernel
+/// request is refused as the per-job `Plan` refuses it, not skipped.
+#[test]
+fn kernel_errors_are_reported_for_jobs_without_items() {
+    let o = ops(N, N);
+    let bogus = kernel("no.such.kernel");
+    for shape in [(1, 1, 0), (0, 2, 3)] {
+        let batch = GemmBatch::new(ScalarKind::F64, o, layout(o, &[shape], 0)).unwrap();
+        let err = FusedGemmPlan::<f64>::new(batch, &bogus).unwrap_err();
+        assert!(matches!(err, Error::Select(_)), "{shape:?}: {err}");
+    }
 }
