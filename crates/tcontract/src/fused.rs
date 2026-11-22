@@ -38,9 +38,11 @@ struct Group<T: Scalar> {
 /// one counter.
 ///
 /// Each job computes `C ← alpha·op(A)·op(B) + beta·C` in place, with BLAS
-/// meaning (see [`t4a_desc::gemm`]). The plan owns the [`GemmBatch`], one
-/// packed-driver resolution per distinct job geometry, and the work list; it
-/// holds no buffer, and the buffers are lent per call as slices.
+/// meaning (see [`t4a_desc::gemm`]). Every distinct job geometry is resolved
+/// (so a kernel or configuration error is reported for any of them); the plan
+/// owns the [`GemmBatch`], the packed-driver resolutions of the geometries that
+/// take work items (`m, n, k ≥ 1`), and the work list. It holds no buffer, and
+/// the buffers are lent per call as slices.
 ///
 /// # Prepare
 ///

@@ -13,8 +13,8 @@ from. Releases before 0.13.0 are recorded in their annotated tags
 ### Added — `tcontract`: the fused grouped-GEMM route (#208)
 
 - `FusedGemmPlan<T>`: prepares a `t4a_desc::gemm::GemmBatch` once (one
-  forced-packed serial resolution per distinct geometry, one LPT-ordered work
-  list) and runs every job's `(job, MC band, NC panel)` items in one
+  forced-packed serial resolution per distinct geometry, kept for those that
+  take work items, and one LPT-ordered work list) and runs every job's `(job, MC band, NC panel)` items in one
   barrier-free traversal claimed from one counter. Each job's result is bitwise
   the job alone through the packed driver on one thread, at every width.
   Entries: `execute_into`, `execute_into_accum`, `execute_uninit`,

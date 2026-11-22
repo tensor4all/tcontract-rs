@@ -417,7 +417,11 @@ impl BatchQuery {
 ///   without blocking on an outer barrier;
 /// * `contract_batched` refuses it too (`crates/tcontract/src/batch.rs`): its
 ///   schedule is one item per lane, or the items one after another on the whole
-///   context, as the decision log records.
+///   context, as the decision log records;
+/// * the fused grouped-GEMM route (`FusedGemmPlan`,
+///   `crates/tcontract/src/fused.rs`) refuses any decision with
+///   `item_threads > 1`: its work items run serially on barrier-free workers
+///   that claim from one counter.
 ///
 /// # Examples
 ///
