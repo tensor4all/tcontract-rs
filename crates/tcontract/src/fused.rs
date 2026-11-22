@@ -132,6 +132,24 @@ impl<T: Scalar> FusedGemmPlan<T> {
     /// `partition: Some(_)`, and the first group's [`Plan::new`] error, in
     /// order of the groups' lowest job id ([`Error::Select`] for an unusable
     /// kernel request).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use t4a_desc::gemm::{GemmBatch, GemmJob, GemmOps, Trans};
+    /// use t4a_desc::ScalarKind;
+    /// use tcontract::{Error, FusedGemmPlan, PlanConfig};
+    ///
+    /// let ops = GemmOps { a: Trans::N, b: Trans::C };
+    /// let jobs = vec![GemmJob::compact(ops, [0, 0, 0], 2, 3, 4)];
+    /// let batch = GemmBatch::new(ScalarKind::C64, ops, jobs)?;
+    /// // The scalar type must be the batch's.
+    /// let wrong = FusedGemmPlan::<f64>::new(batch.clone(), &PlanConfig::default());
+    /// assert!(matches!(wrong, Err(Error::Config(_))));
+    /// let plan = FusedGemmPlan::<num_complex::Complex64>::new(batch, &PlanConfig::default())?;
+    /// assert_eq!(plan.work_items(), 1);
+    /// # Ok::<(), tcontract::Error>(())
+    /// ```
     pub fn new(batch: GemmBatch, config: &PlanConfig) -> Result<Self> {
         let dtype = dtype_of(batch.scalar());
         if dtype != T::STORAGE {
@@ -224,6 +242,23 @@ impl<T: Scalar> FusedGemmPlan<T> {
 
     /// The batch the plan was prepared from: job ids, required buffer lengths,
     /// groups.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use t4a_desc::gemm::{GemmBatch, GemmJob, GemmOps, Trans};
+    /// use t4a_desc::ScalarKind;
+    /// use t4a_desc::gemm::Operand;
+    /// use tcontract::{FusedGemmPlan, PlanConfig};
+    ///
+    /// let ops = GemmOps { a: Trans::N, b: Trans::N };
+    /// let jobs = vec![GemmJob::compact(ops, [0, 0, 0], 2, 2, 3)];
+    /// let plan = FusedGemmPlan::<f32>::new(GemmBatch::new(ScalarKind::F32, ops, jobs)?, &PlanConfig::default())?;
+    /// // The buffer lengths a call needs.
+    /// assert_eq!(plan.batch().required_len(Operand::A), 6);
+    /// assert_eq!(plan.batch().required_len(Operand::C), 4);
+    /// # Ok::<(), tcontract::Error>(())
+    /// ```
     pub fn batch(&self) -> &GemmBatch {
         &self.batch
     }
@@ -265,6 +300,23 @@ impl<T: Scalar> FusedGemmPlan<T> {
     /// inside an item (`Inner` on a budget above one, or a `Split` that leaves
     /// more than one thread per lane), which this
     /// route cannot honour and does not silently serialize.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use t4a_desc::gemm::{GemmBatch, GemmJob, GemmOps, Trans};
+    /// use t4a_desc::ScalarKind;
+    /// use tcontract::{ExecutionRoute, FusedGemmPlan, PlanConfig};
+    /// use tcontract_exec::Exec;
+    ///
+    /// let ops = GemmOps { a: Trans::N, b: Trans::N };
+    /// let jobs = vec![GemmJob::compact(ops, [0, 0, 0], 2, 2, 2)];
+    /// let plan = FusedGemmPlan::<f64>::new(GemmBatch::new(ScalarKind::F64, ops, jobs)?, &PlanConfig::default())?;
+    /// let exec = Exec::serial();
+    /// assert_eq!(plan.execution_route(&exec, 1.0)?, ExecutionRoute::FusedTiles { width: 1 });
+    /// assert_eq!(plan.execution_route(&exec, 0.0)?, ExecutionRoute::OutputOnly);
+    /// # Ok::<(), tcontract::Error>(())
+    /// ```
     pub fn execution_route(&self, exec: &Exec<'_>, alpha: T) -> Result<ExecutionRoute> {
         if !self.has_output {
             return Ok(ExecutionRoute::Empty);
@@ -290,6 +342,26 @@ impl<T: Scalar> FusedGemmPlan<T> {
     /// The workspace one worker of a call needs: its packed `A` and `B` and its
     /// tile, at the largest group's blocking. A call takes one such set per
     /// worker from the [`Exec`]'s workspace, or call-local buffers without one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use t4a_desc::gemm::{GemmBatch, GemmJob, GemmOps, Trans};
+    /// use t4a_desc::ScalarKind;
+    /// use tcontract::{FusedGemmPlan, PlanConfig};
+    /// use tcontract_exec::{Exec, Workspace};
+    ///
+    /// let ops = GemmOps { a: Trans::N, b: Trans::N };
+    /// let jobs = vec![GemmJob::compact(ops, [0, 0, 0], 2, 2, 2)];
+    /// let plan = FusedGemmPlan::<f64>::new(GemmBatch::new(ScalarKind::F64, ops, jobs)?, &PlanConfig::default())?;
+    /// // A serial caller that keeps its scratch warm across calls.
+    /// let ws = Workspace::with_req(&plan.workspace_req());
+    /// let mut exec = Exec::serial_with_workspace(ws.as_provider());
+    /// let mut c = [0.0; 4];
+    /// plan.execute_into(&mut exec, 1.0, &[1.0, 0.0, 0.0, 1.0], &[1.0, 2.0, 3.0, 4.0], &mut c)?;
+    /// assert_eq!(c, [1.0, 2.0, 3.0, 4.0]);
+    /// # Ok::<(), tcontract::Error>(())
+    /// ```
     pub fn workspace_req(&self) -> WorkspaceReq {
         let element = core::mem::size_of::<T::Re>();
         WorkspaceReq {
@@ -310,6 +382,29 @@ impl<T: Scalar> FusedGemmPlan<T> {
     /// naming the lowest job whose footprint the first short slice (checked
     /// in the order `A`, `B`, `C`) does not cover, and the
     /// [`FusedGemmPlan::execution_route`] errors; nothing is written.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use t4a_desc::gemm::{GemmBatch, GemmJob, GemmOps, Trans};
+    /// use t4a_desc::ScalarKind;
+    /// use tcontract::{Error, FusedGemmPlan, PlanConfig};
+    /// use tcontract_exec::Exec;
+    ///
+    /// let ops = GemmOps { a: Trans::T, b: Trans::N };
+    /// let jobs = vec![GemmJob::compact(ops, [0, 0, 0], 2, 1, 2)];
+    /// let plan = FusedGemmPlan::<f64>::new(GemmBatch::new(ScalarKind::F64, ops, jobs)?, &PlanConfig::default())?;
+    /// let a = [1.0, 2.0, 3.0, 4.0]; // stored 2×2; op(A) = Aᵀ
+    /// let mut c = [f64::NAN; 2]; // never read
+    /// plan.execute_into(&mut Exec::serial(), 1.0, &a, &[1.0, 1.0], &mut c)?;
+    /// assert_eq!(c, [3.0, 7.0]);
+    /// // A short buffer is refused before anything is written.
+    /// assert!(matches!(
+    ///     plan.execute_into(&mut Exec::serial(), 1.0, &a[..3], &[1.0, 1.0], &mut c),
+    ///     Err(Error::Gemm(_))
+    /// ));
+    /// # Ok::<(), tcontract::Error>(())
+    /// ```
     pub fn execute_into(
         &self,
         exec: &mut Exec<'_>,
@@ -332,6 +427,23 @@ impl<T: Scalar> FusedGemmPlan<T> {
     /// # Errors
     ///
     /// As [`FusedGemmPlan::execute_into`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use t4a_desc::gemm::{GemmBatch, GemmJob, GemmOps, Trans};
+    /// use t4a_desc::ScalarKind;
+    /// use tcontract::{FusedGemmPlan, PlanConfig};
+    /// use tcontract_exec::Exec;
+    ///
+    /// let ops = GemmOps { a: Trans::N, b: Trans::N };
+    /// let jobs = vec![GemmJob::compact(ops, [0, 0, 0], 1, 1, 2)];
+    /// let plan = FusedGemmPlan::<f64>::new(GemmBatch::new(ScalarKind::F64, ops, jobs)?, &PlanConfig::default())?;
+    /// let mut c = [10.0];
+    /// plan.execute_into_accum(&mut Exec::serial(), 2.0, &[1.0, 2.0], &[3.0, 4.0], -1.0, &mut c)?;
+    /// assert_eq!(c, [2.0 * 11.0 - 10.0]);
+    /// # Ok::<(), tcontract::Error>(())
+    /// ```
     pub fn execute_into_accum(
         &self,
         exec: &mut Exec<'_>,

@@ -45,5 +45,11 @@ several bands, panels and slabs.
 
 - Comparisons against the naive loop use exact value equality: its summation
   order differs from the kernels' only in the sign of a zero.
-- Not measured: the diagnostic bench of the issue (fused against per-job
-  `contract_batched`) is a follow-up, so nothing here claims a speed-up.
+- Benchmark rows: `tcontract-bench` bin `fused_gemm` (fused against per-job
+  `contract_batched` on the issue's shapes, 1T and 4T, with a bitwise check
+  against the per-job packed result). Only smoke runs were made (on a laptop,
+  3 samples) to check the harness; nothing here claims a speed-up.
+- Review fixes (round 1): a direct-B family needs `b_group` sized as
+  `execute_once` sizes it even though no panel is written, because
+  `run_strip` checks every epoch's slivers against it; and geometries without
+  work items are planned too, so kernel errors are not skipped.

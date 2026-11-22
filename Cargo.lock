@@ -1051,6 +1051,7 @@ dependencies = [
  "serde_json",
  "strided-basic",
  "strided-view",
+ "t4a-desc",
  "tcontract",
  "tcontract-capi",
  "tcontract-exec",

@@ -385,7 +385,7 @@ The public surface was proposed on the issue before implementation and approved 
 | `PlanConfig::partition = Some(_)`? | **Refused** with `ConfigError::Option`: the route has its own claim. | `tests/fused_gemm.rs` (`configuration_and_policy_refusals`) |
 | Error reporting? | Descriptor errors (`Bounds`, `FreshLayout`, `FreshCoverage`) come back as `Error::Gemm` before any write; each check names the lowest job it rejects (bounds are checked per operand, `A`, `B`, then `C`, and `FreshCoverage` names no job when the outputs tile only a prefix); overlap and overflow are rejected earlier by `GemmBatch::new`. | `tests/fused_gemm.rs` (`errors_are_reported_before_any_write`) |
 | Deviations from the proposal | `execution_route` takes no `OutputContract` and `workspace_req` takes no `Exec`: neither affects the result on this route, and an unused parameter would be public surface without meaning. | this PR |
-| Is the route faster than per-job execution? | **Open.** No measurement yet. The diagnostic bench of the issue (fused against per-job `contract_batched`, widths 1/4/8, the issue46 and uniform-block shapes) is a follow-up; route selection stays in tensor4all/cpueinsum-rs#80. | — |
+| Is the route faster than per-job execution? | **Open.** The rows exist (`tcontract-bench` bin `fused_gemm`: fused against per-job `contract_batched`, packed-forced and default, on the issue's shapes, at `--threads 1` and `--threads 4`, with a bitwise check against the per-job packed result); no campaign measurement is recorded yet. Route selection stays in tensor4all/cpueinsum-rs#80. | `benchmarks/benchmarks/tcontract/fused_gemm/` |
 
 ## 2026-11-20 The device-neutral job descriptor ([#209](https://github.com/tensor4all/tcontract-rs/issues/209))
 
