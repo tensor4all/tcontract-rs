@@ -35,8 +35,9 @@ struct Cfg {
 }
 
 impl Cfg {
-    fn row(&self, case: &str, variant: &str, ns: f64) {
-        println!("{case},{variant},{},{ns:.0},{}", self.threads, self.runs);
+    /// One CSV row; `samples` is the number of timed calls actually made.
+    fn row(&self, case: &str, variant: &str, ns: f64, samples: usize) {
+        println!("{case},{variant},{},{ns:.0},{samples}", self.threads);
     }
 }
 
@@ -158,7 +159,7 @@ fn run_per_job(
 fn timed(cfg: &Cfg, case: &str, variant: &str, f: impl FnMut()) {
     let s = samples_ns(cfg.prime, cfg.warmup, cfg.runs, f);
     let q = |k: usize| s[(s.len() - 1) * k / 4];
-    cfg.row(case, variant, s[s.len() / 2]);
+    cfg.row(case, variant, s[s.len() / 2], s.len());
     println!(
         "# spread {case} {variant} {} {:.0} {:.0} {:.0} {:.0}",
         cfg.threads,
