@@ -12,16 +12,26 @@ Cases (the issue's list): `16384x32^3`, `4096x8^3`,
 32^3, cpueinsum issue46), and `uniform46_d{2,4,8,16}` (46 blocks of
 degeneracy d).
 
+Run it through the paired runner, which runs every thread count of a case back
+to back, each pinned to idle cores of one L3 domain by `scripts/pinned.sh`
+(Linux only; elsewhere record that the run was unpinned):
+
 ```bash
 cargo build --release -p tcontract-bench --bin fused_gemm
-taskset -c 19    target/release/fused_gemm --threads 1
-taskset -c 19-22 target/release/fused_gemm --threads 4
+benchmarks/scripts/paired.sh target/release/fused_gemm out/fused 8-15 1 4
 ```
 
-Environment: `BENCH_RUNS` (default 50), `BENCH_WARMUP` (default 5),
-`BENCH_FILTER` (substring of the case name). Timed boundary: one execute of
-every job. Plans are built outside the timed region; the per-job route builds
-its `BatchItem` views inside it, as its callers do.
+Before a case is timed, every variant's result is checked on the measured
+context (bitwise for `fused` and `per_job_packed` against the per-job packed
+result, exactly by value for `per_job_default`), and a mismatch exits with
+status 1, so a wrong route produces no rows. Environment: `BENCH_RUNS`
+(default 50), `BENCH_WARMUP_MS` (default 1500 ms of untimed calls per arm,
+the top of the PERFORMANCE_TIPS range for short calls), `BENCH_WARMUP`
+(default 5 more calls), `BENCH_CASE` (exact name, as `paired.sh` passes it),
+`BENCH_FILTER` (substring). Timed boundary: one execute of every job; inputs
+and output pass through `black_box` on every call. Plans are built outside
+the timed region; the per-job route builds its `BatchItem` views inside it,
+as its callers do.
 
 No result is recorded here yet: campaign runs belong to
 [tcontract-benchmark](https://github.com/tensor4all/tcontract-benchmark).

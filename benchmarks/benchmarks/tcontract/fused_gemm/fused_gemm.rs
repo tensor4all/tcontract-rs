@@ -2,13 +2,20 @@
 //! against the per-job route (`contract_batched`, one `Plan` per distinct
 //! geometry), at an enforced thread count.
 //!
-//! Usage: `fused_gemm --threads N`. CSV `case,variant,threads,median_ns,samples`.
-//! Variants: `fused`; `per_job_packed` (each geometry's `Plan` with the packed
-//! driver forced, the per-job reference whose result the fused route must
-//! reproduce bitwise, checked once per case as `CHECK ... ok`); and
-//! `per_job_default` (the planner's own strategy per geometry). Environment:
-//! `BENCH_RUNS` (default 50), `BENCH_WARMUP` (default 5), `BENCH_FILTER`.
+//! Usage: `fused_gemm --threads N [--list]`. CSV
+//! `case,variant,threads,median_ns,samples`. Variants: `fused`;
+//! `per_job_packed` (each geometry's `Plan` with the packed driver forced, the
+//! per-job reference the fused route must reproduce bitwise); and
+//! `per_job_default` (the planner's own strategy per geometry). Before timing a
+//! case, every variant's result is checked on the measured context (bitwise
+//! for the two packed ones, exactly by value for the default one) and a
+//! mismatch exits with status 1. `--list` prints the case names (for
+//! `scripts/paired.sh`). Environment: `BENCH_RUNS` (default 50),
+//! `BENCH_WARMUP_MS` (default 1500: untimed calls for that much wall time per
+//! arm), `BENCH_WARMUP` (default 5 more calls), `BENCH_CASE` (exact case name),
+//! `BENCH_FILTER` (substring).
 use std::hint::black_box;
+use std::time::Duration;
 
 use strided_view::{StridedView, StridedViewMut};
 use t4a_desc::gemm::{GemmBatch, GemmJob, GemmOps, Operand, Trans};
@@ -16,14 +23,14 @@ use t4a_desc::ScalarKind;
 use tcontract::api::{CSpec, DType, Labels, LayoutSpec, OperandSpec, Problem};
 use tcontract::{contract_batched, BatchItem, FusedGemmPlan, Partition, Plan, PlanConfig};
 use tcontract_bench::threads::BenchThreads;
-use tcontract_bench::timing::{env_usize, median_ns};
+use tcontract_bench::timing::{env_usize, samples_ns};
 use tcontract_exec::Exec;
 
 struct Cfg {
     threads: usize,
+    prime: Duration,
     warmup: usize,
     runs: usize,
-    filter: Option<String>,
 }
 
 impl Cfg {
@@ -145,15 +152,47 @@ fn run_per_job(
     contract_batched(&mut items, exec).expect("contract_batched");
 }
 
+/// Median of the samples, after `prime` of wall time and `warmup` calls.
+fn median(cfg: &Cfg, f: impl FnMut()) -> f64 {
+    let samples = samples_ns(cfg.prime, cfg.warmup, cfg.runs, f);
+    samples[samples.len() / 2]
+}
+
+/// Abort before any timing unless `got` equals `want` exactly: bitwise when
+/// `bitwise`, otherwise by value (the inputs are small multiples of 1/2, so every
+/// route computes the exact sum and only the sign of a zero may differ).
+fn check(name: &str, variant: &str, got: &[f64], want: &[f64], bitwise: bool) {
+    let bad = got.iter().zip(want).position(|(x, y)| match bitwise {
+        true => x.to_bits() != y.to_bits(),
+        false => x != y,
+    });
+    if let Some(i) = bad {
+        eprintln!(
+            "CHECK {name} {variant} MISMATCH at {i}: {} vs {}",
+            got[i], want[i]
+        );
+        std::process::exit(1);
+    }
+}
+
 fn main() {
+    let cases = cases();
+    if std::env::args().any(|a| a == "--list") {
+        for (name, _) in &cases {
+            println!("{name}");
+        }
+        return;
+    }
     let threads = BenchThreads::from_args();
     threads.verify();
     let cfg = Cfg {
         threads: threads.requested,
+        prime: Duration::from_millis(env_usize("BENCH_WARMUP_MS", 1500) as u64),
         warmup: env_usize("BENCH_WARMUP", 5),
         runs: env_usize("BENCH_RUNS", 50),
-        filter: std::env::var("BENCH_FILTER").ok().filter(|f| !f.is_empty()),
     };
+    let exact = std::env::var("BENCH_CASE").ok().filter(|f| !f.is_empty());
+    let filter = std::env::var("BENCH_FILTER").ok().filter(|f| !f.is_empty());
     let packed = PlanConfig {
         partition: Some(Partition::StaticGrid {
             pin: None,
@@ -163,8 +202,13 @@ fn main() {
     };
     println!("case,variant,threads,median_ns,samples");
     threads.with_exec(|exec, _| {
-        for (name, spec) in cases() {
-            if cfg.filter.as_deref().is_some_and(|f| !name.contains(f)) {
+        for (name, spec) in cases {
+            let wanted = match (&exact, &filter) {
+                (Some(e), _) => *e == name,
+                (None, Some(f)) => name.contains(f.as_str()),
+                (None, None) => true,
+            };
+            if !wanted {
                 continue;
             }
             let jobs = jobs(&spec);
@@ -184,36 +228,51 @@ fn main() {
             let packed_plans = per_job_plans(&jobs, &packed);
             let default_plans = per_job_plans(&jobs, &PlanConfig::default());
 
-            // The fused result must be bitwise the per-job packed result.
+            // Correctness before timing, on the measured context: the fused
+            // result is bitwise the per-job packed one, and every variant
+            // computes the exact product. A mismatch aborts the run.
             let mut want = vec![0.0; lc];
             run_per_job(&mut Exec::serial(), &jobs, &packed_plans, &a, &b, &mut want);
-            let mut c = vec![0.0; lc];
+            let mut c = vec![f64::NAN; lc];
             let route = fused
                 .execute_into(exec, 1.0, &a, &b, &mut c)
                 .expect("fused run");
-            let same = c.iter().zip(&want).all(|(x, y)| x.to_bits() == y.to_bits());
+            check(&name, "fused", &c, &want, true);
+            for (variant, plans) in [
+                ("per_job_packed", &packed_plans),
+                ("per_job_default", &default_plans),
+            ] {
+                let mut got = vec![f64::NAN; lc];
+                run_per_job(exec, &jobs, plans, &a, &b, &mut got);
+                check(&name, variant, &got, &want, variant == "per_job_packed");
+            }
             println!(
-                "CHECK {name} threads={} route={route:?} items={} {}",
+                "CHECK {name} threads={} route={route:?} items={} ok",
                 cfg.threads,
-                fused.work_items(),
-                if same { "ok" } else { "MISMATCH" }
+                fused.work_items()
             );
 
-            let ns = median_ns(cfg.warmup, cfg.runs, || {
+            // Every arm gets the same wall-clock priming and call count.
+            let ns = median(&cfg, || {
                 fused
-                    .execute_into(exec, 1.0, &a, &b, &mut c)
+                    .execute_into(exec, 1.0, black_box(&a), black_box(&b), black_box(&mut c))
                     .expect("fused run");
             });
-            black_box(&c);
             cfg.row(&name, "fused", ns);
             for (variant, plans) in [
                 ("per_job_packed", &packed_plans),
                 ("per_job_default", &default_plans),
             ] {
-                let ns = median_ns(cfg.warmup, cfg.runs, || {
-                    run_per_job(exec, &jobs, plans, &a, &b, &mut c)
+                let ns = median(&cfg, || {
+                    run_per_job(
+                        exec,
+                        &jobs,
+                        plans,
+                        black_box(&a),
+                        black_box(&b),
+                        black_box(&mut c),
+                    )
                 });
-                black_box(&c);
                 cfg.row(&name, variant, ns);
             }
         }
