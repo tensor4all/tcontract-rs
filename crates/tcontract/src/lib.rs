@@ -24,6 +24,10 @@
 //!
 //! [`contract_batched`] runs many independent items of one plan with the batch
 //! as the parallel axis, the regime where per-contraction threading loses.
+//! [`FusedGemmPlan`] runs a grouped GEMM -- independent column-major jobs of
+//! different shapes over shared buffers, described by `t4a_desc::gemm::GemmBatch`
+//! -- as one packed traversal whose workers claim every job's tiles from one
+//! counter.
 //!
 //! [`unary`] is the same machinery for the one-operand update `D = alpha *
 //! op_A(A[labels]) + beta * D_old`, which covers a permutation, a diagonal and
@@ -65,6 +69,7 @@ mod backend;
 mod batch;
 mod buffer;
 mod driver;
+mod fused;
 mod heap;
 #[cfg(feature = "phase-timing")]
 mod phase;
@@ -79,6 +84,7 @@ pub use api::{Error, Result};
 pub use backend::TcontractBackend;
 pub use batch::{contract_batched, BatchItem};
 pub use driver::{Assignment, DynSnapshot, DynStats, DynamicReport};
+pub use fused::FusedGemmPlan;
 pub use plan::{
     execute_uninit_with, Algorithm, Axis, CacheModel, ExecutionRoute, FaerLimit, Orient,
     OutputContract, PackedReport, PackedRoute, Partition, Plan, PlanConfig, PlanReport, PlanStats,

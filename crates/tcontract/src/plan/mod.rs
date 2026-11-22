@@ -330,6 +330,14 @@ impl<T: Scalar> Plan<T> {
         }
     }
 
+    /// The packed driver's plan and resolution, when this plan runs on it.
+    pub(crate) fn packed_parts(&self) -> Option<(&PackedPlan, &ResolvedGemm<<T as Scalar>::Re>)> {
+        match &self.strategy {
+            Strategy::Packed(pk) => Some((&pk.plan, &pk.rg)),
+            _ => None,
+        }
+    }
+
     /// Refuse a general-product entry on a rank-k plan, before anything is
     /// read or written: the general entries would write both triangles.
     fn general_only(&self) -> Result<()> {

@@ -136,6 +136,7 @@ mod route;
 pub(crate) use route::call_workspace_req;
 pub(crate) use route::execution_geometry;
 mod dynamic;
+pub(crate) mod fused;
 mod static_grid;
 #[cfg(test)]
 mod tests;
@@ -227,7 +228,7 @@ fn direct_c_allowed<T: Element>(plan: &PackedPlan, c: *const T, d: *mut T, beta:
 ///
 /// They are built together into the team's buffer so a steady-state execute
 /// allocates nothing; these offsets are what keeps them separate slices.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 struct ScatterRuns {
     a: (usize, usize),
     b: (usize, usize),
@@ -356,6 +357,60 @@ fn c_for_call<T: Element>(
         (d.cast_const(), &plan.h_d)
     } else {
         (c, &plan.h_c)
+    }
+}
+
+/// The plan's scatters in the kernel's roles: with `swap`, `(A, M)` and
+/// `(B, N)` are exchanged (and `C`/`D` read transposed), so from here on `am`,
+/// `ak` and `conj_a` *are* the row operand, whichever tensor that is.
+struct Oriented<'a> {
+    am: &'a [i64],
+    ak: &'a [i64],
+    conj_a: bool,
+    bk: &'a [i64],
+    bn: &'a [i64],
+    conj_b: bool,
+    cm: &'a [i64],
+    cn: &'a [i64],
+    dm: &'a [i64],
+    dn: &'a [i64],
+    ha: &'a [i64],
+    hb: &'a [i64],
+}
+
+impl<'a> Oriented<'a> {
+    fn new(plan: &'a PackedPlan, swap: bool) -> Self {
+        if swap {
+            Self {
+                am: &plan.b_n,
+                ak: &plan.b_k,
+                conj_a: plan.conj_b,
+                bk: &plan.a_k,
+                bn: &plan.a_m,
+                conj_b: plan.conj_a,
+                cm: &plan.c_n,
+                cn: &plan.c_m,
+                dm: &plan.d_n,
+                dn: &plan.d_m,
+                ha: &plan.h_b,
+                hb: &plan.h_a,
+            }
+        } else {
+            Self {
+                am: &plan.a_m,
+                ak: &plan.a_k,
+                conj_a: plan.conj_a,
+                bk: &plan.b_k,
+                bn: &plan.b_n,
+                conj_b: plan.conj_b,
+                cm: &plan.c_m,
+                cn: &plan.c_n,
+                dm: &plan.d_m,
+                dn: &plan.d_n,
+                ha: &plan.h_a,
+                hb: &plan.h_b,
+            }
+        }
     }
 }
 
@@ -531,31 +586,20 @@ where
     // column-B uses 1r under 1m, whichever user tensor fills that role.
     let swap = plan.transposes_gemm(mr);
     let (ptr_a, ptr_b) = if swap { (b, a) } else { (a, b) };
-    let (am, ak, conj_a) = if swap {
-        (&plan.b_n, &plan.b_k, plan.conj_b)
-    } else {
-        (&plan.a_m, &plan.a_k, plan.conj_a)
-    };
-    let (bk, bn, conj_b) = if swap {
-        (&plan.a_k, &plan.a_m, plan.conj_a)
-    } else {
-        (&plan.b_k, &plan.b_n, plan.conj_b)
-    };
-    let (cm, cn) = if swap {
-        (&plan.c_n, &plan.c_m)
-    } else {
-        (&plan.c_m, &plan.c_n)
-    };
-    let (dm, dn) = if swap {
-        (&plan.d_n, &plan.d_m)
-    } else {
-        (&plan.d_m, &plan.d_n)
-    };
-    let (ha, hb) = if swap {
-        (&plan.h_b, &plan.h_a)
-    } else {
-        (&plan.h_a, &plan.h_b)
-    };
+    let Oriented {
+        am,
+        ak,
+        conj_a,
+        bk,
+        bn,
+        conj_b,
+        cm,
+        cn,
+        dm,
+        dn,
+        ha,
+        hb,
+    } = Oriented::new(plan, swap);
 
     let (c, hc) = c_for_call(plan, beta, c, d);
     let workspace = workspace.or_else(|| exec.workspace());
@@ -638,117 +682,16 @@ where
             .with_threads(p)
             .expect("validated effective-width blocking"),
     };
-    let blocking = Blocking {
-        mc: at_width.mc,
-        kc: at_width.kc,
-        nc: at_width.nc,
-    };
-    let Blocking { mc, kc, nc } = blocking;
-    let mc = mc.min(m.next_multiple_of(mr));
-    let nc = nc.min(n.next_multiple_of(nr));
-    // Whether the blocked outer traversal applies, computed here because this is
-    // where the plan's oriented role axes and the resolved blocking meet. It needs
-    // the role's fastest axes to disagree *and* the contraction to fit one K slab and
-    // one NC panel - which is what keeps a block's accumulator complete without
-    // cross-slab work, ownership or barrier changes.
-    // The block buys a contiguous pack and pays for it with a per-block permutation and
-    // metadata (measured at about 9 ms a call on the campaign's shapes). How much the pack
-    // is worth is the operand's element count against the output's - `m*k` against `m*n`,
-    // i.e. roughly `k` against `n`. Over the 98 tcbench rows at 1T, with the path on and
-    // off measured alternately in one session, `n <= 64 and k > n` is the only class that
-    // wins without losing: 4 wins, 0 losses, 2 neutral, median x1.14, the individual cases
-    // up to x1.74 (`abjc-cbka-kj` f64 42.0 -> 24.1 ms). A thin output against a deeper
-    // contraction is also exactly the domain TBLIS's own advantage lives in
-    // (`docs/design/blocked-outer-traversal.md`, section 9).
-    let blocked = block::blocked_eligibility(
-        &plan.stats,
-        swap,
-        k,
-        n,
+    let CallShape {
+        mc,
         kc,
         nc,
-        (64 / core::mem::size_of::<T>()).max(1),
-        BLOCK_MC_BUDGET,
-        mr,
-    )
-    // **Serial only**, and not with a family that writes `D` itself:
-    //
-    // * The blocked path enumerates every block of the role, which is only a worker's own
-    //   work when its strip is the whole `m` range - so `pm == 1`. It also fills only its
-    //   own column tiles, while the grid permutation reads every column tile of the grid,
-    //   so `pn == 1` as well; with a column-group worker the permutation would read grid
-    //   slots nobody initialized. Partitioning the block itself is a separate change.
-    // * A Direct family writes `D` inside the tile call instead of the tile, so a
-    //   collected tile would never be written and the emission below would read scratch
-    //   that no kernel touched. `direct_tile` also tests `collect` now, which is the
-    //   invariant itself; this filter keeps such a call off the path entirely.
-    .filter(|_| pm == 1 && pn == 1)
-    .filter(|_| !matches!(fam.kernel, UkrFn::Direct(_)));
-    // Two whole grids when it applies: the block's own row order and the output's.
-    // The block is the span axis whole times a line's worth along the operand's fastest
-    // axis; every other axis contributes one value, exactly as `block::rows` builds it. It
-    // sizes both the packed panel and the tile grid.
-    let block_rows = match blocked {
-        None => 0,
-        Some(shape) => {
-            let mut axes_buf = [block::Role::EMPTY; block::MAX_AXES];
-            let axes = block::role_into(&plan.stats, swap, &mut axes_buf);
-            axes[shape.span].extent * shape.line_len
-        }
-    };
-    let grid_elems = match blocked {
-        None => 0,
-        // One slot per (row tile, column tile) of a block.
-        Some(_) => {
-            tcontract_kernel::tile_planes(fam.tile_fmt)
-                * mr
-                * nr
-                * block_rows.div_ceil(mr)
-                * n.div_ceil(nr)
-        }
-    };
-    // The blocked path sizes `MC` by the block rather than the other way round - the
-    // eligibility already made the block fit `BLOCK_MC_BUDGET`.
-    let mc = match blocked {
-        None => mc,
-        Some(_) => block_rows.next_multiple_of(mr),
-    };
-    // The blocked path hands the packer a *raw* panel pointer and asks it to write
-    // `block_rows` rows, and hands the emitter a raw tile pointer into a grid it also
-    // sized. `pack_a_rows`'s contract - "the caller supplies a sufficiently sized
-    // output" - is discharged here or nowhere, and a mistake in this geometry would
-    // corrupt the heap rather than fail. Check it once per call, where all four
-    // numbers are in hand; the hot loops keep their `debug_assert`s.
-    if blocked.is_some() {
-        assert!(
-            block_rows <= mc,
-            "blocked path: {block_rows} block rows exceed the {mc}-row A panel"
-        );
-        assert!(
-            k <= kc && n <= nc,
-            "blocked path: one K slab and one NC panel are the condition for a single \
-             emission; k={k} kc={kc} n={n} nc={nc}"
-        );
-        let slots = block_rows.div_ceil(mr).max(1) * n.div_ceil(nr).max(1);
-        assert!(
-            grid_elems >= slots * tcontract_kernel::tile_planes(fam.tile_fmt) * mr * nr,
-            "blocked path: {grid_elems} grid reals cannot hold {slots} tiles"
-        );
-    }
-    // The grids live after the tile and the induced scratch in the worker's region.
-    let grid_off = fam.tile + fam.induced_scratch(kc);
-    #[cfg(feature = "phase-timing")]
-    if std::env::var_os("TCONTRACT_PHASE").is_some() {
-        eprintln!("BLOCKED {blocked:?} grid_elems={grid_elems}");
-        if blocked.is_some() {
-            // Which strides the role actually has, not just how long its axes are: two
-            // shapes with the same `BlockShape` and different strides behave very
-            // differently under this traversal, and that is what this prints.
-            let mut axes_buf = [block::Role::EMPTY; block::MAX_AXES];
-            let axes = block::role_into(&plan.stats, swap, &mut axes_buf);
-            eprintln!("BLOCKED-AXES {axes:?}");
-        }
-    }
+        blocked,
+        grid_elems,
+        grid_off,
+        kd,
+        ap_len,
+    } = call_shape::<T>(plan, &fam, &at_width, swap, (m, n, k), (pm, pn));
     // C-line aligned strips, when asked for: one line of `C` is 64 bytes, so
     // the boundary is a multiple of both the panel and the line.
     let align = match rg.opts.align_c_lines {
@@ -784,8 +727,6 @@ where
     // `k = 32`, `kc = 256`), which for a call without a workspace is the difference
     // between a small heap block and a fresh `mmap` plus page faults on every call;
     // measured, that was most of the small-shape per-call floor of tcontract-rs#156.
-    let kd = kc.min(k);
-    let ap_len = panel_len(mc, mr, kd, fam.a_pack);
     let group_cap = nc.div_ceil(nr).div_ceil(pn);
     let b_group = panel_len(group_cap * nr, nr, kd, fam.b_pack);
     // Under batch-axis claiming every lane packs its own `B` into one slice of
@@ -970,6 +911,8 @@ where
                         i * items / lanes..(i + 1) * items / lanes,
                         0,
                         m,
+                        0,
+                        n,
                         ap,
                         tile,
                         tile.add(scratch_off),
@@ -1005,6 +948,8 @@ where
                     0..plan.stats.batch,
                     0,
                     m,
+                    0,
+                    n,
                     ap,
                     tile,
                     tile.add(scratch_off),
@@ -1067,6 +1012,8 @@ where
                     0..plan.stats.batch,
                     lo,
                     hi,
+                    0,
+                    n,
                     ap,
                     tile,
                     tile.add(scratch_off),
@@ -1107,4 +1054,161 @@ where
         .broadcast(cell)
         .expect("can_broadcast agreed with broadcast");
     Ok(())
+}
+
+/// The blocking and buffer geometry of one call at its active width: the
+/// cache blocks clamped to the problem, whether the blocked outer traversal
+/// applies, its tile grids, and the packed `A` block. Shared by the packed
+/// driver and the fused grouped-GEMM route (`fused`), so both size and walk
+/// their buffers with one copy of the rule.
+#[derive(Clone, Copy)]
+pub(crate) struct CallShape {
+    pub(crate) mc: usize,
+    pub(crate) kc: usize,
+    pub(crate) nc: usize,
+    blocked: Option<block::BlockShape>,
+    /// One tile grid of the blocked path, in reals (zero when it does not apply).
+    pub(crate) grid_elems: usize,
+    /// Reals from a worker's tile base to its first tile grid.
+    grid_off: usize,
+    /// Depth of one packed K slab, `min(kc, k)`.
+    pub(crate) kd: usize,
+    /// Reals of one worker's packed `A` block.
+    pub(crate) ap_len: usize,
+}
+
+/// [`CallShape`] for `plan` on family `fam`, with `at_width` the resolution at
+/// the call's active width and `(pm, pn)` its grid.
+fn call_shape<T: Element>(
+    plan: &PackedPlan,
+    fam: &DriverFamily<T::Real>,
+    at_width: &tcontract_kernel::ResolvedGemm<T::Real>,
+    swap: bool,
+    (m, n, k): (usize, usize, usize),
+    (pm, pn): (usize, usize),
+) -> CallShape {
+    let (mr, nr) = (fam.mr, fam.nr);
+    let blocking = Blocking {
+        mc: at_width.mc,
+        kc: at_width.kc,
+        nc: at_width.nc,
+    };
+    let Blocking { mc, kc, nc } = blocking;
+    let mc = mc.min(m.next_multiple_of(mr));
+    let nc = nc.min(n.next_multiple_of(nr));
+    // Whether the blocked outer traversal applies, computed here because this is
+    // where the plan's oriented role axes and the resolved blocking meet. It needs
+    // the role's fastest axes to disagree *and* the contraction to fit one K slab and
+    // one NC panel - which is what keeps a block's accumulator complete without
+    // cross-slab work, ownership or barrier changes.
+    // The block buys a contiguous pack and pays for it with a per-block permutation and
+    // metadata (measured at about 9 ms a call on the campaign's shapes). How much the pack
+    // is worth is the operand's element count against the output's - `m*k` against `m*n`,
+    // i.e. roughly `k` against `n`. Over the 98 tcbench rows at 1T, with the path on and
+    // off measured alternately in one session, `n <= 64 and k > n` is the only class that
+    // wins without losing: 4 wins, 0 losses, 2 neutral, median x1.14, the individual cases
+    // up to x1.74 (`abjc-cbka-kj` f64 42.0 -> 24.1 ms). A thin output against a deeper
+    // contraction is also exactly the domain TBLIS's own advantage lives in
+    // (`docs/design/blocked-outer-traversal.md`, section 9).
+    let blocked = block::blocked_eligibility(
+        &plan.stats,
+        swap,
+        k,
+        n,
+        kc,
+        nc,
+        (64 / core::mem::size_of::<T>()).max(1),
+        BLOCK_MC_BUDGET,
+        mr,
+    )
+    // **Serial only**, and not with a family that writes `D` itself:
+    //
+    // * The blocked path enumerates every block of the role, which is only a worker's own
+    //   work when its strip is the whole `m` range - so `pm == 1`. It also fills only its
+    //   own column tiles, while the grid permutation reads every column tile of the grid,
+    //   so `pn == 1` as well; with a column-group worker the permutation would read grid
+    //   slots nobody initialized. Partitioning the block itself is a separate change.
+    // * A Direct family writes `D` inside the tile call instead of the tile, so a
+    //   collected tile would never be written and the emission below would read scratch
+    //   that no kernel touched. `direct_tile` also tests `collect` now, which is the
+    //   invariant itself; this filter keeps such a call off the path entirely.
+    .filter(|_| pm == 1 && pn == 1)
+    .filter(|_| !matches!(fam.kernel, UkrFn::Direct(_)));
+    // Two whole grids when it applies: the block's own row order and the output's.
+    // The block is the span axis whole times a line's worth along the operand's fastest
+    // axis; every other axis contributes one value, exactly as `block::rows` builds it. It
+    // sizes both the packed panel and the tile grid.
+    let block_rows = match blocked {
+        None => 0,
+        Some(shape) => {
+            let mut axes_buf = [block::Role::EMPTY; block::MAX_AXES];
+            let axes = block::role_into(&plan.stats, swap, &mut axes_buf);
+            axes[shape.span].extent * shape.line_len
+        }
+    };
+    let grid_elems = match blocked {
+        None => 0,
+        // One slot per (row tile, column tile) of a block.
+        Some(_) => {
+            tcontract_kernel::tile_planes(fam.tile_fmt)
+                * mr
+                * nr
+                * block_rows.div_ceil(mr)
+                * n.div_ceil(nr)
+        }
+    };
+    // The blocked path sizes `MC` by the block rather than the other way round - the
+    // eligibility already made the block fit `BLOCK_MC_BUDGET`.
+    let mc = match blocked {
+        None => mc,
+        Some(_) => block_rows.next_multiple_of(mr),
+    };
+    // The blocked path hands the packer a *raw* panel pointer and asks it to write
+    // `block_rows` rows, and hands the emitter a raw tile pointer into a grid it also
+    // sized. `pack_a_rows`'s contract - "the caller supplies a sufficiently sized
+    // output" - is discharged here or nowhere, and a mistake in this geometry would
+    // corrupt the heap rather than fail. Check it once per call, where all four
+    // numbers are in hand; the hot loops keep their `debug_assert`s.
+    if blocked.is_some() {
+        assert!(
+            block_rows <= mc,
+            "blocked path: {block_rows} block rows exceed the {mc}-row A panel"
+        );
+        assert!(
+            k <= kc && n <= nc,
+            "blocked path: one K slab and one NC panel are the condition for a single \
+             emission; k={k} kc={kc} n={n} nc={nc}"
+        );
+        let slots = block_rows.div_ceil(mr).max(1) * n.div_ceil(nr).max(1);
+        assert!(
+            grid_elems >= slots * tcontract_kernel::tile_planes(fam.tile_fmt) * mr * nr,
+            "blocked path: {grid_elems} grid reals cannot hold {slots} tiles"
+        );
+    }
+    // The grids live after the tile and the induced scratch in the worker's region.
+    let grid_off = fam.tile + fam.induced_scratch(kc);
+    #[cfg(feature = "phase-timing")]
+    if std::env::var_os("TCONTRACT_PHASE").is_some() {
+        eprintln!("BLOCKED {blocked:?} grid_elems={grid_elems}");
+        if blocked.is_some() {
+            // Which strides the role actually has, not just how long its axes are: two
+            // shapes with the same `BlockShape` and different strides behave very
+            // differently under this traversal, and that is what this prints.
+            let mut axes_buf = [block::Role::EMPTY; block::MAX_AXES];
+            let axes = block::role_into(&plan.stats, swap, &mut axes_buf);
+            eprintln!("BLOCKED-AXES {axes:?}");
+        }
+    }
+    let kd = kc.min(k);
+    let ap_len = panel_len(mc, mr, kd, fam.a_pack);
+    CallShape {
+        mc,
+        kc,
+        nc,
+        blocked,
+        grid_elems,
+        grid_off,
+        kd,
+        ap_len,
+    }
 }

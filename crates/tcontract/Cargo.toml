@@ -17,6 +17,7 @@ strided-view = { workspace = true }
 thiserror = { workspace = true }
 tinyvec = { workspace = true }
 t4a-cost = { workspace = true }
+t4a-desc = { workspace = true }
 tcontract-exec = { workspace = true, features = ["faer"] }
 threadteam = { workspace = true }
 tcontract-kernel = { workspace = true, features = ["std"] }

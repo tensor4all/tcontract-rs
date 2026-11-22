@@ -26,7 +26,7 @@ AI-assisted contributions are welcome; see [AGENTS.md](AGENTS.md) and
 | `t4a-desc` | Device-neutral kernel descriptors, with no dependency at all: the grouped-GEMM job list in NVIDIA's grouped-GEMM model (`gemm::GemmJob` with per-job `m, n, k, lda, ldb, ldc` and element offsets; ops N/T/C per call), validated once into a `gemm::GemmBatch` with its groups and strided runs (#209). Shared by CPU routes and GPU backends; no buffer, executor or scalar value. |
 | `tcontract-exec` | Execution resources over `threadteam`: the per-call `Exec` bundle (placement token, optional workspace, batch policy), the `Pool` wrapper (a `threadteam::Pool` plus reusable scratch), width chosen from work. Starts no task. |
 | `tcontract-kernel` | The kernel layer: packed formats, kernel-family descriptors and their registry, resolution with frozen blocking, packing and write-back, cache blocking, and every microkernel family (scalar, AVX2, AVX-512 and NEON register-tile kernels, portable reference kernels, native complex kernels). |
-| `tcontract` | Binary contraction over one validated `Problem` (from `DotGeneral` or from labels): `Plan<T>`, `PlanConfig`, the packed, faer and elementwise strategies chosen by the planner, `contract_batched`, the labels-based unary update (`unary`), shared errors, and the backend trait. |
+| `tcontract` | Binary contraction over one validated `Problem` (from `DotGeneral` or from labels): `Plan<T>`, `PlanConfig`, the packed, faer and elementwise strategies chosen by the planner, `contract_batched`, `FusedGemmPlan` (a `t4a-desc` grouped GEMM run as one packed traversal, #208), the labels-based unary update (`unary`), shared errors, and the backend trait. |
 | `tcontract-capi` | `libtcontract_capi` (cdylib, staticlib, rlib): the TAPP C ABI over `tcontract`, DLPack operands, executors. The only crate that produces a library for C. |
 | `tcontract-testkit` | Test support: an independent label oracle, seeded fixtures, a naive second backend, downstream-kernel fixtures. Not a production fallback. |
 | `tcontract-bench` (`benchmarks/`) | Benchmark harness (`tcbench`, C and Rust ABI rows); not part of the library. |
@@ -46,9 +46,8 @@ tlinalg and tenferro; the GEMM-axis fusion rule is `tcontract::api::fuse_axes` /
 Arrows mean "depends on" and are drawn from `cargo tree` (normal and build
 dependencies; `tcontract-testkit` is a dev-dependency of `tcontract` and
 `tcontract-capi`, which creates no cycle because it is only linked into tests).
-`t4a-desc` has no dependent in this workspace yet: its consumers are
-cpueinsum's `GroupedPlan` (tensor4all/cpueinsum-rs#79) and the planned fused
-executor (#208).
+`tcontract` depends on `t4a-desc` for `FusedGemmPlan` (#208); cpueinsum's
+`GroupedPlan` (tensor4all/cpueinsum-rs#79) is its other consumer.
 
 ```mermaid
 flowchart TB
@@ -70,6 +69,7 @@ flowchart TB
     CT --> ST
     EX --> COST
     CT --> COST
+    CT --> DESC
     TK --> CT
     TK --> GK
     TK --> EX
@@ -274,8 +274,9 @@ with a K role that differs only by kernel family (all-batch problems stay
 delegated to strided-rs); `hadamard.json` must not
 regress. There is no stable API or ABI yet. Published crates: `t4a-cost` 0.1.0,
 `tcontract-exec` 0.13.0, `tcontract` 0.13.0 and `tcontract-kernel` 0.3.1
-([CHANGELOG.md](CHANGELOG.md)); `t4a-desc` has no dependent yet, and
-`tcontract-capi` and `tcontract-testkit` are not published.
+([CHANGELOG.md](CHANGELOG.md)). `t4a-desc` is not published yet and has to be
+released before the next `tcontract`, which depends on it; `tcontract-capi` and
+`tcontract-testkit` are not published.
 Performance claims need recorded measurements ([PERFORMANCE_TIPS.md](PERFORMANCE_TIPS.md),
 [docs/experiments.md](docs/experiments.md)). The source integration that
 produced this layout is described in [docs/migration-2026-10.md](docs/migration-2026-10.md)

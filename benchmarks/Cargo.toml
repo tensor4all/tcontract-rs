@@ -16,6 +16,7 @@ tcontract-exec = { workspace = true }
 threadteam = { workspace = true }
 tcontract-kernel = { workspace = true }
 tcontract = { workspace = true }
+t4a-desc = { workspace = true }
 tcontract-capi = { workspace = true }
 strided-basic = { workspace = true }
 strided-view = { workspace = true }
@@ -85,6 +86,10 @@ path = "benchmarks/zqcbench/main.rs"
 [[bin]]
 name = "exec_entry"
 path = "benchmarks/tcontract/exec_entry/exec_entry.rs"
+
+[[bin]]
+name = "fused_gemm"
+path = "benchmarks/tcontract/fused_gemm/fused_gemm.rs"
 
 [lints]
 workspace = true
