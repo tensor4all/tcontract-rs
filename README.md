@@ -253,7 +253,7 @@ but the class-wide `amd256` row (AVX2, 1m and 3m menus) and `amd512` remain
 
 ## Build and test
 
-Rust 1.89 or newer. CI runs on Linux (x86-64) for every change and on macOS (arm64) daily; the aarch64
+Rust 1.89 or newer. CI runs on Linux (x86-64) for every PR and every push to `main`, and on macOS (arm64) only daily and on manual dispatch; the aarch64
 kernels are also checked with `cargo check --target aarch64-apple-darwin`.
 
 ```sh

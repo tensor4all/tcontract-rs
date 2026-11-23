@@ -686,7 +686,8 @@ intermediate clients broken.
    usage skills.
 
 **CI platforms.** Hosted CI runs on Linux x86_64 and macOS arm64 for every
-PR. This is a prerequisite: the matrix lands on `main` before PR 1.
+PR (macOS only daily and on manual `workflow_dispatch` since 2026-11-23,
+#218). This is a prerequisite: the matrix lands on `main` before PR 1.
 - **Both OSes:** clippy, workspace tests, release tests of the packed
   driver/kernels, and the C/C++ ABI consumers. The ABI consumers use
   `libtprims.so`/`nm -D` on Linux and `libtprims.dylib`/`nm -gU` on macOS.

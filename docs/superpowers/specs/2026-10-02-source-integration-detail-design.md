@@ -379,7 +379,11 @@ and ABI tests cannot retain a blas dependency until PR 4 if blas disappears
 in PR 3. tcbench is ported in PR 3, and tensorcontract is deleted in that PR.
 
 Every PR must be green on both hosted CI platforms: Linux x86_64 and macOS
-arm64 (overview §11). An x86-only kernel or test is gated by target and has
+arm64 (overview §11). Since 2026-11-23 (#218) this holds per PR for Linux
+only: macOS runs daily on `main` and on manual `workflow_dispatch`, so a PR's
+macOS result comes only from dispatching `CI` on its branch; otherwise the
+macOS lane first sees the change in the daily run after merge.
+An x86-only kernel or test is gated by target and has
 an explicit aarch64 expectation. A local Linux run does not stand in for
 the macOS lane.
 
