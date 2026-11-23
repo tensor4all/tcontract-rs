@@ -4,12 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  # macOS runs here, not on pull requests or pushes: see `clippy`'s matrix below.
+  schedule:
+    - cron: "47 17 * * *"   # 17:47 UTC = 02:47 JST, daily; off the :00/:30 herd
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
-# Each Rust job restores `Swatinem/rust-cache` and only a push to main writes it, so
+# Each Rust job restores `Swatinem/rust-cache` and only a push to main (or the daily
+# scheduled run on main, the only run with macOS rows) writes it, so
 # a pull request restores a cache built from default-branch content and never
 # publishes one from PR-controlled content. The key includes the job id, the OS, the
 # rustc version and a hash of the lockfile and the workflow env (which is where
@@ -66,7 +71,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # macOS rows exist only on the daily schedule and on manual dispatch. macOS
+        # runners are the organization's most expensive Actions SKU and the Team
+        # plan allows five concurrent macOS jobs across all of tensor4all, so per-PR
+        # macOS runs queued every other repository. Dispatch this workflow on a
+        # branch to check a macOS-sensitive change before merging. `test` and
+        # `capi` use the same expression.
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -75,21 +86,21 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
       # The C ABI test (in `capi`) links a C program to libtcontract_capi.so, which `cargo test`
       # does not build (it only builds the rlib the harness needs).
       - run: cargo build --profile ci -p tcontract-capi
@@ -109,7 +120,7 @@ jobs:
   # `c-consumer`.
   #
   # One OS, not two: this gate's subject is the profile, not the platform, and the `test`
-  # job already covers both. The three steps share one build, so `tcbench` and the README
+  # job already covers both (macOS daily). The three steps share one build, so `tcbench` and the README
   # example are smoke runs of binaries, not a second optimized compile.
   test-release:
     runs-on: ubuntu-latest
@@ -118,7 +129,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
       - run: cargo test -p tcontract --profile release-test
       - run: cargo run --profile release-test -p tcontract-bench --bin tcbench -- info
       # qcbench is a campaign harness binary: prove it links and reports its
@@ -131,14 +142,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
       # The C test (tests/c_abi.rs) compiles and runs C and C++ programs
       # against the built libtcontract_capi.so, one of them against the pinned upstream
       # TAPP headers alone.
@@ -164,7 +175,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
       - run: cargo build --release -p tcontract-capi
       # A prebuilt library, then an installed prefix (the layout install.sh
       # produces), each consumed by the CMake example.
@@ -187,7 +198,7 @@ jobs:
           toolchain: "1.89.0"
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
       - run: cargo build --workspace --all-targets
 
   doc:
@@ -197,7 +208,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.event_name == 'push' }}
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings

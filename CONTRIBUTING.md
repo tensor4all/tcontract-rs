@@ -15,9 +15,11 @@ This file only records what is specific to `tcontract-rs`:
   other Rust job uses `stable`, and `nightly` is installed only in the `placement` lane for `cargo-public-api`.
 - **Feature combinations CI builds**: default features. `tcontract-kernel` has `default = ["std"]`, but no crate is
   `#![no_std]` and no lane turns that feature off, so the lanes differ by profile and target rather than by feature
-  set: `cargo test --profile ci --workspace` on both operating systems, `--profile release-test` on Linux, the C ABI
+  set: `cargo test --profile ci --workspace` on both operating systems (macOS daily), `--profile release-test` on Linux, the C ABI
   test and its exported-symbol list, and an installed and a prebuilt `cmake` consumer.
-- **Platforms claimed**: `ubuntu-latest` and `macos-latest` for `clippy`, `test` and `capi`; `fmt`, `placement`,
+- **Platforms claimed**: `ubuntu-latest` and `macos-latest` for `clippy`, `test` and `capi`. `ubuntu-latest` runs
+  them on every PR and push; `macos-latest` runs them only on the daily schedule and on manual `workflow_dispatch` of
+  `ci.yml`, because macOS runners are costly and limited to five concurrent jobs across the organization. `fmt`, `placement`,
   `scripts`, `test-release`, `c-consumer`, `msrv` and `doc` run on `ubuntu-latest` only.
 - **Local gate**:
 
