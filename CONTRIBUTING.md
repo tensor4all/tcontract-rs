@@ -18,7 +18,7 @@ This file only records what is specific to `tcontract-rs`:
   set: `cargo test --profile ci --workspace` on both operating systems (macOS daily), `--profile release-test` on Linux, the C ABI
   test and its exported-symbol list, and an installed and a prebuilt `cmake` consumer.
 - **Platforms claimed**: `ubuntu-latest` and `macos-latest` for `clippy`, `test` and `capi`. `ubuntu-latest` runs
-  them on every PR and push; `macos-latest` runs them only on the daily schedule and on manual `workflow_dispatch` of
+  them on every PR and every push to `main`; `macos-latest` runs them only on the daily schedule and on manual `workflow_dispatch` of
   `ci.yml`, because macOS runners are costly and limited to five concurrent jobs across the organization. `fmt`, `placement`,
   `scripts`, `test-release`, `c-consumer`, `msrv` and `doc` run on `ubuntu-latest` only.
 - **Local gate**:
