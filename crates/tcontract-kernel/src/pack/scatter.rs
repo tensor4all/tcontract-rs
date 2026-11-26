@@ -38,6 +38,9 @@
 //! unaffected — this exists so the fast path is an A/B switch rather than a
 //! rebuild, in the same spirit as a pinned scalar kernel (`KernelForce::Scalar`).
 
+mod map;
+pub use map::ScatterMap;
+
 /// Sentinel stored in a block-scatter vector for a block whose scatter entries
 /// are *not* an arithmetic progression.
 pub const IRREGULAR: i64 = i64::MIN;
@@ -333,5 +336,7 @@ pub fn regular_fraction(bs: &[i64]) -> f64 {
     reg as f64 / bs.len() as f64
 }
 
+#[cfg(test)]
+mod map_tests;
 #[cfg(test)]
 mod tests;
