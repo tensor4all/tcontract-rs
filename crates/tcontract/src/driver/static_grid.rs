@@ -8,7 +8,7 @@ use std::sync::Barrier;
 use tcontract_kernel::Element;
 
 use super::block;
-use super::tile::{compute_block, pack_a_rows, pack_b_slivers, run_block, Bufs, Epoch};
+use super::tile::{compute_block, pack_a_rows, pack_b_slivers, run_block, Bufs, Epoch, Windows};
 use super::Ctx;
 
 /// Where one thread sits in the `pm x pn` partition, as far as loop 5 and the
@@ -107,12 +107,12 @@ pub(super) unsafe fn run_strip<T>(
     ap_ptr: *mut T::Real,
     tile_ptr: *mut T::Real,
     scratch_ptr: *mut T::Real,
+    win: Windows,
     bpart: BPart<'_>,
 ) where
     T: Element,
 {
     let Ctx {
-        plan,
         fam,
         nr,
         mc,
@@ -121,23 +121,26 @@ pub(super) unsafe fn run_strip<T>(
         n,
         k,
         b_group,
-        ha,
-        hb,
         direct_b,
         ..
     } = *cx;
     let (ptr_a, ptr_b, c, d, bp_ptr) = (cx.a.0, cx.b.0, cx.c.0 as *const T, cx.d.0, cx.bp.0);
 
-    for h in items {
-        let ah = ptr_a.offset(ha[h] as isize);
-        let bh = ptr_b.offset(hb[h] as isize);
-        let ch = c.offset(cx.hc[h] as isize);
-        let dh = d.offset(plan.h_d[h] as isize);
+    let mut batch = super::BatchCursor::new(cx, items.start);
+    for _ in items {
+        let ah = ptr_a.offset(batch.a() as isize);
+        let bh = ptr_b.offset(batch.b() as isize);
+        let ch = c.offset(batch.c() as isize);
+        let dh = d.offset(batch.d() as isize);
+        batch.advance();
 
         // ---- loop 5: N blocking -------------------------------------------
         let mut jc = jc_lo;
         while jc < jc_hi {
             let jc_len = nc.min(n - jc);
+            // This block's column scatter entries, once for every K slab.
+            // SAFETY: `win` is this worker's, sized for `nc` columns.
+            unsafe { win.fill_cols(cx, jc, jc_len) };
 
             // ---- loop 4: K blocking ---------------------------------------
             let mut pc = 0;
@@ -176,7 +179,6 @@ pub(super) unsafe fn run_strip<T>(
                     bh,
                     ch,
                     dh,
-                    pc,
                     pc_len,
                     first_k_block,
                     jc,
@@ -184,8 +186,11 @@ pub(super) unsafe fn run_strip<T>(
                     b_sliver,
                     bp: bp_ptr,
                     q0,
+                    // SAFETY: `pc_len <= kc` and the slab lies within `K`.
+                    win: unsafe { win.fill_slab(cx, pc, pc_len) },
                 };
                 let bufs = Bufs {
+                    win,
                     ap: ap_ptr,
                     tile: tile_ptr,
                     scratch: scratch_ptr,
@@ -239,10 +244,9 @@ pub(super) unsafe fn run_strip<T>(
                             &mut axes_buf,
                         );
                         let mut origins = block::Origins::new();
-                        let mut rows_buf = [0i64; super::BLOCK_MC_BUDGET];
                         while let Some(origin) = origins.next(axes, shape) {
-                            let live = block::rows_into(axes, shape, origin, &mut rows_buf);
-                            run_block::<T>(cx, &ep, bufs, &rows_buf[..live], jr_lo, jr_hi);
+                            let grid = block::grid(axes, shape, origin);
+                            run_block::<T>(cx, &ep, bufs, &grid, jr_lo, jr_hi);
                         }
                     }
                 } else {
@@ -251,6 +255,8 @@ pub(super) unsafe fn run_strip<T>(
                         let ic_len = mc.min(m_hi - ic);
                         // Today's rows are one interval of the epoch's scatters; the blocked path
                         // passes the same thing, gathered over its block.
+                        // SAFETY: `ic_len <= mc` and the rows lie within the role.
+                        let (a_m, c_m, d_m) = unsafe { win.fill_rows(cx, ic, ic_len) };
                         let (a_m_bs, c_m_bs, d_m_bs) = (
                             cx.runs.slice(cx.scatter, cx.runs.a),
                             cx.runs.slice(cx.scatter, cx.runs.cm),
@@ -266,18 +272,9 @@ pub(super) unsafe fn run_strip<T>(
                         } else {
                             &c_m_bs[b0..b1]
                         };
-                        pack_a_rows::<T>(cx, &ep, &cx.am[ic..ic + ic_len], a_m_bs, ic_len, ap_ptr);
+                        pack_a_rows::<T>(cx, &ep, a_m, a_m_bs, ic_len, ap_ptr);
                         compute_block::<T>(
-                            cx,
-                            &ep,
-                            bufs,
-                            &cx.cm[ic..ic + ic_len],
-                            &cx.dm[ic..ic + ic_len],
-                            c_m_bs,
-                            d_m_bs,
-                            ic_len,
-                            jr_lo,
-                            jr_hi,
+                            cx, &ep, bufs, c_m, d_m, c_m_bs, d_m_bs, ic_len, jr_lo, jr_hi,
                         );
                         ic += mc;
                     }

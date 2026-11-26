@@ -19,13 +19,12 @@
 //! [`Plan`]: crate::Plan
 
 use tcontract_kernel::pack::panel_len;
-use tcontract_kernel::scatter::append_block_scatter;
 use tcontract_kernel::{Element, ResolvedGemm};
 
 use super::static_grid::{run_strip, BPart};
 use super::{
     c_for_call, call_shape, direct_c_allowed, pack_b_needed, CallShape, Ctx, Oriented,
-    ResolvedCall, ScatterRuns, Shared,
+    ResolvedCall, ScatterRuns, Shared, Windows,
 };
 use crate::plan::PackedPlan;
 
@@ -115,11 +114,11 @@ impl FusedGroup {
         };
         let mut scatter = Vec::new();
         let runs = ScatterRuns {
-            a: append_block_scatter(&mut scatter, o.am, mr),
-            b: append_block_scatter(&mut scatter, o.bn, nr),
-            dm: append_block_scatter(&mut scatter, o.dm, mr),
-            dn: append_block_scatter(&mut scatter, o.dn, nr),
-            cm: append_block_scatter(&mut scatter, o.cm, mr),
+            a: o.am.append_block_scatter(&mut scatter, mr),
+            b: o.bn.append_block_scatter(&mut scatter, nr),
+            dm: o.dm.append_block_scatter(&mut scatter, mr),
+            dn: o.dn.append_block_scatter(&mut scatter, nr),
+            cm: o.cm.append_block_scatter(&mut scatter, mr),
         };
         Self {
             swap,
@@ -156,9 +155,14 @@ impl FusedGroup {
         rows as u128 * cols as u128 * self.k as u128
     }
 
-    /// Reals of one worker's `(A + B region, tile region)`.
-    pub(crate) fn worker_reals(&self) -> (usize, usize) {
-        (self.ap_reals + self.bp_reals, self.tile_reals)
+    /// One worker's `(A + B region reals, tile region reals, scatter-window
+    /// entries)`.
+    pub(crate) fn worker_sizes(&self) -> (usize, usize, usize) {
+        (
+            self.ap_reals + self.bp_reals,
+            self.tile_reals,
+            Windows::elems(self.mc, self.nc, self.kc.min(self.k)),
+        )
     }
 }
 
@@ -167,7 +171,7 @@ impl FusedGroup {
 /// `a`, `b` and `c` are the job's origins (base pointer plus the job's
 /// element offset); `c` is read (when `beta != 0`) and written in place, as
 /// `C ← alpha·op(A)·op(B) + beta·C`. `ab` is the worker's `A + B` region and
-/// `tile` its tile region, sized by [`FusedGroup::worker_reals`].
+/// `tile` its tile region, sized by [`FusedGroup::worker_sizes`].
 ///
 /// # Safety
 ///
@@ -176,7 +180,7 @@ impl FusedGroup {
 /// * No other thread writes this item's output elements while it runs.
 /// * `rg` is `plan`'s validated serial resolution and `g` was built from both.
 /// * `ab` and `tile` are this worker's alone and at least as large as
-///   `g.worker_reals()` asks.
+///   `g.worker_sizes()` asks.
 #[allow(clippy::too_many_arguments)] // INVARIANT: the GEMM argument set plus the item and buffers.
 pub(crate) unsafe fn run_item<T: Element>(
     plan: &PackedPlan,
@@ -190,6 +194,7 @@ pub(crate) unsafe fn run_item<T: Element>(
     (band, panel): (usize, usize),
     ab: *mut T::Real,
     tile: *mut T::Real,
+    win: Windows,
 ) {
     // INVARIANT: as in `FusedGroup::new`.
     let fam = rg
@@ -280,6 +285,7 @@ pub(crate) unsafe fn run_item<T: Element>(
             ab,
             tile,
             tile.add(fam.tile),
+            win,
             BPart::SERIAL,
         )
     }
@@ -320,7 +326,7 @@ pub(crate) type GroupRef<'a, T> = (
 /// * The items' output elements are pairwise disjoint: jobs' outputs are
 ///   disjoint (`GemmBatch::new`) and one job's items partition its output.
 /// * `group(i)` returns a group built from that plan and resolution, whose
-///   `worker_reals()` is at most `worker`, for every `item.group` in `items`.
+///   `worker_sizes()` is at most `worker`, for every `item.group` in `items`.
 /// * `width <= exec.budget()`.
 #[allow(clippy::too_many_arguments)] // INVARIANT: the GEMM argument set plus the work list.
 pub(crate) unsafe fn traverse<'g, T, G>(
@@ -329,7 +335,7 @@ pub(crate) unsafe fn traverse<'g, T, G>(
     items: &[FusedItem],
     jobs: &[t4a_desc::gemm::GemmJob],
     group: G,
-    worker: (usize, usize),
+    worker: (usize, usize, usize),
     alpha: T,
     beta: T,
     a: *const T,
@@ -343,12 +349,17 @@ pub(crate) unsafe fn traverse<'g, T, G>(
     let req = tcontract_exec::WorkspaceReq {
         a_bytes: worker.0 * element,
         tile_bytes: worker.1 * element,
+        worker_scatter: worker.2,
         ..Default::default()
     };
     let workspace = exec.workspace();
     let (a, b, c) = (Shared(a as *mut T), Shared(b as *mut T), Shared(c));
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let claim_all = |ab: *mut T::Real, tile: *mut T::Real| {
+    let claim_all = |ab: *mut T::Real, tile: *mut T::Real, sc: &mut Vec<i64>| {
+        if sc.len() < worker.2 {
+            sc.resize(worker.2, 0);
+        }
+        let sc = sc.as_mut_ptr();
         // Bind the wrappers whole: a closure that named `a.0` would capture
         // the bare pointer, which is not `Send`.
         let (a, b, c) = (a, b, c);
@@ -377,18 +388,21 @@ pub(crate) unsafe fn traverse<'g, T, G>(
                     (item.band, item.panel),
                     ab,
                     tile,
+                    // The group's own cache blocks, over this worker's scratch.
+                    Windows::new(sc, g.mc, g.nc, g.kc.min(g.k)),
                 )
             };
         }
     };
     let with_buffers = || match workspace {
-        Some(ws) => ws.with_worker(&req, &mut |ab, tile, _| {
-            claim_all(ab as *mut T::Real, tile as *mut T::Real)
+        Some(ws) => ws.with_worker(&req, &mut |ab, tile, sc| {
+            claim_all(ab as *mut T::Real, tile as *mut T::Real, sc)
         }),
         None => {
             let mut ab = crate::buffer::Panel::<T::Real>::new(worker.0);
             let mut tile = crate::buffer::Panel::<T::Real>::new(worker.1);
-            claim_all(ab.as_mut_ptr(), tile.as_mut_ptr());
+            let mut sc = Vec::new();
+            claim_all(ab.as_mut_ptr(), tile.as_mut_ptr(), &mut sc);
         }
     };
     match width {

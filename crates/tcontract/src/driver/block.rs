@@ -189,6 +189,7 @@ pub(crate) fn eligible(axes: &[Role], per_line: usize) -> Option<BlockShape> {
 /// offsets differ per operand, the logical row does not.
 /// [`rows`] into a caller's buffer, returning how many rows it wrote: the blocked path
 /// must not allocate, and the driver reuses one stack buffer for every block.
+#[cfg(test)]
 pub(crate) fn rows_into(
     axes: &[Role],
     shape: BlockShape,
@@ -230,6 +231,48 @@ pub(crate) fn rows_into(
         }
     }
     n
+}
+
+/// A block as the two-axis grid [`rows_into`] enumerates, without enumerating it:
+/// row `(s, l)` is `base + s * span_place + l * line_place`, listed `s`-major.
+/// Scatter maps turn this into offsets with one division per block
+/// (`ScatterMap::fill_grid`) instead of one per row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Grid {
+    pub(crate) base: usize,
+    pub(crate) span_place: usize,
+    pub(crate) span_len: usize,
+    pub(crate) line_place: usize,
+    pub(crate) line_len: usize,
+}
+
+impl Grid {
+    /// Rows in the block, capped like [`rows_into`] at `cap`.
+    pub(crate) fn live(&self, cap: usize) -> usize {
+        (self.span_len * self.line_len).min(cap)
+    }
+}
+
+/// The [`Grid`] of the block at `origin`: the same rows as [`rows_into`].
+pub(crate) fn grid(axes: &[Role], shape: BlockShape, origin: &[usize]) -> Grid {
+    let mut places = [0usize; MAX_AXES];
+    let mut acc = 1usize;
+    let mut base = 0usize;
+    for (i, a) in axes.iter().enumerate() {
+        places[i] = acc;
+        base += origin[i] * acc;
+        acc *= a.extent;
+    }
+    Grid {
+        base,
+        span_place: places[shape.span],
+        span_len: axes[shape.span].extent,
+        line_place: places[shape.line],
+        // A short last block on the line axis, as `rows_into`'s early `break`.
+        line_len: shape
+            .line_len
+            .min(axes[shape.line].extent.saturating_sub(origin[shape.line])),
+    }
 }
 
 /// [`rows_into`] as a `Vec`, for tests.

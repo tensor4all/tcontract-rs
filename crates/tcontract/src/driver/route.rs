@@ -272,7 +272,9 @@ pub(crate) fn call_workspace_req<T: Element>(
     WorkspaceReq {
         a_bytes,
         tile_bytes: (fam.tile + fam.induced_scratch(kc)) * element + 2 * grid_elems * element,
-        worker_scatter: 0,
+        // The per-worker windows a cache block gathers (`execute_packed` asks for
+        // `Windows::elems`), at the widest blocking this bound covers.
+        worker_scatter: super::Windows::elems(mc, nc, kd),
         b_bytes,
         team_scatter,
         barriers: budget,

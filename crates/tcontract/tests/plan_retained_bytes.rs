@@ -263,3 +263,52 @@ fn retained_bytes_equals_live_heap_c32() {
 fn retained_bytes_equals_live_heap_c64() {
     cases().iter().for_each(Case::check::<Complex64>);
 }
+
+/// A two-qubit gate on an `n`-qubit state, as in the tenferro-rs#2742 reproducer,
+/// forced onto the packed driver (the strategy that used to keep one `i64` per
+/// element of every role).
+fn gate_case(n: usize, p: i64, q: i64) -> Case {
+    let state: Vec<i64> = (0..n as i64).collect();
+    let out: Vec<i64> = state
+        .iter()
+        .map(|&l| match l {
+            l if l == p => 1000,
+            l if l == q => 1001,
+            l => l,
+        })
+        .collect();
+    Case {
+        name: "gate on a state",
+        a: operand(&vec![2; n], &state),
+        b: operand(&[2; 4], &[1000, 1001, p, q]),
+        d: operand(&vec![2; n], &out),
+        c: None,
+        config: PlanConfig::packed(),
+        algorithm: |_| Algorithm::Packed,
+    }
+}
+
+/// tcontract-rs#221: a plan keeps the *structure* of its scatters, `O(rank)`, not
+/// one `i64` per element. Growing the state by 2^10 in element count leaves the
+/// footprint where it was: before the change the `n = 24` plan retained 384 MiB
+/// of tables against `n = 14`'s 384 KiB.
+#[test]
+fn retained_bytes_does_not_grow_with_the_role_size() {
+    let small = Plan::<Complex32>::new(
+        &gate_case(14, 3, 9).problem::<Complex32>(),
+        &PlanConfig::packed(),
+    )
+    .unwrap();
+    let large = Plan::<Complex32>::new(
+        &gate_case(24, 3, 17).problem::<Complex32>(),
+        &PlanConfig::packed(),
+    )
+    .unwrap();
+    assert_eq!(small.report().algorithm, Algorithm::Packed);
+    assert_eq!(large.report().algorithm, Algorithm::Packed);
+    // Ten more axes cost ten more entries in a handful of maps and the problem's
+    // role tables; nowhere near the 2^24 * 8 bytes of one table.
+    let (s, l) = (small.retained_bytes(), large.retained_bytes());
+    assert!(l < 64 << 10, "n = 24 plan retains {l} bytes");
+    assert!(l - s < 16 << 10, "n = 14 retains {s}, n = 24 retains {l}");
+}

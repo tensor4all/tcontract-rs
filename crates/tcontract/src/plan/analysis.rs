@@ -1,5 +1,5 @@
 //! Index analysis: a validated [`Problem`] seen as a (batched) matrix product
-//! over scatter vectors.
+//! over scatter maps (see `tcontract_kernel::scatter::ScatterMap`).
 //!
 //! Given the normalized roles of a [`Problem`], this module works out how to
 //! view the contraction
@@ -53,7 +53,7 @@
 //! claim on contiguity; `K` only affects the packing of `A` and `B`. This is a
 //! heuristic and a Phase 4 tuning knob.
 
-use tcontract_kernel::scatter::{build_scatter, run_structure};
+use tcontract_kernel::scatter::ScatterMap;
 
 use super::config::PlanConfig;
 use super::orientation::{Orient, RowBlock};
@@ -131,8 +131,8 @@ impl PlanStats {
     ///
     /// In a debug build, if the product exceeds `u64::MAX`; in release it wraps.
     /// Reaching that needs all four dimensions near `10^5`, which is only a few
-    /// megabytes of scatter vectors and therefore a plan that builds fine even
-    /// though nothing could execute it — so it is a real edge, not an
+    /// hundred kilobytes of role extents (the plan keeps no per-element table) and
+    /// therefore a plan that builds fine even though nothing could execute it — so it is a real edge, not an
     /// unreachable one.
     pub fn macs(&self) -> u64 {
         (self.batch as u64) * (self.m as u64) * (self.n as u64) * (self.k as u64)
@@ -159,24 +159,24 @@ impl PlanStats {
 /// The packed plan: everything that depends only on shapes, strides and roles,
 /// and not on the element type or the data pointers.
 ///
-/// Scatter vectors are element-type independent. The kernel family, the
+/// Scatter maps are element-type independent. The kernel family, the
 /// blocking and the partition live in the resolved configuration the owning
 /// [`Plan`](super::Plan) freezes next to this record; the orientation and
 /// row-block requests are read from [`PlanConfig`] once, here.
 #[derive(Clone, Debug)]
 pub struct PackedPlan {
-    pub(crate) a_m: Vec<i64>,
-    pub(crate) a_k: Vec<i64>,
-    pub(crate) b_k: Vec<i64>,
-    pub(crate) b_n: Vec<i64>,
-    pub(crate) c_m: Vec<i64>,
-    pub(crate) c_n: Vec<i64>,
-    pub(crate) d_m: Vec<i64>,
-    pub(crate) d_n: Vec<i64>,
-    pub(crate) h_a: Vec<i64>,
-    pub(crate) h_b: Vec<i64>,
-    pub(crate) h_c: Vec<i64>,
-    pub(crate) h_d: Vec<i64>,
+    pub(crate) a_m: ScatterMap,
+    pub(crate) a_k: ScatterMap,
+    pub(crate) b_k: ScatterMap,
+    pub(crate) b_n: ScatterMap,
+    pub(crate) c_m: ScatterMap,
+    pub(crate) c_n: ScatterMap,
+    pub(crate) d_m: ScatterMap,
+    pub(crate) d_n: ScatterMap,
+    pub(crate) h_a: ScatterMap,
+    pub(crate) h_b: ScatterMap,
+    pub(crate) h_c: ScatterMap,
+    pub(crate) h_d: ScatterMap,
     /// Run structure of the output's `M` and `N` scatters, `(len, stride)`, or
     /// `(len, 0)` when there is none. Cached because
     /// [`PackedPlan::transposes_gemm`] and [`PackedPlan::row_block`] both turn
@@ -218,9 +218,8 @@ fn role_axes(role: &[RoleAxis], key: impl Fn(&Axis) -> (u64, u64)) -> Vec<Axis> 
 }
 
 impl PackedPlan {
-    /// The heap of the scatter vectors and the folded-axis report.
+    /// The heap of the scatter maps and the folded-axis report.
     pub(crate) fn heap_bytes(&self) -> usize {
-        use crate::heap::vec;
         let Self {
             a_m,
             a_k,
@@ -247,7 +246,7 @@ impl PackedPlan {
         } = self;
         [a_m, a_k, b_k, b_n, c_m, c_n, d_m, d_n, h_a, h_b, h_c, h_d]
             .into_iter()
-            .map(vec)
+            .map(ScatterMap::heap_bytes)
             .sum::<usize>()
             + stats.heap_bytes()
     }
@@ -255,7 +254,7 @@ impl PackedPlan {
     /// Analyse a validated problem.
     ///
     /// This is where every shape-dependent decision of the packed route is
-    /// made -- ordering, folding and the scatter vectors -- so it is the work
+    /// made -- ordering, folding and the scatter maps -- so it is the work
     /// a [`Plan`](super::Plan) hoists out of a loop. The [`stats`](Self::stats)
     /// field reports what it concluded.
     pub(crate) fn from_problem(p: &Problem, cfg: &PlanConfig) -> Result<PackedPlan> {
@@ -266,8 +265,10 @@ impl PackedPlan {
         let h_ax = role_axes(roles.h(), |x| (x.sd.unsigned_abs(), x.sa.unsigned_abs()));
 
         for axes in [&m_ax, &n_ax, &k_ax, &h_ax] {
-            // A scatter vector has one entry per element of its role, so the
-            // product must be addressable before anything is allocated.
+            // A role's element count must be addressable: the block-scatter
+            // vector, the windows and every offset are sized and indexed from it.
+            // (The role is no longer expanded, so this bounds what the driver
+            // allocates per call, not what the plan keeps.)
             let len = axes
                 .iter()
                 .try_fold(1usize, |acc, x| acc.checked_mul(x.extent as usize))
@@ -284,11 +285,12 @@ impl PackedPlan {
         }
 
         // An operand with a zero extent holds no element, so no numerical access
-        // can reach it, and its per-role scatter vectors are unreachable values.
+        // can reach it, and its per-role scatter maps describe unreachable values.
         // A caller may legitimately leave an empty operand's strides at an
         // unreachable magnitude (a view over an empty slice), which would
-        // overflow the scatter odometer below. Zero that operand's strides
-        // instead; the vector lengths, and so the reported stats, are unchanged.
+        // overflow the carry-delta arithmetic of the scatter maps below. Zero that
+        // operand's strides instead; the map lengths, and so the reported stats, are
+        // unchanged.
         let empty = |groups: [&[Axis]; 3]| {
             groups
                 .iter()
@@ -300,18 +302,18 @@ impl PackedPlan {
         let d_empty = empty([&m_ax, &n_ax, &h_ax]);
         let stride = |is_empty: bool, value: i64| if is_empty { 0 } else { value };
 
-        let a_m = build_scatter_for(&m_ax, |x| stride(a_empty, x.sa));
-        let a_k = build_scatter_for(&k_ax, |x| stride(a_empty, x.sa));
-        let b_k = build_scatter_for(&k_ax, |x| stride(b_empty, x.sb));
-        let b_n = build_scatter_for(&n_ax, |x| stride(b_empty, x.sb));
-        let c_m = build_scatter_for(&m_ax, |x| stride(c_empty, x.sc));
-        let c_n = build_scatter_for(&n_ax, |x| stride(c_empty, x.sc));
-        let d_m = build_scatter_for(&m_ax, |x| stride(d_empty, x.sd));
-        let d_n = build_scatter_for(&n_ax, |x| stride(d_empty, x.sd));
-        let h_a = build_scatter_for(&h_ax, |x| stride(a_empty, x.sa));
-        let h_b = build_scatter_for(&h_ax, |x| stride(b_empty, x.sb));
-        let h_c = build_scatter_for(&h_ax, |x| stride(c_empty, x.sc));
-        let h_d = build_scatter_for(&h_ax, |x| stride(d_empty, x.sd));
+        let a_m = scatter_map_for(&m_ax, |x| stride(a_empty, x.sa));
+        let a_k = scatter_map_for(&k_ax, |x| stride(a_empty, x.sa));
+        let b_k = scatter_map_for(&k_ax, |x| stride(b_empty, x.sb));
+        let b_n = scatter_map_for(&n_ax, |x| stride(b_empty, x.sb));
+        let c_m = scatter_map_for(&m_ax, |x| stride(c_empty, x.sc));
+        let c_n = scatter_map_for(&n_ax, |x| stride(c_empty, x.sc));
+        let d_m = scatter_map_for(&m_ax, |x| stride(d_empty, x.sd));
+        let d_n = scatter_map_for(&n_ax, |x| stride(d_empty, x.sd));
+        let h_a = scatter_map_for(&h_ax, |x| stride(a_empty, x.sa));
+        let h_b = scatter_map_for(&h_ax, |x| stride(b_empty, x.sb));
+        let h_c = scatter_map_for(&h_ax, |x| stride(c_empty, x.sc));
+        let h_d = scatter_map_for(&h_ax, |x| stride(d_empty, x.sd));
 
         let stats = PlanStats {
             m: d_m.len(),
@@ -324,8 +326,8 @@ impl PackedPlan {
             k_axes: k_ax,
             h_axes: h_ax,
         };
-        let d_m_run = run_structure(&d_m).unwrap_or((d_m.len(), 0));
-        let d_n_run = run_structure(&d_n).unwrap_or((d_n.len(), 0));
+        let d_m_run = d_m.run_structure().unwrap_or((d_m.len(), 0));
+        let d_n_run = d_n.run_structure().unwrap_or((d_n.len(), 0));
         Ok(PackedPlan {
             a_m,
             a_k,
@@ -370,7 +372,7 @@ impl PackedPlan {
 /// an unreachable-magnitude stride on its empty axis, so both are checked: an
 /// overflow means the axes are simply not foldable, which leaves them separate
 /// and keeps the stride normalization for empty operands in charge of the
-/// scatter vectors. The planner's own role-size guards bound a real layout's
+/// scatter maps. The planner's own role-size guards bound a real layout's
 /// role products, so refusing to fold on overflow loses no real fold.
 fn fold_axes(axes: Vec<Axis>) -> Vec<Axis> {
     let mut out: Vec<Axis> = Vec::with_capacity(axes.len());
@@ -400,10 +402,10 @@ fn fold_axes(axes: Vec<Axis>) -> Vec<Axis> {
     out
 }
 
-fn build_scatter_for(axes: &[Axis], pick: impl Fn(&Axis) -> i64) -> Vec<i64> {
+fn scatter_map_for(axes: &[Axis], pick: impl Fn(&Axis) -> i64) -> ScatterMap {
     let extents: Vec<i64> = axes.iter().map(|a| a.extent).collect();
     let strides: Vec<i64> = axes.iter().map(pick).collect();
-    build_scatter(&extents, &strides)
+    ScatterMap::new(&extents, &strides)
 }
 
 #[cfg(test)]

@@ -585,7 +585,8 @@ impl<T: Scalar> Plan<T> {
 
     /// The memory this plan keeps alive, in bytes: `size_of::<Plan<T>>()` plus
     /// every heap allocation the plan owns -- the problem's spilled layouts and
-    /// role tables, the packed strategy's box, scatter vectors and folded axes,
+    /// role tables, the packed strategy's box, scatter maps (`O(rank)` each, never one entry per
+    /// element) and folded axes,
     /// the elementwise passes' spilled axis metadata and compiled output replay,
     /// and the report's folded axes. Each allocation is counted at its capacity,
     /// as the allocator sized it.
@@ -1484,10 +1485,8 @@ fn packed_report<T: Scalar>(pk: &Packed<T>) -> PackedReport {
     } else {
         (&pk.plan.a_m, &pk.plan.b_n)
     };
-    let regular = |scatter: &[i64], block: usize| {
-        tcontract_kernel::scatter::regular_fraction(
-            &tcontract_kernel::scatter::build_block_scatter(scatter, block),
-        )
+    let regular = |scatter: &tcontract_kernel::scatter::ScatterMap, block: usize| {
+        scatter.regular_fraction(block)
     };
     PackedReport {
         swapped,

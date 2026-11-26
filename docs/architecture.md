@@ -272,7 +272,8 @@ the compiled metadata.
 
 The packed driver is told where its scratch lives: a host that owns threads
 passes a `tcontract_exec::Exec` that lends a workspace (per-thread A block and tile,
-a page-aligned shared B panel, scatter vectors and barriers). A pool owns one for
+a page-aligned shared B panel, block-scatter vectors and barriers, and per-thread
+scatter windows). A pool owns one for
 every operation on it; a serial caller that wants reuse passes an
 `Exec::serial_with_workspace`; a plan owns none. Implementations not given an
 owner get per-call buffers. Nothing is process-global, the owner reports its

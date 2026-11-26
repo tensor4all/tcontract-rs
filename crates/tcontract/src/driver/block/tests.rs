@@ -255,3 +255,51 @@ fn reorder_rows_moves_whole_rows() {
     reorder_rows(&src, 2, &[2, 0, 1], &mut dst);
     assert_eq!(dst, vec![4, 5, 0, 1, 2, 3]);
 }
+
+/// `grid` + `ScatterMap::fill_grid` is the old `rows_into` + one lookup per row,
+/// for every block of several roles: the measured one, one with a ragged line
+/// tail (13 is not a multiple of 8), extent-1 axes (dropped from a map, so the
+/// map's axes are not the role's by position), and rank 4. Every operand's
+/// scatter is checked against the *expanded* vector.
+#[test]
+fn the_grid_gives_the_offsets_the_expanded_rows_gave() {
+    use tcontract_kernel::scatter::{build_scatter, ScatterMap};
+    let r = |extent, src, dst| Role { extent, src, dst };
+    let roles = [
+        measured(),
+        vec![r(13, 1, 91), r(5, 13, 7), r(7, 65, 1)],
+        vec![r(1, 9, 9), r(6, 1, 30), r(1, 4, 4), r(4, 6, 1), r(3, 24, 5)],
+        vec![r(3, 1, 40), r(2, 3, 20), r(5, 6, 4), r(2, 30, 1)],
+        vec![r(9, 1, 3), r(3, 9, 1), r(2, 27, 0)],
+    ];
+    let mut blocks = 0usize;
+    for axes in &roles {
+        let Some(shape) = eligible(axes, 8) else {
+            continue;
+        };
+        let ext: Vec<i64> = axes.iter().map(|a| a.extent as i64).collect();
+        for pick in [|a: &Role| a.src, |a: &Role| a.dst] {
+            let strides: Vec<i64> = axes.iter().map(pick).collect();
+            let expanded = build_scatter(&ext, &strides);
+            let map = ScatterMap::new(&ext, &strides);
+            for o in block_origins(axes, shape) {
+                let want: Vec<i64> = rows(axes, shape, &o)
+                    .iter()
+                    .map(|&row| expanded[row as usize])
+                    .collect();
+                let g = grid(axes, shape, &o);
+                assert_eq!(g.live(usize::MAX), want.len(), "{axes:?} {o:?}");
+                let mut got = vec![0i64; want.len()];
+                map.fill_grid(
+                    g.base,
+                    (g.span_place, g.span_len),
+                    (g.line_place, g.line_len),
+                    &mut got,
+                );
+                assert_eq!(got, want, "{axes:?} origin {o:?}");
+                blocks += 1;
+            }
+        }
+    }
+    assert!(blocks > 300, "only {blocks} blocks exercised");
+}

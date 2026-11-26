@@ -296,14 +296,19 @@ pub(super) unsafe fn run_dynamic<T>(
     let (ptr_a, ptr_b, c, d) = (cx.a.0, cx.b.0, cx.c.0 as *const T, cx.d.0);
     let bands = m.div_ceil(job_m);
 
-    for h in 0..plan.stats.batch {
-        let ah = ptr_a.offset(cx.ha[h] as isize);
-        let bh = ptr_b.offset(cx.hb[h] as isize);
-        let ch = c.offset(cx.hc[h] as isize);
-        let dh = d.offset(plan.h_d[h] as isize);
+    let win = bufs.win;
+    let mut batch = super::BatchCursor::new(cx, 0);
+    for _ in 0..plan.stats.batch {
+        let ah = ptr_a.offset(batch.a() as isize);
+        let bh = ptr_b.offset(batch.b() as isize);
+        let ch = c.offset(batch.c() as isize);
+        let dh = d.offset(batch.d() as isize);
+        batch.advance();
         let mut jc = 0;
         while jc < n {
             let jc_len = nc.min(n - jc);
+            // SAFETY: `win` is this worker's, sized for `nc` columns.
+            unsafe { win.fill_cols(cx, jc, jc_len) };
             let mut pc = 0;
             while pc < k {
                 let pc_len = kc.min(k - pc);
@@ -312,7 +317,6 @@ pub(super) unsafe fn run_dynamic<T>(
                     bh,
                     ch,
                     dh,
-                    pc,
                     pc_len,
                     first_k_block: pc == 0,
                     jc,
@@ -321,6 +325,8 @@ pub(super) unsafe fn run_dynamic<T>(
                     // One group: sliver `s` of the block lives at `s`.
                     bp: cx.bp.0,
                     q0: 0,
+                    // SAFETY: `pc_len <= kc` and the slab lies within `K`.
+                    win: unsafe { win.fill_slab(cx, pc, pc_len) },
                 };
                 let nsliv = jc_len.div_ceil(nr);
                 // Every worker finished the previous epoch (its completion
@@ -384,6 +390,8 @@ pub(super) unsafe fn run_dynamic<T>(
                         // `B` panel was published by the barrier above.
                         // Today's rows are one interval of the epoch's scatters; the
                         // blocked path passes the same thing, gathered over its block.
+                        // SAFETY: `ic_len <= mc` and the rows lie within the role.
+                        let (a_m, c_m, d_m) = unsafe { win.fill_rows(cx, ic, ic_len) };
                         let (a_m_bs, c_m_bs, d_m_bs) = (
                             cx.runs.slice(cx.scatter, cx.runs.a),
                             cx.runs.slice(cx.scatter, cx.runs.cm),
@@ -400,25 +408,9 @@ pub(super) unsafe fn run_dynamic<T>(
                             &c_m_bs[b0..b1]
                         };
                         unsafe {
-                            pack_a_rows::<T>(
-                                cx,
-                                &ep,
-                                &cx.am[ic..ic + ic_len],
-                                a_m_bs,
-                                ic_len,
-                                bufs.ap,
-                            );
+                            pack_a_rows::<T>(cx, &ep, a_m, a_m_bs, ic_len, bufs.ap);
                             compute_block::<T>(
-                                cx,
-                                &ep,
-                                bufs,
-                                &cx.cm[ic..ic + ic_len],
-                                &cx.dm[ic..ic + ic_len],
-                                c_m_bs,
-                                d_m_bs,
-                                ic_len,
-                                jr_lo,
-                                jr_hi,
+                                cx, &ep, bufs, c_m, d_m, c_m_bs, d_m_bs, ic_len, jr_lo, jr_hi,
                             );
                         }
                         if let Some(st) = stats {
