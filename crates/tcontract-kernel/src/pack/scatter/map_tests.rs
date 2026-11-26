@@ -223,7 +223,10 @@ fn fill_grid_matches_the_expanded_vector() {
         // A block inside both axes, at a random origin of every axis.
         let dig: Vec<usize> = ext.iter().map(|&e| rng.below(e as u64) as usize).collect();
         let oi = rng.below((ext[i] as usize - dig[i]) as u64) as usize;
-        let (so, ni) = (1 + oi, 1 + rng.below((ext[j] as usize - dig[j]) as u64) as usize);
+        let (so, ni) = (
+            1 + oi,
+            1 + rng.below((ext[j] as usize - dig[j]) as u64) as usize,
+        );
         let so = so.min(ext[i] as usize - dig[i]);
         let base: usize = dig.iter().zip(&places).map(|(d, p)| d * p).sum();
         let mut want = Vec::new();
@@ -251,7 +254,11 @@ fn fill_over_long_windows_of_short_axes_matches_at() {
         let mut ext = Vec::new();
         let mut total = 1usize;
         for _ in 0..rank {
-            let e = if rng.below(3) == 0 { 1 + rng.below(5) } else { 2 } as i64;
+            let e = if rng.below(3) == 0 {
+                1 + rng.below(5)
+            } else {
+                2
+            } as i64;
             if total * e as usize > 200_000 {
                 break;
             }
@@ -277,4 +284,58 @@ fn fill_over_long_windows_of_short_axes_matches_at() {
         tiled += map.tile_split(n).is_some() as usize;
     }
     assert!(tiled > 200, "only {tiled} windows took the tiled path");
+}
+
+/// `append_block_scatter` on groups of short axes, where neither the uniform
+/// shortcut nor a single axis-0 run applies, against the expanded vector. Both
+/// the periodic path (a tile of whole blocks) and the chunked path (none) must
+/// occur, ragged tails included.
+#[test]
+fn block_scatter_of_short_axes_matches_the_expanded_vector() {
+    let mut rng = Rng(22222);
+    let (mut periodic, mut chunked) = (0usize, 0usize);
+    for _ in 0..600 {
+        let rank = 2 + rng.below(12) as usize;
+        let mut ext = Vec::new();
+        let mut total = 1usize;
+        for _ in 0..rank {
+            let e = if rng.below(3) == 0 {
+                1 + rng.below(5)
+            } else {
+                2
+            } as i64;
+            if total * e as usize > 30_000 {
+                break;
+            }
+            total *= e as usize;
+            ext.push(e);
+        }
+        let strides: Vec<i64> = ext
+            .iter()
+            .map(|_| match rng.below(5) {
+                0 => 0,
+                1 => -(1 + rng.below(1 << 12) as i64),
+                _ => 1 + rng.below(1 << 14) as i64,
+            })
+            .collect();
+        let scat = build_scatter(&ext, &strides);
+        let map = ScatterMap::new(&ext, &strides);
+        for blk in [2usize, 3, 4, 5, 6, 8, 12, 16, 24, 32] {
+            let mut got = vec![9];
+            let (s, e) = map.append_block_scatter(&mut got, blk);
+            assert_eq!(
+                &got[s..e],
+                &build_block_scatter(&scat, blk)[..],
+                "{ext:?} {strides:?} blk {blk}"
+            );
+            match map.period_for(blk) {
+                Some(_) => periodic += 1,
+                None => chunked += 1,
+            }
+        }
+    }
+    assert!(
+        periodic > 500 && chunked > 500,
+        "{periodic} periodic, {chunked} other"
+    );
 }

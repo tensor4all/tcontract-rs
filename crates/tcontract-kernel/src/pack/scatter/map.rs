@@ -45,6 +45,8 @@ use super::IRREGULAR;
 /// that is worth building.
 const TILE_MAX: usize = 1024;
 const TILE_MIN: usize = 8;
+/// Longest period [`ScatterMap::append_block_scatter`] computes directly.
+const PERIOD_MAX: usize = 1 << 16;
 
 /// One axis of a [`ScatterMap`], with its derived constants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,7 +245,7 @@ impl ScatterMap {
     /// and the tile's length (their extents' product): the most axes whose product
     /// fits `min(n, TILE_MAX)`. `None` when that is fewer than two axes or fewer
     /// than `TILE_MIN` entries, where axis 0's ramp is already long enough.
-    fn tile_split(&self, n: usize) -> Option<(usize, usize)> {
+    pub(crate) fn tile_split(&self, n: usize) -> Option<(usize, usize)> {
         let cap = n.min(TILE_MAX);
         let mut len = 1usize;
         let mut k = 0;
@@ -466,14 +468,55 @@ impl ScatterMap {
                     out.push(self.block_stride(full * blk, self.len));
                 }
             }
-            None => {
-                for b in 0..nblk {
-                    let lo = b * blk;
-                    out.push(self.block_stride(lo, (lo + blk).min(self.len)));
+            None => match self.period_for(blk) {
+                // A block's verdict is a common difference, which a constant
+                // shift does not change; and the entries of one tile repeat,
+                // shifted, for every setting of the digits above it. So the
+                // verdicts of the first tile are the verdicts of all of them.
+                Some(period) => {
+                    for b in 0..period / blk {
+                        let lo = b * blk;
+                        out.push(self.block_stride(lo, lo + blk));
+                    }
+                    let first = out.len() - period / blk;
+                    for _ in 1..self.len / period {
+                        out.extend_from_within(first..first + period / blk);
+                    }
                 }
-            }
+                // No tile holds whole blocks: fill chunks of whole blocks and
+                // read each block's stride off the entries.
+                None => {
+                    const CHUNK_BLOCKS: usize = 64;
+                    let step = blk * CHUNK_BLOCKS;
+                    let mut buf = vec![0i64; step.min(self.len)];
+                    let mut lo = 0;
+                    while lo < self.len {
+                        let n = step.min(self.len - lo);
+                        self.fill(lo, &mut buf[..n]);
+                        out.extend(buf[..n].chunks(blk).map(super::run_stride));
+                        lo += n;
+                    }
+                }
+            },
         }
         (start, out.len())
+    }
+
+    /// The smallest product of a prefix of the extents that `blk` divides and that
+    /// is at most [`PERIOD_MAX`]: the length after which the entries repeat, shifted.
+    /// `None` when there is none, or it is the whole map (nothing to repeat).
+    pub(crate) fn period_for(&self, blk: usize) -> Option<usize> {
+        let mut radix = 1usize;
+        for a in self.axes.iter() {
+            radix = radix.checked_mul(a.extent)?;
+            if radix > PERIOD_MAX {
+                return None;
+            }
+            if radix % blk == 0 {
+                return (radix < self.len).then_some(radix);
+            }
+        }
+        None
     }
 
     /// [`block_scatter_regular`](super::block_scatter_regular) without the
