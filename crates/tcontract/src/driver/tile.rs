@@ -559,21 +559,21 @@ pub(super) unsafe fn compute_block<T>(
 /// # Safety
 ///
 /// As [`run_strip`], plus: `bufs.grid` and `bufs.grid2` each cover a whole block's
-/// tile grid (one slot per row tile and column tile), `rows` holds the block's global
+/// tile grid (one slot per row tile and column tile), `grid` describes the block's global
 /// row indices of this epoch's scatters, and the contraction fits one K slab and one
 /// NC panel - which is what makes the single emission below correct.
 pub(super) unsafe fn run_block<T>(
     cx: &Ctx<'_, T>,
     ep: &Epoch<T>,
     bufs: Bufs<T::Real>,
-    rows: &[i64],
+    grid: &super::block::Grid,
     jr_lo: usize,
     jr_hi: usize,
 ) where
     T: Element,
 {
     let (mr, nr, cm, dm, beta) = (cx.mr, cx.nr, cx.cm, cx.dm, cx.beta);
-    let live = rows.len();
+    let live = grid.live(BLOCK_ROWS_MAX);
     // Everything below is bounded by the block's row budget, so the local metadata is
     // on the stack: a steady-state execute must not allocate
     // (`tests/packed_workspace_alloc`), and the per-block `Vec`s this used to build
@@ -604,12 +604,16 @@ pub(super) unsafe fn run_block<T>(
     let mut c_bs_out_buf = [0i64; BLOCK_ROWS_MAX];
     // The block's own row order: the operand's runs together, the output's not.
     let (a_m, dm_rows) = (&mut a_m_buf[..live], &mut dm_buf[..live]);
-    cx.am.gather(rows, a_m);
-    dm.gather(rows, dm_rows);
+    let (outer, inner) = (
+        (grid.span_place, grid.span_len),
+        (grid.line_place, grid.line_len),
+    );
+    cx.am.fill_grid(grid.base, outer, inner, a_m);
+    dm.fill_grid(grid.base, outer, inner, dm_rows);
     let has_c = !cm.is_empty();
     let cm_rows = &mut cm_buf[..if has_c { live } else { 0 }];
     if has_c {
-        cm.gather(rows, cm_rows);
+        cm.fill_grid(grid.base, outer, inner, cm_rows);
     }
     let n = tcontract_kernel::scatter::build_block_scatter_into(a_m, mr, &mut a_bs_buf);
     let a_m_bs = &a_bs_buf[..n];

@@ -196,3 +196,46 @@ fn empty_and_degenerate_groups() {
     let two = big.wrapping_mul(2);
     assert_eq!(got, [0, big, two, 5, big + 5, two.wrapping_add(5)][..]);
 }
+
+#[test]
+fn fill_grid_matches_the_expanded_vector() {
+    let mut rng = Rng(222);
+    let mut grids = 0usize;
+    for _ in 0..3_000 {
+        let (ext, strides) = shape(&mut rng);
+        if ext.len() < 2 {
+            continue;
+        }
+        let scat = build_scatter(&ext, &strides);
+        let map = ScatterMap::new(&ext, &strides);
+        // Place values of the role's axes, whatever the map dropped.
+        let mut places = Vec::new();
+        let mut acc = 1usize;
+        for &e in &ext {
+            places.push(acc);
+            acc *= e as usize;
+        }
+        let (i, j) = {
+            let i = rng.below(ext.len() as u64) as usize;
+            let j = (i + 1 + rng.below(ext.len() as u64 - 1) as usize) % ext.len();
+            (i, j)
+        };
+        // A block inside both axes, at a random origin of every axis.
+        let dig: Vec<usize> = ext.iter().map(|&e| rng.below(e as u64) as usize).collect();
+        let oi = rng.below((ext[i] as usize - dig[i]) as u64) as usize;
+        let (so, ni) = (1 + oi, 1 + rng.below((ext[j] as usize - dig[j]) as u64) as usize);
+        let so = so.min(ext[i] as usize - dig[i]);
+        let base: usize = dig.iter().zip(&places).map(|(d, p)| d * p).sum();
+        let mut want = Vec::new();
+        for s in 0..so {
+            for l in 0..ni {
+                want.push(scat[base + s * places[i] + l * places[j]]);
+            }
+        }
+        let mut got = vec![0i64; want.len()];
+        map.fill_grid(base, (places[i], so), (places[j], ni), &mut got);
+        assert_eq!(got, want, "{ext:?} {strides:?} base {base} axes {i},{j}");
+        grids += 1;
+    }
+    assert!(grids > 1_500, "{grids}");
+}

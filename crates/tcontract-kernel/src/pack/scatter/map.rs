@@ -253,6 +253,58 @@ impl ScatterMap {
         }
     }
 
+    /// Physical stride of the digit whose place value is `place` (the product of
+    /// the lower extents, as in a role's logical row numbering): the offset change
+    /// when that digit steps by one without a carry. `0` when no axis has that
+    /// place value, which is an extent-1 axis (dropped on construction).
+    pub fn place_stride(&self, place: usize) -> i64 {
+        self.axes
+            .iter()
+            .find(|a| a.radix == place)
+            .map_or(0, |a| a.stride)
+    }
+
+    /// Entries of a two-axis block of logical rows, with no division per entry.
+    ///
+    /// Row `(s, l)` is `base + s * outer.0 + l * inner.0` where `outer.0` and
+    /// `inner.0` are the place values of two distinct axes and the block stays
+    /// inside both (`digit + count <= extent`, which is what a block of an axis-aware
+    /// traversal guarantees). Entry `s * inner.1 + l` of `out` is its offset; only
+    /// `out.len() <= outer.1 * inner.1` entries are written.
+    ///
+    /// The head's digits are converted once ([`at`](Self::at)); every other entry
+    /// is that offset plus `s * outer_stride + l * inner_stride`, since a step
+    /// that does not carry changes the offset by the axis' stride alone.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `out` is longer than the block or the head is out of range.
+    pub fn fill_grid(
+        &self,
+        base: usize,
+        outer: (usize, usize),
+        inner: (usize, usize),
+        out: &mut [i64],
+    ) {
+        assert!(out.len() <= outer.1 * inner.1, "block shorter than `out`");
+        if out.is_empty() {
+            return;
+        }
+        let head = self.at(base);
+        let (so, si) = (self.place_stride(outer.0), self.place_stride(inner.0));
+        let (mut s, mut l) = (0usize, 0usize);
+        let mut row = head;
+        for o in out.iter_mut() {
+            *o = row.wrapping_add((l as i64).wrapping_mul(si));
+            l += 1;
+            if l == inner.1 {
+                l = 0;
+                s += 1;
+                row = head.wrapping_add((s as i64).wrapping_mul(so));
+            }
+        }
+    }
+
     /// The common difference of entries `lo .. hi`, or [`IRREGULAR`];
     /// `0` for a run of at most one entry. [`run_stride`](super::run_stride)
     /// of the expanded block, at `O(rank)`.

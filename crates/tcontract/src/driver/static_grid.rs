@@ -244,10 +244,9 @@ pub(super) unsafe fn run_strip<T>(
                             &mut axes_buf,
                         );
                         let mut origins = block::Origins::new();
-                        let mut rows_buf = [0i64; super::BLOCK_MC_BUDGET];
                         while let Some(origin) = origins.next(axes, shape) {
-                            let live = block::rows_into(axes, shape, origin, &mut rows_buf);
-                            run_block::<T>(cx, &ep, bufs, &rows_buf[..live], jr_lo, jr_hi);
+                            let grid = block::grid(axes, shape, origin);
+                            run_block::<T>(cx, &ep, bufs, &grid, jr_lo, jr_hi);
                         }
                     }
                 } else {
