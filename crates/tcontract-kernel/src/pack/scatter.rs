@@ -39,7 +39,7 @@
 //! rebuild, in the same spirit as a pinned scalar kernel (`KernelForce::Scalar`).
 
 mod map;
-pub use map::ScatterMap;
+pub use map::{ScatterCursor, ScatterMap};
 
 /// Sentinel stored in a block-scatter vector for a block whose scatter entries
 /// are *not* an arithmetic progression.

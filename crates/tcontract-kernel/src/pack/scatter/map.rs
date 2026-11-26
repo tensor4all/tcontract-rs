@@ -230,6 +230,29 @@ impl ScatterMap {
         }
     }
 
+    /// The expanded vector, one `i64` per entry: [`build_scatter`](super::build_scatter)
+    /// of the same group. `O(len)` memory -- for tests and diagnostics that want
+    /// the table, never for a plan.
+    pub fn expand(&self) -> Vec<i64> {
+        let mut out = vec![0i64; self.len];
+        self.fill(0, &mut out);
+        out
+    }
+
+    /// `out[t] = self.at(idx[t])` for arbitrary (not necessarily consecutive)
+    /// indices, such as a blocked traversal's row membership. One division per
+    /// axis per index: this is the lookup form, not the sequential gather.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `out` and `idx` differ in length; (debug) on an index past `len()`.
+    pub fn gather(&self, idx: &[i64], out: &mut [i64]) {
+        assert_eq!(idx.len(), out.len(), "one offset per index");
+        for (o, &i) in out.iter_mut().zip(idx) {
+            *o = self.at(i as usize);
+        }
+    }
+
     /// The common difference of entries `lo .. hi`, or [`IRREGULAR`];
     /// `0` for a run of at most one entry. [`run_stride`](super::run_stride)
     /// of the expanded block, at `O(rank)`.
@@ -330,6 +353,27 @@ impl ScatterMap {
         })
     }
 
+    /// [`regular_fraction`](super::regular_fraction) of the block-scatter vector at
+    /// `blk`, counted block by block without materializing it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `blk` is 0.
+    pub fn regular_fraction(&self, blk: usize) -> f64 {
+        assert!(blk > 0);
+        if self.block_scatter_regular(blk) {
+            return 1.0;
+        }
+        let nblk = self.len.div_ceil(blk);
+        let regular = (0..nblk)
+            .filter(|&b| {
+                let lo = b * blk;
+                self.block_stride(lo, (lo + blk).min(self.len)) != IRREGULAR
+            })
+            .count();
+        regular as f64 / nblk as f64
+    }
+
     /// Whether consecutive entries always differ by exactly one (a contiguous
     /// ramp), the condition `pack_b_needed` puts on `B`'s `k` scatter.
     pub fn is_unit_ramp(&self) -> bool {
@@ -357,5 +401,86 @@ impl ScatterMap {
                 }
             }
         }
+    }
+}
+
+/// Axes a cursor keeps on the stack.
+const CURSOR_INLINE: usize = 32;
+
+/// A position in a [`ScatterMap`] that steps to the next entry in `O(1)`
+/// amortized, without a division: the offsets of a loop over consecutive
+/// indices, such as the batch entries of a contraction.
+///
+/// Created at an arbitrary index (one division per axis, once), then
+/// [`advance`](Self::advance)d by the carry deltas.
+#[derive(Clone, Debug)]
+pub struct ScatterCursor<'a> {
+    map: &'a ScatterMap,
+    off: i64,
+    inline: [usize; CURSOR_INLINE],
+    // Allocated only for a map of rank above `CURSOR_INLINE`.
+    spill: Vec<usize>,
+}
+
+impl ScatterMap {
+    /// A cursor at entry `i` (`i <= len()`: one past the end is a valid, spent
+    /// position, which [`offset`](ScatterCursor::offset) must not be asked about).
+    pub fn cursor(&self, i: usize) -> ScatterCursor<'_> {
+        debug_assert!(i <= self.len);
+        let mut cur = ScatterCursor {
+            map: self,
+            off: 0,
+            inline: [0; CURSOR_INLINE],
+            spill: Vec::new(),
+        };
+        if self.axes.len() > CURSOR_INLINE {
+            cur.spill = vec![0; self.axes.len()];
+        }
+        if i < self.len {
+            let mut off = 0i64;
+            let digits = cur.digits_mut();
+            for (k, a) in self.axes.iter().enumerate() {
+                let d = (i / a.radix) % a.extent;
+                digits[k] = d;
+                off = off.wrapping_add((d as i64).wrapping_mul(a.stride));
+            }
+            cur.off = off;
+        }
+        cur
+    }
+}
+
+impl ScatterCursor<'_> {
+    fn digits_mut(&mut self) -> &mut [usize] {
+        let rank = self.map.axes.len();
+        if rank <= CURSOR_INLINE {
+            &mut self.inline[..rank]
+        } else {
+            &mut self.spill
+        }
+    }
+
+    /// The offset at the current entry.
+    #[inline]
+    pub fn offset(&self) -> i64 {
+        self.off
+    }
+
+    /// Step to the next entry. Stepping past the last entry leaves the cursor
+    /// spent; its offset is then meaningless.
+    #[inline]
+    pub fn advance(&mut self) {
+        let map = self.map;
+        let off = self.off;
+        let digits = self.digits_mut();
+        for (k, a) in map.axes.iter().enumerate() {
+            digits[k] += 1;
+            if digits[k] < a.extent {
+                self.off = off.wrapping_add(a.delta);
+                return;
+            }
+            digits[k] = 0;
+        }
+        // Every digit wrapped: past the end (or a rank-0 map).
     }
 }

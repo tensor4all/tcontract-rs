@@ -146,10 +146,11 @@ pub(crate) use dynamic::dynamic_report;
 pub use dynamic::{Assignment, DynSnapshot, DynStats, DynamicReport};
 use static_grid::{run_strip, BPart};
 use tcontract_kernel::pack::panel_len;
-use tcontract_kernel::scatter::append_block_scatter;
+use tcontract_kernel::scatter::{ScatterCursor, ScatterMap};
 use tcontract_kernel::writeback::scale_only;
 use tcontract_kernel::UkrFn;
 use tcontract_kernel::{Axis, BAccess, Blocking, DriverFamily, Element};
+pub(crate) use tile::Windows;
 use tile::{compute_block, pack_a_rows, pack_b_slivers, Bufs, Epoch};
 
 /// Operand-dependent decisions the driver makes once per execute, kept
@@ -195,7 +196,12 @@ where
 ///
 /// This reads the operand's own scatter rather than its block scatter, so it
 /// can decide before any scratch buffer exists.
-pub(crate) fn pack_b_needed(b_access: BAccess, bk: &[i64], bn: &[i64], nr: usize) -> bool {
+pub(crate) fn pack_b_needed(
+    b_access: BAccess,
+    bk: &ScatterMap,
+    bn: &ScatterMap,
+    nr: usize,
+) -> bool {
     if !matches!(
         b_access,
         BAccess::Direct {
@@ -204,10 +210,10 @@ pub(crate) fn pack_b_needed(b_access: BAccess, bk: &[i64], bn: &[i64], nr: usize
     ) {
         return true;
     }
-    if bk.len() > 1 && !bk.windows(2).all(|w| w[1] - w[0] == 1) {
+    if !bk.is_unit_ramp() {
         return true;
     }
-    !tcontract_kernel::scatter::block_scatter_regular(bn, nr)
+    !bn.block_scatter_regular(nr)
 }
 
 /// Whether the Direct kernel may write D in place. Real storage only, no C or D
@@ -312,17 +318,17 @@ struct Ctx<'a, T: Element> {
     /// Reals between one column group's slice of the packed `B` panel and the
     /// next. See `execute` for why the panel is cut per group and not per sliver.
     b_group: usize,
-    am: &'a [i64],
-    ak: &'a [i64],
-    bk: &'a [i64],
-    bn: &'a [i64],
-    cm: &'a [i64],
-    cn: &'a [i64],
-    dm: &'a [i64],
-    dn: &'a [i64],
-    ha: &'a [i64],
-    hb: &'a [i64],
-    hc: &'a [i64],
+    am: &'a ScatterMap,
+    ak: &'a ScatterMap,
+    bk: &'a ScatterMap,
+    bn: &'a ScatterMap,
+    cm: &'a ScatterMap,
+    cn: &'a ScatterMap,
+    dm: &'a ScatterMap,
+    dn: &'a ScatterMap,
+    ha: &'a ScatterMap,
+    hb: &'a ScatterMap,
+    hc: &'a ScatterMap,
     /// Every block-scatter vector this call needs, laid out by `runs`.
     scatter: &'a [i64],
     runs: ScatterRuns,
@@ -352,7 +358,7 @@ fn c_for_call<T: Element>(
     beta: T,
     c: *const T,
     d: *mut T,
-) -> (*const T, &[i64]) {
+) -> (*const T, &ScatterMap) {
     if beta == T::zero() {
         (d.cast_const(), &plan.h_d)
     } else {
@@ -364,18 +370,18 @@ fn c_for_call<T: Element>(
 /// `(B, N)` are exchanged (and `C`/`D` read transposed), so from here on `am`,
 /// `ak` and `conj_a` *are* the row operand, whichever tensor that is.
 struct Oriented<'a> {
-    am: &'a [i64],
-    ak: &'a [i64],
+    am: &'a ScatterMap,
+    ak: &'a ScatterMap,
     conj_a: bool,
-    bk: &'a [i64],
-    bn: &'a [i64],
+    bk: &'a ScatterMap,
+    bn: &'a ScatterMap,
     conj_b: bool,
-    cm: &'a [i64],
-    cn: &'a [i64],
-    dm: &'a [i64],
-    dn: &'a [i64],
-    ha: &'a [i64],
-    hb: &'a [i64],
+    cm: &'a ScatterMap,
+    cn: &'a ScatterMap,
+    dm: &'a ScatterMap,
+    dn: &'a ScatterMap,
+    ha: &'a ScatterMap,
+    hb: &'a ScatterMap,
 }
 
 impl<'a> Oriented<'a> {
@@ -411,6 +417,48 @@ impl<'a> Oriented<'a> {
                 hb: &plan.h_b,
             }
         }
+    }
+}
+
+/// The batch entry's element offsets in `A`, `B`, `C` and `D`, walked in order.
+///
+/// A batch loop visits consecutive entries, so each offset is carried forward by
+/// the scatter map's carry deltas instead of being looked up in a table or
+/// recomputed by division.
+struct BatchCursor<'a> {
+    a: ScatterCursor<'a>,
+    b: ScatterCursor<'a>,
+    c: ScatterCursor<'a>,
+    d: ScatterCursor<'a>,
+}
+
+impl<'a> BatchCursor<'a> {
+    /// At batch entry `start`.
+    fn new<T: Element>(cx: &Ctx<'a, T>, start: usize) -> Self {
+        Self {
+            a: cx.ha.cursor(start),
+            b: cx.hb.cursor(start),
+            c: cx.hc.cursor(start),
+            d: cx.plan.h_d.cursor(start),
+        }
+    }
+    fn a(&self) -> i64 {
+        self.a.offset()
+    }
+    fn b(&self) -> i64 {
+        self.b.offset()
+    }
+    fn c(&self) -> i64 {
+        self.c.offset()
+    }
+    fn d(&self) -> i64 {
+        self.d.offset()
+    }
+    fn advance(&mut self) {
+        self.a.advance();
+        self.b.advance();
+        self.c.advance();
+        self.d.advance();
     }
 }
 
@@ -609,19 +657,7 @@ where
 
     // Empty contraction dimension: D = op_D(beta * op_C(C)).
     if plan.has_empty_contraction() {
-        for h in 0..plan.stats.batch {
-            scale_only::<T>(
-                beta,
-                c.offset(hc[h] as isize),
-                cm,
-                cn,
-                plan.conj_c,
-                d.offset(plan.h_d[h] as isize),
-                dm,
-                dn,
-                plan.conj_d,
-            );
-        }
+        scale_only_blocks::<T>(plan, beta, c, hc, cm, cn, dm, dn, d);
         return Ok(());
     }
 
@@ -744,7 +780,7 @@ where
     let req = WorkspaceReq {
         a_bytes: ap_len * element,
         tile_bytes: (fam.tile + fam.induced_scratch(kc)) * element + 2 * grid_elems * element,
-        worker_scatter: 0,
+        worker_scatter: Windows::elems(mc, nc, kd),
         // A direct-B call never touches the panel, so it asks for none.
         b_bytes: if direct_b {
             0
@@ -802,13 +838,13 @@ where
         buf.clear();
         buf.reserve(req.team_scatter);
         ScatterRuns {
-            a: append_block_scatter(buf, am, mr),
-            b: append_block_scatter(buf, bn, nr),
-            dm: append_block_scatter(buf, dm, mr),
-            dn: append_block_scatter(buf, dn, nr),
+            a: am.append_block_scatter(buf, mr),
+            b: bn.append_block_scatter(buf, nr),
+            dm: dm.append_block_scatter(buf, mr),
+            dn: dn.append_block_scatter(buf, nr),
             cm: match beta == T::zero() {
                 true => (buf.len(), buf.len()),
-                false => append_block_scatter(buf, cm, mr),
+                false => cm.append_block_scatter(buf, mr),
             },
         }
     };
@@ -874,10 +910,20 @@ where
     // Worker buffers come from the owner when there is one, and from a fresh
     // per-call panel otherwise; either way they are the caller-of-`f`'s for the
     // duration of `f`, and the 4m scratch is carved out of the tile.
-    let with_buffers = |f: &mut dyn FnMut(*mut T::Real, *mut T::Real)| match workspace {
+    let win_elems = Windows::elems(mc, nc, kd);
+    let with_buffers = |f: &mut dyn FnMut(*mut T::Real, *mut T::Real, Windows)| match workspace {
         Some(ws) => {
-            ws.with_worker(&req, &mut |a, tile, _| {
-                f(a as *mut T::Real, tile as *mut T::Real)
+            ws.with_worker(&req, &mut |a, tile, sc| {
+                // Every entry is written before it is read, so growing without
+                // clearing is enough, and a steady-state call does not touch it.
+                if sc.len() < win_elems {
+                    sc.resize(win_elems, 0);
+                }
+                f(
+                    a as *mut T::Real,
+                    tile as *mut T::Real,
+                    Windows::new(sc.as_mut_ptr(), mc, nc, kd),
+                )
             });
         }
         None => {
@@ -886,7 +932,12 @@ where
             // the blocked path's two tile grids.
             let mut tile =
                 Panel::<T::Real>::new(fam.tile + fam.induced_scratch(kc) + 2 * grid_elems);
-            f(ap.as_mut_ptr(), tile.as_mut_ptr());
+            let mut sc = vec![0i64; win_elems];
+            f(
+                ap.as_mut_ptr(),
+                tile.as_mut_ptr(),
+                Windows::new(sc.as_mut_ptr(), mc, nc, kd),
+            );
         }
     };
     let scratch_off = fam.tile;
@@ -901,7 +952,7 @@ where
                 panel: i,
                 ..BPart::SERIAL
             };
-            with_buffers(&mut |ap, tile| {
+            with_buffers(&mut |ap, tile, win| {
                 // SAFETY: `execute`'s contract covers the accesses; the lanes'
                 // item ranges are disjoint, so they write disjoint entries of
                 // `D`, and each lane's buffers and `B` slice are its own.
@@ -916,6 +967,7 @@ where
                         ap,
                         tile,
                         tile.add(scratch_off),
+                        win,
                         bpart,
                     )
                 }
@@ -939,7 +991,7 @@ where
         // so it belongs with the workspace accounting, not here. The rest of the
         // setup (geometry, blocking, panel sizing, `Ctx`) is ~300 ns and is
         // already rebuilt only once per call; see the tcontract-rs#156 report.
-        with_buffers(&mut |ap, tile| {
+        with_buffers(&mut |ap, tile, win| {
             // SAFETY: `execute`'s contract, and these buffers are exclusive to
             // this call for its duration.
             unsafe {
@@ -953,6 +1005,7 @@ where
                     ap,
                     tile,
                     tile.add(scratch_off),
+                    win,
                     BPart::SERIAL,
                 )
             }
@@ -974,8 +1027,9 @@ where
     let cell = |t: usize| {
         let cx = &cx;
         if let Some((job_m, job_n, _)) = dyn_jobs {
-            with_buffers(&mut |ap, tile| {
+            with_buffers(&mut |ap, tile, win| {
                 let bufs = Bufs {
+                    win,
                     ap,
                     tile,
                     scratch: tile.add(scratch_off),
@@ -1002,7 +1056,7 @@ where
             bar: (pm > 1).then(|| &bars[g]),
         };
         let (lo, hi) = tcontract_kernel::partition::strip(r, pm, cx.m, mr, align);
-        with_buffers(&mut |ap, tile| {
+        with_buffers(&mut |ap, tile, win| {
             // SAFETY: `execute`'s contract covers the accesses; the strips and
             // column groups partition the output, so this thread's writes are
             // disjoint from every other thread's.
@@ -1017,6 +1071,7 @@ where
                     ap,
                     tile,
                     tile.add(scratch_off),
+                    win,
                     bpart,
                 )
             };
@@ -1054,6 +1109,65 @@ where
         .broadcast(cell)
         .expect("can_broadcast agreed with broadcast");
     Ok(())
+}
+
+/// `D = op_D(beta * op_C(C))` for an empty contraction, one cache block of the
+/// output at a time: the scatter entries of a block are gathered into a small
+/// stack buffer rather than expanded for the whole role.
+///
+/// # Safety
+/// As [`execute_packed`]: `c` (unless `beta` is zero) and `d` are valid for the
+/// offsets of the plan's scatters.
+#[allow(clippy::too_many_arguments)] // INVARIANT: the call's operand and scatter set.
+unsafe fn scale_only_blocks<T: Element>(
+    plan: &PackedPlan,
+    beta: T,
+    c: *const T,
+    hc: &ScatterMap,
+    cm: &ScatterMap,
+    cn: &ScatterMap,
+    dm: &ScatterMap,
+    dn: &ScatterMap,
+    d: *mut T,
+) {
+    const BLOCK: usize = 256;
+    let (m, n) = (cm.len(), cn.len());
+    let mut buf = [[0i64; BLOCK]; 4];
+    let mut batch_c = hc.cursor(0);
+    let mut batch_d = plan.h_d.cursor(0);
+    for _ in 0..plan.stats.batch {
+        let (ch, dh) = (
+            c.offset(batch_c.offset() as isize),
+            d.offset(batch_d.offset() as isize),
+        );
+        batch_c.advance();
+        batch_d.advance();
+        let mut i0 = 0;
+        while i0 < m {
+            let rows = BLOCK.min(m - i0);
+            cm.fill(i0, &mut buf[0][..rows]);
+            dm.fill(i0, &mut buf[1][..rows]);
+            let mut j0 = 0;
+            while j0 < n {
+                let cols = BLOCK.min(n - j0);
+                cn.fill(j0, &mut buf[2][..cols]);
+                dn.fill(j0, &mut buf[3][..cols]);
+                scale_only::<T>(
+                    beta,
+                    ch,
+                    &buf[0][..rows],
+                    &buf[2][..cols],
+                    plan.conj_c,
+                    dh,
+                    &buf[1][..rows],
+                    &buf[3][..cols],
+                    plan.conj_d,
+                );
+                j0 += cols;
+            }
+            i0 += rows;
+        }
+    }
 }
 
 /// The blocking and buffer geometry of one call at its active width: the

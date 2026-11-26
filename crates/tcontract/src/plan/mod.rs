@@ -1484,10 +1484,8 @@ fn packed_report<T: Scalar>(pk: &Packed<T>) -> PackedReport {
     } else {
         (&pk.plan.a_m, &pk.plan.b_n)
     };
-    let regular = |scatter: &[i64], block: usize| {
-        tcontract_kernel::scatter::regular_fraction(
-            &tcontract_kernel::scatter::build_block_scatter(scatter, block),
-        )
+    let regular = |scatter: &tcontract_kernel::scatter::ScatterMap, block: usize| {
+        scatter.regular_fraction(block)
     };
     PackedReport {
         swapped,

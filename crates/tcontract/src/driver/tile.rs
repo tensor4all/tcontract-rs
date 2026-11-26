@@ -48,7 +48,6 @@ pub(super) struct Epoch<T: Element> {
     pub(super) bh: *mut T,
     pub(super) ch: *const T,
     pub(super) dh: *mut T,
-    pub(super) pc: usize,
     pub(super) pc_len: usize,
     pub(super) first_k_block: bool,
     pub(super) jc: usize,
@@ -57,6 +56,144 @@ pub(super) struct Epoch<T: Element> {
     /// Packed `B` for sliver `q0` of this NC block (the first of the group).
     pub(super) bp: *mut T::Real,
     pub(super) q0: usize,
+    /// The block's scatter entries, gathered by this worker for this epoch: the
+    /// columns `jc .. jc + jc_len` of `B`/`C`/`D` and the K slab `pc .. pc + pc_len`
+    /// of `A` and `B`, each indexed from the window's own start.
+    pub(super) win: EpochWindows,
+}
+
+/// Where an epoch's gathered scatter entries live: windows of the worker's
+/// scratch ([`Windows`]) filled by [`Windows::fill_epoch`].
+#[derive(Clone, Copy)]
+pub(super) struct EpochWindows {
+    bn: *const i64,
+    cn: *const i64,
+    dn: *const i64,
+    ak: *const i64,
+    bk: *const i64,
+}
+
+impl<T: Element> Epoch<T> {
+    /// `B`'s column offsets of absolute columns `[c0, c1)` of the NC block.
+    ///
+    /// # Safety
+    /// `jc <= c0 <= c1 <= jc + jc_len`, and the epoch's windows are live.
+    unsafe fn bn_cols(&self, c0: usize, c1: usize) -> &[i64] {
+        core::slice::from_raw_parts(self.win.bn.add(c0 - self.jc), c1 - c0)
+    }
+    /// `C`'s column offsets of absolute columns `[c0, c1)`; as [`Self::bn_cols`].
+    unsafe fn cn_cols(&self, c0: usize, c1: usize) -> &[i64] {
+        core::slice::from_raw_parts(self.win.cn.add(c0 - self.jc), c1 - c0)
+    }
+    /// `D`'s column offsets of absolute columns `[c0, c1)`; as [`Self::bn_cols`].
+    unsafe fn dn_cols(&self, c0: usize, c1: usize) -> &[i64] {
+        core::slice::from_raw_parts(self.win.dn.add(c0 - self.jc), c1 - c0)
+    }
+    /// `A`'s offsets along the epoch's K slab.
+    unsafe fn ak_slab(&self) -> &[i64] {
+        core::slice::from_raw_parts(self.win.ak, self.pc_len)
+    }
+    /// `B`'s offsets along the epoch's K slab.
+    unsafe fn bk_slab(&self) -> &[i64] {
+        core::slice::from_raw_parts(self.win.bk, self.pc_len)
+    }
+}
+
+/// One worker's scratch for the scatter entries it is using right now: the
+/// plan keeps scatters as `ScatterMap`s (`O(rank)`), and a worker gathers the
+/// window a cache block needs -- `MC` rows, an `NC` panel of columns, a `KC`
+/// slab -- into this, so the memory is `O(MC + NC + KC)` per worker instead of
+/// `O(elements)` per plan.
+#[derive(Clone, Copy)]
+pub(crate) struct Windows {
+    base: *mut i64,
+    mc: usize,
+    nc: usize,
+    kc: usize,
+}
+
+impl Windows {
+    /// Entries of scratch a call with these cache blocks needs: three row
+    /// windows (`A`, `C`, `D`), three column windows and two K windows.
+    pub(crate) const fn elems(mc: usize, nc: usize, kc: usize) -> usize {
+        3 * mc + 3 * nc + 2 * kc
+    }
+
+    /// Windows over `base`, which must hold [`Windows::elems`] entries.
+    pub(crate) fn new(base: *mut i64, mc: usize, nc: usize, kc: usize) -> Windows {
+        Windows { base, mc, nc, kc }
+    }
+
+    unsafe fn slot(self, which: usize) -> *mut i64 {
+        let (mc, nc, kc) = (self.mc, self.nc, self.kc);
+        let off = match which {
+            0 => 0,                    // a_m
+            1 => mc,                   // c_m
+            2 => 2 * mc,               // d_m
+            3 => 3 * mc,               // b_n
+            4 => 3 * mc + nc,          // c_n
+            5 => 3 * mc + 2 * nc,      // d_n
+            6 => 3 * mc + 3 * nc,      // a_k
+            _ => 3 * mc + 3 * nc + kc, // b_k
+        };
+        self.base.add(off)
+    }
+
+    /// Gather rows `[ic, ic + len)` of `A`, `C` and `D`.
+    ///
+    /// # Safety
+    /// `len <= mc`, `ic + len` within the role, and the returned slices are the
+    /// worker's alone until the next call.
+    pub(super) unsafe fn fill_rows<'w, T: Element>(
+        self,
+        cx: &Ctx<'_, T>,
+        ic: usize,
+        len: usize,
+    ) -> (&'w [i64], &'w [i64], &'w [i64]) {
+        debug_assert!(len <= self.mc);
+        let win = |which: usize| core::slice::from_raw_parts_mut(self.slot(which), len);
+        let (a, c, d) = (win(0), win(1), win(2));
+        cx.am.fill(ic, a);
+        cx.cm.fill(ic, c);
+        cx.dm.fill(ic, d);
+        (a, c, d)
+    }
+
+    /// Gather the columns `[jc, jc + jc_len)` of `B`, `C` and `D`.
+    ///
+    /// # Safety
+    /// `jc_len <= nc`; the columns lie within the role.
+    pub(super) unsafe fn fill_cols<T: Element>(self, cx: &Ctx<'_, T>, jc: usize, jc_len: usize) {
+        debug_assert!(jc_len <= self.nc);
+        let win = |which: usize| core::slice::from_raw_parts_mut(self.slot(which), jc_len);
+        cx.bn.fill(jc, win(3));
+        cx.cn.fill(jc, win(4));
+        cx.dn.fill(jc, win(5));
+    }
+
+    /// Gather the K slab `[pc, pc + pc_len)` of `A` and `B`, and describe the
+    /// epoch's windows (the column windows must already be filled).
+    ///
+    /// # Safety
+    /// `pc_len <= kc`; the slab lies within `K`.
+    pub(super) unsafe fn fill_slab<T: Element>(
+        self,
+        cx: &Ctx<'_, T>,
+        pc: usize,
+        pc_len: usize,
+    ) -> EpochWindows {
+        debug_assert!(pc_len <= self.kc);
+        let win = |which: usize| core::slice::from_raw_parts_mut(self.slot(which), pc_len);
+        cx.ak.fill(pc, win(6));
+        cx.bk.fill(pc, win(7));
+        EpochWindows {
+            bn: self.slot(3),
+            cn: self.slot(4),
+            dn: self.slot(5),
+            ak: self.slot(6),
+            bk: self.slot(7),
+        }
+    }
 }
 
 /// Rows a blocked outer traversal holds in one block: the driver's eligibility shrinks
@@ -67,6 +204,8 @@ const BLOCK_ROWS_MAX: usize = super::BLOCK_MC_BUDGET;
 /// One worker's private buffers.
 #[derive(Clone, Copy)]
 pub(super) struct Bufs<R> {
+    /// The worker's scatter windows.
+    pub(super) win: Windows,
     pub(super) ap: *mut R,
     pub(super) tile: *mut R,
     pub(super) scratch: *mut R,
@@ -92,9 +231,9 @@ pub(super) unsafe fn pack_b_slivers<T>(cx: &Ctx<'_, T>, ep: &Epoch<T>, w0: usize
 where
     T: Element,
 {
-    let (nr, bn, bk, conj_b) = (cx.nr, cx.bn, cx.bk, cx.conj_b);
+    let (nr, conj_b) = (cx.nr, cx.conj_b);
     let b_n_bs = cx.runs.slice(cx.scatter, cx.runs.b);
-    let (pc, pc_len, b_sliver) = (ep.pc, ep.pc_len, ep.b_sliver);
+    let b_sliver = ep.b_sliver;
     let c0 = ep.jc + w0 * nr;
     let c1 = (ep.jc + w1 * nr).min(ep.jc + ep.jc_len);
     let out = ep.bp.add((w0 - ep.q0) * b_sliver);
@@ -103,9 +242,9 @@ where
     unsafe {
         pack_b(
             ep.bh,
-            &bn[c0..c1],
+            ep.bn_cols(c0, c1),
             &b_n_bs[c0 / nr..c1.div_ceil(nr)],
-            &bk[pc..pc + pc_len],
+            ep.bk_slab(),
             nr,
             conj_b,
             out,
@@ -128,8 +267,7 @@ pub(super) unsafe fn pack_a_rows<T>(
 ) where
     T: Element,
 {
-    let (mr, ak, conj_a) = (cx.mr, cx.ak, cx.conj_a);
-    let (pc, pc_len) = (ep.pc, ep.pc_len);
+    let (mr, conj_a) = (cx.mr, cx.conj_a);
     let (pack_a, _) = cx.packers;
     debug_assert_eq!(a_m.len(), live, "one row scatter entry per live row");
     #[cfg(feature = "phase-timing")]
@@ -137,7 +275,7 @@ pub(super) unsafe fn pack_a_rows<T>(
     // SAFETY: the validated scatters and capacity of this epoch. `a_m` covers the
     // rows this call packs - the epoch's own interval today, a gathered block-local
     // list on the blocked path - and `a_m_bs` is its block-scatter twin.
-    unsafe { pack_a(ep.ah, a_m, a_m_bs, &ak[pc..pc + pc_len], mr, conj_a, ap) }
+    unsafe { pack_a(ep.ah, a_m, a_m_bs, ep.ak_slab(), mr, conj_a, ap) }
 }
 
 /// Loops 2 and 1: every micro-tile of the packed `A` rows `[ic, ic + ic_len)`
@@ -172,10 +310,6 @@ pub(super) unsafe fn compute_block<T>(
         fam,
         mr,
         nr,
-        cn,
-        dn,
-        bn,
-        bk,
         alpha,
         beta,
         direct_b,
@@ -185,7 +319,6 @@ pub(super) unsafe fn compute_block<T>(
         bh,
         ch,
         dh,
-        pc,
         pc_len,
         first_k_block,
         jc,
@@ -224,7 +357,7 @@ pub(super) unsafe fn compute_block<T>(
             // The base carries this k block's and this column
             // block's offsets, so the kernel's own k stride is one.
             (
-                bh.offset((bn[j0] + bk[pc]) as isize) as *const T::Real,
+                bh.offset((ep.bn_cols(j0, j0 + 1)[0] + ep.bk_slab()[0]) as isize) as *const T::Real,
                 1,
                 b_n_bs[j0 / nr] as isize,
             )
@@ -301,7 +434,8 @@ pub(super) unsafe fn compute_block<T>(
                     // scratch path does.
                     let (d_base, rs_d, cs_d, alpha_d, beta_ab) = if direct_tile {
                         (
-                            dh.offset((dm_rows[ir] + dn[j0]) as isize) as *mut T::Real,
+                            dh.offset((dm_rows[ir] + ep.dn_cols(j0, j0 + 1)[0]) as isize)
+                                as *mut T::Real,
                             d_rs as isize,
                             *d_n_bs.get_unchecked(j0 / nr) as isize,
                             if first_k_block {
@@ -379,12 +513,12 @@ pub(super) unsafe fn compute_block<T>(
                     beta,
                     ch,
                     &cm_rows[ir..ir + mrem],
-                    &cn[j0..j0 + nrem],
+                    ep.cn_cols(j0, j0 + nrem),
                     c_rs,
                     plan.conj_c,
                     dh,
                     &dm_rows[ir..ir + mrem],
-                    &dn[j0..j0 + nrem],
+                    ep.dn_cols(j0, j0 + nrem),
                     d_rs,
                     plan.conj_d,
                 );
@@ -399,12 +533,12 @@ pub(super) unsafe fn compute_block<T>(
                     one,
                     dh as *const T,
                     &dm_rows[ir..ir + mrem],
-                    &dn[j0..j0 + nrem],
+                    ep.dn_cols(j0, j0 + nrem),
                     d_rs,
                     plan.conj_d,
                     dh,
                     &dm_rows[ir..ir + mrem],
-                    &dn[j0..j0 + nrem],
+                    ep.dn_cols(j0, j0 + nrem),
                     d_rs,
                     plan.conj_d,
                 );
@@ -470,12 +604,12 @@ pub(super) unsafe fn run_block<T>(
     let mut c_bs_out_buf = [0i64; BLOCK_ROWS_MAX];
     // The block's own row order: the operand's runs together, the output's not.
     let (a_m, dm_rows) = (&mut a_m_buf[..live], &mut dm_buf[..live]);
-    super::block::gather_into(cx.am, rows, a_m);
-    super::block::gather_into(dm, rows, dm_rows);
+    cx.am.gather(rows, a_m);
+    dm.gather(rows, dm_rows);
     let has_c = !cm.is_empty();
     let cm_rows = &mut cm_buf[..if has_c { live } else { 0 }];
     if has_c {
-        super::block::gather_into(cm, rows, cm_rows);
+        cm.gather(rows, cm_rows);
     }
     let n = tcontract_kernel::scatter::build_block_scatter_into(a_m, mr, &mut a_bs_buf);
     let a_m_bs = &a_bs_buf[..n];
@@ -567,12 +701,12 @@ pub(super) unsafe fn run_block<T>(
                     beta,
                     ch,
                     &cm_out[t * mr..t * mr + mrem],
-                    &cx.cn[j0..j0 + nrem],
+                    ep.cn_cols(j0, j0 + nrem),
                     c_rs,
                     cx.plan.conj_c,
                     dh,
                     &dm_out[t * mr..t * mr + mrem],
-                    &cx.dn[j0..j0 + nrem],
+                    ep.dn_cols(j0, j0 + nrem),
                     d_m_bs_out[t],
                     cx.plan.conj_d,
                 )

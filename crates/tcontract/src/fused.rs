@@ -104,8 +104,9 @@ pub struct FusedGemmPlan<T: Scalar> {
     has_output: bool,
     /// Multiply-adds of all items.
     muladds: u128,
-    /// Reals of one worker's `(A + B region, tile region)`: the largest group's.
-    worker: (usize, usize),
+    /// One worker's `(A + B region reals, tile region reals, scatter-window
+    /// entries)`: the largest group's.
+    worker: (usize, usize, usize),
 }
 
 impl<T: Scalar> core::fmt::Debug for FusedGemmPlan<T> {
@@ -180,7 +181,7 @@ impl<T: Scalar> FusedGemmPlan<T> {
         let mut costed = Vec::new();
         let mut k_empty = Vec::new();
         let mut has_output = false;
-        let mut worker = (0, 0);
+        let mut worker = (0, 0, 0);
         for group in batch.groups() {
             let s = group.shape;
             // Every geometry is planned, including those that take no item, so a
@@ -202,8 +203,8 @@ impl<T: Scalar> FusedGemmPlan<T> {
                 ));
             };
             let geo = FusedGroup::new::<T>(packed, rg);
-            let (ab, tile) = geo.worker_reals();
-            worker = (worker.0.max(ab), worker.1.max(tile));
+            let (ab, tile, win) = geo.worker_sizes();
+            worker = (worker.0.max(ab), worker.1.max(tile), worker.2.max(win));
             let (bands, panels) = geo.grid();
             let index = groups.len();
             for &job in group.ids {
@@ -367,6 +368,7 @@ impl<T: Scalar> FusedGemmPlan<T> {
         WorkspaceReq {
             a_bytes: self.worker.0 * element,
             tile_bytes: self.worker.1 * element,
+            worker_scatter: self.worker.2,
             ..Default::default()
         }
     }
@@ -537,7 +539,7 @@ impl<T: Scalar> FusedGemmPlan<T> {
                 // nor `b`; `GemmBatch::new` proved the jobs' outputs disjoint and
                 // one job's items partition its output; every group was built
                 // from its own plan's packed resolution and `self.worker` is the
-                // largest `worker_reals`; `execution_route` keeps `width` within
+                // largest `worker_sizes`; `execution_route` keeps `width` within
                 // the budget.
                 unsafe {
                     traverse::<T, _>(

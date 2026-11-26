@@ -82,6 +82,16 @@ fn verdicts_match_the_expanded_vector_on_5000_shapes_and_50000_blocks() {
             assert_eq!(map.at(lo), scat[lo], "at {ext:?} {strides:?}");
         }
 
+        // A cursor walking from a random head.
+        if !scat.is_empty() {
+            let from = rng.below(scat.len() as u64) as usize;
+            let mut cur = map.cursor(from);
+            for want in &scat[from..] {
+                assert_eq!(cur.offset(), *want, "cursor {from} {ext:?} {strides:?}");
+                cur.advance();
+            }
+        }
+
         // Run structure, from the same deltas.
         assert_eq!(
             map.run_structure(),

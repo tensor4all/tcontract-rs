@@ -82,7 +82,7 @@ fn isolated_index_becomes_zero_stride_contraction() {
     assert_eq!(p.stats.k, 15, "contraction extent is 5*3");
     // B must re-read the same column for each r.
     assert_eq!(p.b_k.len(), 15);
-    assert_eq!(&p.b_k[..6], &[0, 1, 2, 3, 4, 0]);
+    assert_eq!(&p.b_k.expand()[..6], &[0, 1, 2, 3, 4, 0]);
 }
 
 #[test]
@@ -94,5 +94,5 @@ fn repeated_label_takes_diagonal() {
     let p = build(&a, &[0, 0], &b, &[0, 1], &d, &[1]);
     assert_eq!(p.stats.k, 4);
     // stride 1 + stride 4 = 5
-    assert_eq!(p.a_k, vec![0, 5, 10, 15]);
+    assert_eq!(p.a_k.expand(), vec![0, 5, 10, 15]);
 }
