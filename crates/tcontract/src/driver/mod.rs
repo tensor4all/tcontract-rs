@@ -151,6 +151,9 @@ use tcontract_kernel::writeback::scale_only;
 use tcontract_kernel::UkrFn;
 use tcontract_kernel::{Axis, BAccess, Blocking, DriverFamily, Element};
 pub(crate) use tile::Windows;
+
+/// Window entries (`i64`) a bare call keeps on the stack instead of the heap: 4 KiB.
+const SMALL_WINDOWS: usize = 512;
 use tile::{compute_block, pack_a_rows, pack_b_slivers, Bufs, Epoch};
 
 /// Operand-dependent decisions the driver makes once per execute, kept
@@ -932,7 +935,17 @@ where
             // the blocked path's two tile grids.
             let mut tile =
                 Panel::<T::Real>::new(fam.tile + fam.induced_scratch(kc) + 2 * grid_elems);
-            let mut sc = vec![0i64; win_elems];
+            // Small calls keep their windows on the stack: a bare 8^3 call must not
+            // pay a heap allocation for scratch of a few hundred bytes
+            // (`benches/overhead_smoke`, T6 counts exactly this).
+            let mut small = [0i64; SMALL_WINDOWS];
+            let mut large;
+            let sc: &mut [i64] = if win_elems <= SMALL_WINDOWS {
+                &mut small[..win_elems]
+            } else {
+                large = vec![0i64; win_elems];
+                &mut large
+            };
             f(
                 ap.as_mut_ptr(),
                 tile.as_mut_ptr(),

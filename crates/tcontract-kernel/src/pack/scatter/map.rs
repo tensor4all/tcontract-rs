@@ -25,7 +25,7 @@
 //!   range is a multiple of `radix_k` but not of `radix_{k+1}`, which is two
 //!   integer divisions per level. The block is an arithmetic progression iff
 //!   the deltas of the levels that occur are all equal
-//!   ([`ScatterMap::block_stride`]): [`run_stride`](super::run_stride)'s verdict
+//!   ([`ScatterMap::block_stride`]): `run_stride`'s verdict
 //!   at `O(rank)` instead of `O(block)`.
 //! * **Run structure.** The first level `k >= 1` whose delta differs from
 //!   `delta_0` ends the first run, at `radix_k` entries, and the vector is a
@@ -60,7 +60,7 @@ struct MapAxis {
 }
 
 /// A mixed-radix scatter described by its axes: `O(rank)` memory for a group of
-/// any number of elements. See the [module documentation](self).
+/// any number of elements. See the module documentation.
 ///
 /// Axes of extent 1 contribute nothing to any offset and are dropped on
 /// construction, so two maps are equal exactly when they describe the same
@@ -194,7 +194,7 @@ impl ScatterMap {
             return;
         }
         // Digits above axis 0, on the stack unless the rank is unusually large.
-        const STACK: usize = 32;
+        const STACK: usize = 16;
         let mut stack = [0usize; STACK];
         let mut heap;
         let digits: &mut [usize] = if rank <= STACK {
@@ -204,10 +204,14 @@ impl ScatterMap {
             &mut heap
         };
         let mut off = 0i64;
-        for (k, a) in self.axes.iter().enumerate() {
-            let d = (lo / a.radix) % a.extent;
-            digits[k] = d;
-            off = off.wrapping_add((d as i64).wrapping_mul(a.stride));
+        // A window at the head (every window of a call that fits one cache block)
+        // has all digits zero: nothing to divide.
+        if lo != 0 {
+            for (k, a) in self.axes.iter().enumerate() {
+                let d = (lo / a.radix) % a.extent;
+                digits[k] = d;
+                off = off.wrapping_add((d as i64).wrapping_mul(a.stride));
+            }
         }
         if let Some((k_low, tile_len)) = self.tile_split(n) {
             self.fill_tiled(lo, out, digits, k_low, tile_len);
@@ -400,7 +404,7 @@ impl ScatterMap {
     }
 
     /// The common difference of entries `lo .. hi`, or [`IRREGULAR`];
-    /// `0` for a run of at most one entry. [`run_stride`](super::run_stride)
+    /// `0` for a run of at most one entry. `run_stride`
     /// of the expanded block, at `O(rank)`.
     ///
     /// # Panics
@@ -592,7 +596,7 @@ impl ScatterMap {
 }
 
 /// Axes a cursor keeps on the stack.
-const CURSOR_INLINE: usize = 32;
+const CURSOR_INLINE: usize = 8;
 
 /// A position in a [`ScatterMap`] that steps to the next entry in `O(1)`
 /// amortized, without a division: the offsets of a loop over consecutive
@@ -623,7 +627,7 @@ impl ScatterMap {
         if self.axes.len() > CURSOR_INLINE {
             cur.spill = vec![0; self.axes.len()];
         }
-        if i < self.len {
+        if i != 0 && i < self.len {
             let mut off = 0i64;
             let digits = cur.digits_mut();
             for (k, a) in self.axes.iter().enumerate() {
