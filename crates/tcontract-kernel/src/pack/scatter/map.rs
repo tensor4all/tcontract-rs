@@ -194,7 +194,7 @@ impl ScatterMap {
             return;
         }
         // Digits above axis 0, on the stack unless the rank is unusually large.
-        const STACK: usize = 16;
+        const STACK: usize = 32;
         let mut stack = [0usize; STACK];
         let mut heap;
         let digits: &mut [usize] = if rank <= STACK {
@@ -596,7 +596,7 @@ impl ScatterMap {
 }
 
 /// Axes a cursor keeps on the stack.
-const CURSOR_INLINE: usize = 8;
+const CURSOR_INLINE: usize = 32;
 
 /// A position in a [`ScatterMap`] that steps to the next entry in `O(1)`
 /// amortized, without a division: the offsets of a loop over consecutive

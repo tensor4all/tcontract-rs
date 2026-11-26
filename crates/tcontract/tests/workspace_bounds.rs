@@ -285,6 +285,63 @@ fn the_bound_covers_the_reviewed_shapes() {
     let _ = dims;
 }
 
+/// The *first* execute in a workspace sized to `workspace_req` does not grow it.
+///
+/// The test above runs twice and compares the second against the first, which
+/// lets a bound that understates the driver (the per-worker scatter windows were
+/// once left at zero) pass: the first run grows the workspace and the second
+/// merely does not grow it again. Here the workspace is measured before any run.
+#[test]
+fn the_first_execute_does_not_grow_a_workspace_sized_to_the_bound() {
+    let blocked_mc = PlanConfig {
+        blocking: tcontract_kernel::BlockingOverride {
+            mc: Some(8),
+            ..Default::default()
+        },
+        ..PlanConfig::default()
+    };
+    let cases: Vec<(&str, Problem, [usize; 3], PlanConfig, f64)> = vec![
+        (
+            "packed 8^3",
+            matmul(8, 8, 8),
+            [8, 8, 8],
+            PlanConfig::packed(),
+            0.0,
+        ),
+        (
+            "packed 64x64x8",
+            matmul(64, 64, 8),
+            [64, 64, 8],
+            PlanConfig::packed(),
+            0.0,
+        ),
+        (
+            "packed 200x40x300",
+            matmul(200, 40, 300),
+            [200, 40, 300],
+            PlanConfig::packed(),
+            0.0,
+        ),
+        (
+            "small MC, beta != 0",
+            matmul_output_c(64, 64, 8),
+            [64, 64, 8],
+            blocked_mc,
+            0.5,
+        ),
+    ];
+    for (name, problem, dims, config, beta) in cases {
+        let mut f = Fixture::new(&problem, dims, &config);
+        let before = f.ws.retained_bytes();
+        f.run(beta).unwrap();
+        assert_eq!(
+            f.ws.retained_bytes(),
+            before,
+            "{name}: the first execute grew a workspace sized to the bound"
+        );
+    }
+}
+
 /// A workspace not warmed for every worker of the executor is refused before any
 /// write, rather than letting a worker allocate its own slot mid-execute.
 #[test]

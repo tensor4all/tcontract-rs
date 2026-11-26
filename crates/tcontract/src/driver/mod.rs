@@ -429,6 +429,13 @@ impl<'a> Oriented<'a> {
 /// the scatter map's carry deltas instead of being looked up in a table or
 /// recomputed by division.
 struct BatchCursor<'a> {
+    // `None` for a call without batch axes: every batch offset is then 0 and
+    // there is nothing to build or advance (four cursors are about 1 KiB of
+    // inline digits, which a small call would pay for on every execution).
+    cur: Option<BatchCursors<'a>>,
+}
+
+struct BatchCursors<'a> {
     a: ScatterCursor<'a>,
     b: ScatterCursor<'a>,
     c: ScatterCursor<'a>,
@@ -438,30 +445,38 @@ struct BatchCursor<'a> {
 impl<'a> BatchCursor<'a> {
     /// At batch entry `start`.
     fn new<T: Element>(cx: &Ctx<'a, T>, start: usize) -> Self {
+        if cx.plan.stats.batch <= 1 {
+            debug_assert_eq!(start, 0);
+            return Self { cur: None };
+        }
         Self {
-            a: cx.ha.cursor(start),
-            b: cx.hb.cursor(start),
-            c: cx.hc.cursor(start),
-            d: cx.plan.h_d.cursor(start),
+            cur: Some(BatchCursors {
+                a: cx.ha.cursor(start),
+                b: cx.hb.cursor(start),
+                c: cx.hc.cursor(start),
+                d: cx.plan.h_d.cursor(start),
+            }),
         }
     }
     fn a(&self) -> i64 {
-        self.a.offset()
+        self.cur.as_ref().map_or(0, |c| c.a.offset())
     }
     fn b(&self) -> i64 {
-        self.b.offset()
+        self.cur.as_ref().map_or(0, |c| c.b.offset())
     }
     fn c(&self) -> i64 {
-        self.c.offset()
+        self.cur.as_ref().map_or(0, |c| c.c.offset())
     }
     fn d(&self) -> i64 {
-        self.d.offset()
+        self.cur.as_ref().map_or(0, |c| c.d.offset())
     }
     fn advance(&mut self) {
-        self.a.advance();
-        self.b.advance();
-        self.c.advance();
-        self.d.advance();
+        if let Some(c) = self.cur.as_mut() {
+            c.a.advance();
+            c.b.advance();
+            c.c.advance();
+            c.d.advance();
+        }
     }
 }
 
