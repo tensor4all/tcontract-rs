@@ -20,14 +20,25 @@
 //! Irregular blocks are therefore flagged with a dedicated sentinel rather
 //! than with zero as in some other implementations.
 //!
-//! Everything public here is a pure function of `i64` slices with no coupling
+//! # Maps, not tables
+//!
+//! A plan does not keep these vectors. The scatter of a mixed-radix group is a
+//! function of its axis extents and strides, so [`ScatterMap`] keeps `O(rank)`
+//! integers -- the axes and the offset *delta per digit carry* -- and derives
+//! everything else from them: a window of entries ([`ScatterMap::fill`], with
+//! no division per element), a block's regularity ([`ScatterMap::block_stride`],
+//! `O(rank)` per block), the run structure ([`ScatterMap::run_structure`]) and
+//! the block-scatter vector ([`ScatterMap::append_block_scatter`]). The expanded
+//! vector costs one `i64` per element -- 7.25 GiB per role on a 30-qubit state
+//! (tcontract-rs#221) -- and [`build_scatter`] now exists as the reference it
+//! is checked against and for callers that want the table itself.
+//!
+//! The slice functions below are pure functions of `i64` slices with no coupling
 //! to the rest of the engine, which is why it is API rather than an internal
 //! detail: it is the only way for a caller — the project's own benchmark
 //! harness included — to describe the traversal the engine is about to make,
 //! and to report regularity at the same granularity the engine sees. Combine
-//! with `tensorcontract::Plan::oriented_scatters` and
-//! `tensorcontract::kernel::plan_config`, which give the vectors and the block sizes
-//! actually used.
+//! with `tcontract::kernel::plan_config`, which gives the block sizes actually used.
 //!
 //! # Forcing the gather path
 //!
@@ -46,6 +57,10 @@ pub use map::{ScatterCursor, ScatterMap};
 pub const IRREGULAR: i64 = i64::MIN;
 
 /// Build the scatter vector for a mixed-radix index group.
+///
+/// This is the **expanded** form: `O(elements)` memory. A plan does not hold
+/// one (it holds a [`ScatterMap`]); this is the reference the map is tested
+/// against, and the helper for a test or diagnostic that wants the table.
 ///
 /// `extents`/`strides` are ordered fastest-varying first. The returned vector
 /// has length `extents.iter().product()` (1 for an empty group, i.e. a single
