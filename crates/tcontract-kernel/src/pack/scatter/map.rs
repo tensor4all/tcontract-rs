@@ -41,6 +41,11 @@
 
 use super::IRREGULAR;
 
+/// Largest tile [`ScatterMap::fill`] builds on the stack (8 KiB), and the smallest
+/// that is worth building.
+const TILE_MAX: usize = 1024;
+const TILE_MIN: usize = 8;
+
 /// One axis of a [`ScatterMap`], with its derived constants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct MapAxis {
@@ -202,6 +207,10 @@ impl ScatterMap {
             digits[k] = d;
             off = off.wrapping_add((d as i64).wrapping_mul(a.stride));
         }
+        if let Some((k_low, tile_len)) = self.tile_split(n) {
+            self.fill_tiled(lo, out, digits, k_low, tile_len);
+            return;
+        }
         let a0 = self.axes[0];
         let mut i = 0;
         loop {
@@ -227,6 +236,89 @@ impl ScatterMap {
             }
             digits[0] = 0;
             off = last.wrapping_add(self.axes[k].delta);
+        }
+    }
+
+    /// How many low axes form the tile of a [`fill`](Self::fill) of `n` entries,
+    /// and the tile's length (their extents' product): the most axes whose product
+    /// fits `min(n, TILE_MAX)`. `None` when that is fewer than two axes or fewer
+    /// than `TILE_MIN` entries, where axis 0's ramp is already long enough.
+    fn tile_split(&self, n: usize) -> Option<(usize, usize)> {
+        let cap = n.min(TILE_MAX);
+        let mut len = 1usize;
+        let mut k = 0;
+        for a in self.axes.iter() {
+            match len.checked_mul(a.extent) {
+                Some(l) if l <= cap => {
+                    len = l;
+                    k += 1;
+                }
+                _ => break,
+            }
+        }
+        (k >= 2 && len >= TILE_MIN).then_some((k, len))
+    }
+
+    /// [`fill`](Self::fill) for a map whose low axes are short (a qubit axis has
+    /// extent 2, so a ramp along it is two entries and the carry logic would run
+    /// per pair of entries).
+    ///
+    /// The offsets of the first `k_low` axes form a tile of `tile_len` entries,
+    /// built by doubling (`tile[d * radix + i] = tile[i] + d * stride`), which is
+    /// plain vector arithmetic. Every segment of `out` is then a slice of the tile
+    /// plus the offset of the digits above it, and crossing the tile's end is one
+    /// carry through the higher axes. `digits` holds every axis' digit of `lo`.
+    fn fill_tiled(
+        &self,
+        lo: usize,
+        out: &mut [i64],
+        digits: &mut [usize],
+        k_low: usize,
+        tile_len: usize,
+    ) {
+        let mut tile = [0i64; TILE_MAX];
+        let tile = &mut tile[..tile_len];
+        let mut filled = 1usize;
+        for a in &self.axes[..k_low] {
+            for d in 1..a.extent {
+                let add = (d as i64).wrapping_mul(a.stride);
+                let (src, dst) = tile.split_at_mut(filled * d);
+                for (o, &t) in dst[..filled].iter_mut().zip(&src[..filled]) {
+                    *o = t.wrapping_add(add);
+                }
+            }
+            filled *= a.extent;
+        }
+        debug_assert_eq!(filled, tile_len);
+        // Offset of the digits above the tile.
+        let mut hi = 0i64;
+        for (a, &d) in self.axes[k_low..].iter().zip(&digits[k_low..]) {
+            hi = hi.wrapping_add((d as i64).wrapping_mul(a.stride));
+        }
+        let (n, mut i, mut t) = (out.len(), 0usize, lo % tile_len);
+        loop {
+            let run = (tile_len - t).min(n - i);
+            for (o, &v) in out[i..i + run].iter_mut().zip(&tile[t..t + run]) {
+                *o = v.wrapping_add(hi);
+            }
+            i += run;
+            if i == n {
+                return;
+            }
+            t = 0;
+            // The tile wrapped: step the digits above it.
+            let mut k = k_low;
+            loop {
+                let a = &self.axes[k];
+                digits[k] += 1;
+                if digits[k] < a.extent {
+                    hi = hi.wrapping_add(a.stride);
+                    break;
+                }
+                hi = hi.wrapping_sub(((a.extent - 1) as i64).wrapping_mul(a.stride));
+                digits[k] = 0;
+                k += 1;
+            }
         }
     }
 

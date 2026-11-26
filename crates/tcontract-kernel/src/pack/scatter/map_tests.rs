@@ -239,3 +239,42 @@ fn fill_grid_matches_the_expanded_vector() {
     }
     assert!(grids > 1_500, "{grids}");
 }
+
+/// Windows longer than the tile cap, over groups of short axes (qubit-like and
+/// mixed), against the definition `at`, which shares no code with the tiled fill.
+#[test]
+fn fill_over_long_windows_of_short_axes_matches_at() {
+    let mut rng = Rng(2222);
+    let mut tiled = 0usize;
+    for _ in 0..400 {
+        let rank = 2 + rng.below(18) as usize;
+        let mut ext = Vec::new();
+        let mut total = 1usize;
+        for _ in 0..rank {
+            let e = if rng.below(3) == 0 { 1 + rng.below(5) } else { 2 } as i64;
+            if total * e as usize > 200_000 {
+                break;
+            }
+            total *= e as usize;
+            ext.push(e);
+        }
+        let strides: Vec<i64> = ext
+            .iter()
+            .map(|_| match rng.below(5) {
+                0 => 0,
+                1 => -(1 + rng.below(1 << 20) as i64),
+                _ => 1 + rng.below(1 << 24) as i64,
+            })
+            .collect();
+        let map = ScatterMap::new(&ext, &strides);
+        let n = (1 + rng.below(3000) as usize).min(map.len());
+        let lo = rng.below((map.len() - n) as u64 + 1) as usize;
+        let mut got = vec![0i64; n];
+        map.fill(lo, &mut got);
+        for (t, g) in got.iter().enumerate() {
+            assert_eq!(*g, map.at(lo + t), "{ext:?} {strides:?} lo {lo} t {t}");
+        }
+        tiled += map.tile_split(n).is_some() as usize;
+    }
+    assert!(tiled > 200, "only {tiled} windows took the tiled path");
+}
