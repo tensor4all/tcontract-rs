@@ -512,7 +512,7 @@ impl ScatterMap {
             if radix > PERIOD_MAX {
                 return None;
             }
-            if radix % blk == 0 {
+            if radix.is_multiple_of(blk) {
                 return (radix < self.len).then_some(radix);
             }
         }

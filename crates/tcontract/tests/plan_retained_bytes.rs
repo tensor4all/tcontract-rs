@@ -294,10 +294,16 @@ fn gate_case(n: usize, p: i64, q: i64) -> Case {
 /// of tables against `n = 14`'s 384 KiB.
 #[test]
 fn retained_bytes_does_not_grow_with_the_role_size() {
-    let small = Plan::<Complex32>::new(&gate_case(14, 3, 9).problem::<Complex32>(), &PlanConfig::packed())
-        .unwrap();
-    let large = Plan::<Complex32>::new(&gate_case(24, 3, 17).problem::<Complex32>(), &PlanConfig::packed())
-        .unwrap();
+    let small = Plan::<Complex32>::new(
+        &gate_case(14, 3, 9).problem::<Complex32>(),
+        &PlanConfig::packed(),
+    )
+    .unwrap();
+    let large = Plan::<Complex32>::new(
+        &gate_case(24, 3, 17).problem::<Complex32>(),
+        &PlanConfig::packed(),
+    )
+    .unwrap();
     assert_eq!(small.report().algorithm, Algorithm::Packed);
     assert_eq!(large.report().algorithm, Algorithm::Packed);
     // Ten more axes cost ten more entries in a handful of maps and the problem's
