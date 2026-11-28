@@ -207,7 +207,10 @@ pub(crate) unsafe fn batch_scalar<T: Scalar, const N: usize>(
 fn run<Op: WithSimd<Output = ()>>(op: Op) {
     #[cfg(target_arch = "x86_64")]
     if let Some(v3) = pulp::x86::V3::try_new() {
-        v3.vectorize(move || op.with_simd(v3));
+        // `Simd::vectorize` (not a closure around `with_simd`) enters a
+        // `#[target_feature]` function, so the body inlines with the level's
+        // instructions; a closure leaves every vector op an out-of-line call.
+        Simd::vectorize(v3, op);
         return;
     }
     Arch::new().dispatch(op);
