@@ -199,6 +199,26 @@ const MAX_LANES: usize = 8;
 /// Registers staging one operand's `N x N` block, `N <= 5`.
 const MAX_BLOCK: usize = 25;
 
+/// Lane `l` of `S::f64s` from `lanes[l]` (`lanes` holds at least `F64_LANES`
+/// values). A transmute of a register-sized prefix, which the optimiser keeps
+/// in registers; a store followed by a wider load would stall on store
+/// forwarding for every gathered operand.
+#[inline(always)]
+fn pack<S: Simd>(lanes: &[f64; MAX_LANES]) -> S::f64s {
+    debug_assert!(core::mem::size_of::<S::f64s>() <= core::mem::size_of::<[f64; MAX_LANES]>());
+    // SAFETY: `f64s` is plain old data of at most `MAX_LANES` f64s.
+    unsafe { core::ptr::read_unaligned(lanes.as_ptr() as *const S::f64s) }
+}
+
+/// The lanes of `v`, in the first `F64_LANES` entries.
+#[inline(always)]
+fn unpack<S: Simd>(v: S::f64s) -> [f64; MAX_LANES] {
+    let mut out = [0.0f64; MAX_LANES];
+    // SAFETY: as `pack`.
+    unsafe { core::ptr::write_unaligned(out.as_mut_ptr() as *mut S::f64s, v) };
+    out
+}
+
 /// `S::F64_LANES` consecutive batch items of a real element at `p`, item `l`
 /// at `p + l * stride`, as one vector.
 ///
@@ -208,7 +228,7 @@ const MAX_BLOCK: usize = 25;
 #[inline(always)]
 unsafe fn gather<S: Simd>(simd: S, p: *const f64, stride: isize) -> S::f64s {
     // SAFETY: the caller's contract; a unit stride addresses `F64_LANES`
-    // contiguous elements, and `tmp` holds `MAX_LANES >= F64_LANES`.
+    // contiguous elements.
     unsafe {
         if stride == 1 {
             simd.partial_load_f64s(core::slice::from_raw_parts(p, S::F64_LANES))
@@ -217,7 +237,7 @@ unsafe fn gather<S: Simd>(simd: S, p: *const f64, stride: isize) -> S::f64s {
             for (l, t) in tmp.iter_mut().enumerate().take(S::F64_LANES) {
                 *t = *p.offset(l as isize * stride);
             }
-            simd.partial_load_f64s(&tmp[..S::F64_LANES])
+            pack::<S>(&tmp)
         }
     }
 }
@@ -228,8 +248,8 @@ unsafe fn gather<S: Simd>(simd: S, p: *const f64, stride: isize) -> S::f64s {
 ///
 /// As [`gather`].
 #[inline(always)]
-unsafe fn gather_c<S: Simd>(simd: S, p: *const Complex64, stride: isize) -> (S::f64s, S::f64s) {
-    // SAFETY: the caller's contract; `tmp` holds `MAX_LANES >= F64_LANES`.
+unsafe fn gather_c<S: Simd>(_simd: S, p: *const Complex64, stride: isize) -> (S::f64s, S::f64s) {
+    // SAFETY: the caller's contract.
     unsafe {
         let mut re = [0.0f64; MAX_LANES];
         let mut im = [0.0f64; MAX_LANES];
@@ -238,10 +258,7 @@ unsafe fn gather_c<S: Simd>(simd: S, p: *const Complex64, stride: isize) -> (S::
             re[l] = z.re;
             im[l] = z.im;
         }
-        (
-            simd.partial_load_f64s(&re[..S::F64_LANES]),
-            simd.partial_load_f64s(&im[..S::F64_LANES]),
-        )
+        (pack::<S>(&re), pack::<S>(&im))
     }
 }
 
@@ -258,11 +275,66 @@ unsafe fn scatter<S: Simd>(simd: S, p: *mut f64, stride: isize, v: S::f64s) {
         if stride == 1 {
             simd.partial_store_f64s(core::slice::from_raw_parts_mut(p, S::F64_LANES), v);
         } else {
-            let mut tmp = [0.0f64; MAX_LANES];
-            simd.partial_store_f64s(&mut tmp[..S::F64_LANES], v);
-            for (l, t) in tmp.iter().enumerate().take(S::F64_LANES) {
-                *p.offset(l as isize * stride) = *t;
+            let t = unpack::<S>(v);
+            for l in 0..S::F64_LANES {
+                *p.offset(l as isize * stride) = t[l];
             }
+        }
+    }
+}
+
+/// Whether items sit back to back as column-major `N x N` matrices.
+#[inline(always)]
+fn aos(h: isize, (rs, cs): (isize, isize), n: isize) -> bool {
+    rs == 1 && cs == n && h == n * n
+}
+
+/// Most real fields of one item (`Complex64`, `N = 5`).
+const MAX_FIELDS: usize = 2 * MAX_BLOCK;
+
+/// The `nf` contiguous reals of each of 4 back-to-back items at `p`, as `nf`
+/// vectors (field `f` of item `l` in lane `l`): 4x4 register transposes of
+/// each block of four fields, then a lane gather for the `nf % 4` left over.
+///
+/// # Safety
+///
+/// `4 * nf` reals at `p` are valid for reads and `S::F64_LANES == 4`.
+#[inline(always)]
+unsafe fn load_fields<S: Simd>(simd: S, p: *const f64, nf: usize, out: &mut [S::f64s; MAX_FIELDS]) {
+    // SAFETY: the caller's contract; each unaligned read is one register of
+    // four reals inside item `l`'s `nf` fields.
+    unsafe {
+        for q in 0..nf / 4 {
+            let mut rows = [simd.splat_f64s(0.0); 4];
+            for (l, row) in rows.iter_mut().enumerate() {
+                *row = core::ptr::read_unaligned(p.add(l * nf + 4 * q) as *const S::f64s);
+            }
+            let t = simd.deinterleave_shfl_f64s(rows);
+            out[4 * q..4 * q + 4].copy_from_slice(&t);
+        }
+        for f in nf / 4 * 4..nf {
+            out[f] = gather(simd, p.add(f), nf as isize);
+        }
+    }
+}
+
+/// The inverse of [`load_fields`].
+///
+/// # Safety
+///
+/// `4 * nf` reals at `p` are valid for writes and `S::F64_LANES == 4`.
+#[inline(always)]
+unsafe fn store_fields<S: Simd>(simd: S, p: *mut f64, nf: usize, v: &[S::f64s; MAX_FIELDS]) {
+    // SAFETY: as `load_fields`.
+    unsafe {
+        for q in 0..nf / 4 {
+            let t = simd.interleave_shfl_f64s([v[4 * q], v[4 * q + 1], v[4 * q + 2], v[4 * q + 3]]);
+            for (l, row) in t.iter().enumerate() {
+                core::ptr::write_unaligned(p.add(l * nf + 4 * q) as *mut S::f64s, *row);
+            }
+        }
+        for f in nf / 4 * 4..nf {
+            scatter(simd, p.add(f), nf as isize, v[f]);
         }
     }
 }
@@ -293,8 +365,17 @@ impl<const N: usize> WithSimd for RealBatch<N> {
             alpha,
         } = self;
         let lanes = S::F64_LANES;
+        let nn = N * N;
         let scale = alpha != 1.0;
         let valpha = simd.splat_f64s(alpha);
+        let zero = simd.splat_f64s(0.0);
+        // Back-to-back matrices are read and written as register transposes.
+        let fast = |h, s: Strides| lanes == 4 && aos(h, s, N as isize);
+        let (fa, fb, fd) = (
+            fast(ha, (ars, acs)),
+            fast(hb, (brs, bcs)),
+            fast(hd, (drs, dcs)),
+        );
         let mut i = items.start;
         // SAFETY (whole body): the caller of `batch` vouches for every
         // addressed element of every item in `items`; each group below is
@@ -306,16 +387,30 @@ impl<const N: usize> WithSimd for RealBatch<N> {
                     b.offset(i as isize * hb),
                     d.offset(i as isize * hd),
                 );
-                let mut av = [simd.splat_f64s(0.0); MAX_BLOCK];
-                let mut bv = [simd.splat_f64s(0.0); MAX_BLOCK];
-                for c in 0..N {
-                    for r in 0..N {
-                        av[r + c * N] =
-                            gather(simd, pa.offset(r as isize * ars + c as isize * acs), ha);
-                        bv[r + c * N] =
-                            gather(simd, pb.offset(r as isize * brs + c as isize * bcs), hb);
+                let mut av = [zero; MAX_FIELDS];
+                let mut bv = [zero; MAX_FIELDS];
+                // Element `(r, c)` is `av[r + c * N]` either way.
+                if fa {
+                    load_fields(simd, pa, nn, &mut av);
+                } else {
+                    for c in 0..N {
+                        for r in 0..N {
+                            av[r + c * N] =
+                                gather(simd, pa.offset(r as isize * ars + c as isize * acs), ha);
+                        }
                     }
                 }
+                if fb {
+                    load_fields(simd, pb, nn, &mut bv);
+                } else {
+                    for c in 0..N {
+                        for r in 0..N {
+                            bv[r + c * N] =
+                                gather(simd, pb.offset(r as isize * brs + c as isize * bcs), hb);
+                        }
+                    }
+                }
+                let mut ov = [zero; MAX_FIELDS];
                 for j in 0..N {
                     for r in 0..N {
                         let mut s = simd.mul_f64s(av[r], bv[j * N]);
@@ -325,11 +420,28 @@ impl<const N: usize> WithSimd for RealBatch<N> {
                         if scale {
                             s = simd.mul_f64s(valpha, s);
                         }
-                        let dst = pd.offset(r as isize * drs + j as isize * dcs);
-                        if accumulate {
-                            s = simd.add_f64s(gather(simd, dst, hd), s);
+                        ov[r + j * N] = s;
+                    }
+                }
+                if fd {
+                    if accumulate {
+                        let mut cur = [zero; MAX_FIELDS];
+                        load_fields(simd, pd, nn, &mut cur);
+                        for e in 0..nn {
+                            ov[e] = simd.add_f64s(cur[e], ov[e]);
                         }
-                        scatter(simd, dst, hd, s);
+                    }
+                    store_fields(simd, pd, nn, &ov);
+                } else {
+                    for j in 0..N {
+                        for r in 0..N {
+                            let dst = pd.offset(r as isize * drs + j as isize * dcs);
+                            let mut s = ov[r + j * N];
+                            if accumulate {
+                                s = simd.add_f64s(gather(simd, dst, hd), s);
+                            }
+                            scatter(simd, dst, hd, s);
+                        }
                     }
                 }
                 i += lanes;
@@ -344,6 +456,53 @@ impl<const N: usize> WithSimd for RealBatch<N> {
             );
         }
     }
+}
+
+/// The `N x N` complex block of `S::F64_LANES` items at `p` as real and
+/// imaginary vectors, entry `(r, c)` at index `r + c * N`. With back-to-back
+/// items (`back_to_back`, lanes = 4) the real part of entry `e` is field
+/// `2 * e` and its imaginary part field `2 * e + 1`. Conjugation negates the
+/// imaginary part, as `Element::conj`.
+///
+/// # Safety
+///
+/// The block's elements are valid for reads; `back_to_back` only if the items
+/// are contiguous `N x N` matrices and `S::F64_LANES == 4`.
+#[inline(always)]
+unsafe fn load_c<S: Simd, const N: usize>(
+    simd: S,
+    p: *const Complex64,
+    h: isize,
+    (rs, cs): Strides,
+    back_to_back: bool,
+    conj: bool,
+) -> ([S::f64s; MAX_BLOCK], [S::f64s; MAX_BLOCK]) {
+    let zero = simd.splat_f64s(0.0);
+    let (mut re, mut im) = ([zero; MAX_BLOCK], [zero; MAX_BLOCK]);
+    // SAFETY: the caller's contract.
+    unsafe {
+        if back_to_back {
+            let mut f = [zero; MAX_FIELDS];
+            load_fields(simd, p as *const f64, 2 * N * N, &mut f);
+            for e in 0..N * N {
+                re[e] = f[2 * e];
+                im[e] = if conj {
+                    simd.neg_f64s(f[2 * e + 1])
+                } else {
+                    f[2 * e + 1]
+                };
+            }
+        } else {
+            for c in 0..N {
+                for r in 0..N {
+                    let x = gather_c(simd, p.offset(r as isize * rs + c as isize * cs), h);
+                    re[r + c * N] = x.0;
+                    im[r + c * N] = if conj { simd.neg_f64s(x.1) } else { x.1 };
+                }
+            }
+        }
+    }
+    (re, im)
 }
 
 /// `Complex<f64>` items `items`, one item per lane, real and imaginary parts
@@ -371,9 +530,16 @@ impl<const N: usize> WithSimd for ComplexBatch<N> {
             alpha,
         } = self;
         let lanes = S::F64_LANES;
+        let nn = N * N;
         let scale = alpha != Complex64::new(1.0, 0.0);
         let (alr, ali) = (simd.splat_f64s(alpha.re), simd.splat_f64s(alpha.im));
         let zero = simd.splat_f64s(0.0);
+        let fast = |h, s: Strides| lanes == 4 && aos(h, s, N as isize);
+        let (fa, fb, fd) = (
+            fast(ha, (ars, acs)),
+            fast(hb, (brs, bcs)),
+            fast(hd, (drs, dcs)),
+        );
         let mut i = items.start;
         // SAFETY (whole body): as `RealBatch`.
         unsafe {
@@ -383,21 +549,10 @@ impl<const N: usize> WithSimd for ComplexBatch<N> {
                     b.offset(i as isize * hb),
                     d.offset(i as isize * hd),
                 );
-                let mut ar = [zero; MAX_BLOCK];
-                let mut ai = [zero; MAX_BLOCK];
-                let mut br = [zero; MAX_BLOCK];
-                let mut bi = [zero; MAX_BLOCK];
-                for c in 0..N {
-                    for r in 0..N {
-                        let x = gather_c(simd, pa.offset(r as isize * ars + c as isize * acs), ha);
-                        let y = gather_c(simd, pb.offset(r as isize * brs + c as isize * bcs), hb);
-                        // Conjugation negates the imaginary part, as `Element::conj`.
-                        (ar[r + c * N], ai[r + c * N]) =
-                            (x.0, if conj_a { simd.neg_f64s(x.1) } else { x.1 });
-                        (br[r + c * N], bi[r + c * N]) =
-                            (y.0, if conj_b { simd.neg_f64s(y.1) } else { y.1 });
-                    }
-                }
+                let (ar, ai) = load_c::<S, N>(simd, pa, ha, (ars, acs), fa, conj_a);
+                let (br, bi) = load_c::<S, N>(simd, pb, hb, (brs, bcs), fb, conj_b);
+                let mut or = [zero; MAX_BLOCK];
+                let mut oi = [zero; MAX_BLOCK];
                 for j in 0..N {
                     for r in 0..N {
                         // num_complex: (a*c - b*d, a*d + b*c), then `s + p`.
@@ -425,17 +580,39 @@ impl<const N: usize> WithSimd for ComplexBatch<N> {
                                 simd.add_f64s(simd.mul_f64s(alr, si), simd.mul_f64s(ali, sr)),
                             );
                         }
-                        let dst = pd.offset(r as isize * drs + j as isize * dcs);
-                        if accumulate {
-                            let (dr, di) = gather_c(simd, dst, hd);
-                            sr = simd.add_f64s(dr, sr);
-                            si = simd.add_f64s(di, si);
-                        }
-                        let (mut re, mut im) = ([0.0f64; MAX_LANES], [0.0f64; MAX_LANES]);
-                        simd.partial_store_f64s(&mut re[..lanes], sr);
-                        simd.partial_store_f64s(&mut im[..lanes], si);
-                        for l in 0..lanes {
-                            *dst.offset(l as isize * hd) = Complex64::new(re[l], im[l]);
+                        (or[r + j * N], oi[r + j * N]) = (sr, si);
+                    }
+                }
+                if fd {
+                    let mut f = [zero; MAX_FIELDS];
+                    if accumulate {
+                        load_fields(simd, pd as *const f64, 2 * nn, &mut f);
+                    }
+                    for e in 0..nn {
+                        (f[2 * e], f[2 * e + 1]) = if accumulate {
+                            (
+                                simd.add_f64s(f[2 * e], or[e]),
+                                simd.add_f64s(f[2 * e + 1], oi[e]),
+                            )
+                        } else {
+                            (or[e], oi[e])
+                        };
+                    }
+                    store_fields(simd, pd as *mut f64, 2 * nn, &f);
+                } else {
+                    for j in 0..N {
+                        for r in 0..N {
+                            let dst = pd.offset(r as isize * drs + j as isize * dcs);
+                            let (mut sr, mut si) = (or[r + j * N], oi[r + j * N]);
+                            if accumulate {
+                                let (dr, di) = gather_c(simd, dst, hd);
+                                sr = simd.add_f64s(dr, sr);
+                                si = simd.add_f64s(di, si);
+                            }
+                            let (re, im) = (unpack::<S>(sr), unpack::<S>(si));
+                            for l in 0..lanes {
+                                *dst.offset(l as isize * hd) = Complex64::new(re[l], im[l]);
+                            }
                         }
                     }
                 }
@@ -513,12 +690,17 @@ mod tests {
         for count in [1usize, 2, 3, 4, 5, 7, 8, 9, 16, 17, 33] {
             // (row stride, column stride, batch stride, storage length)
             let aos = (1isize, N as isize, nn as isize + 1);
+            let exact = (1isize, N as isize, nn as isize);
             let soa = (count as isize, (N * count) as isize, 1isize);
             for (la, lb, ld) in [
                 (aos, aos, aos),
                 (soa, soa, soa),
                 (aos, soa, aos),
                 (soa, aos, soa),
+                (exact, exact, exact),
+                (exact, exact, aos),
+                (aos, exact, exact),
+                (exact, soa, exact),
             ] {
                 for (conj_a, conj_b) in [(false, false), (true, false), (false, true)] {
                     for ialpha in 0..3 {
@@ -574,6 +756,118 @@ mod tests {
         bit_identical::<Complex64, 3>();
         bit_identical::<Complex64, 4>();
         bit_identical::<Complex64, 5>();
+    }
+
+    /// Timing probe: `cargo test -p tcontract --release --lib probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe() {
+        fn time<T: Case, const N: usize>() {
+            let count = 4096usize;
+            let nn = N * N;
+            let a = T::make(nn * count, 1);
+            let b = T::make(nn * count, 2);
+            let mut d = T::make(nn * count, 3);
+            let l = (1isize, N as isize, nn as isize);
+            let run = |vec: bool, d: &mut [T]| {
+                let t = std::time::Instant::now();
+                for _ in 0..200 {
+                    // SAFETY: AoS layout within `nn * count`.
+                    unsafe {
+                        let args = (
+                            (d.as_mut_ptr(), l.2, (l.0, l.1)),
+                            (a.as_ptr(), l.2, (l.0, l.1), false),
+                            (b.as_ptr(), l.2, (l.0, l.1), false),
+                        );
+                        if vec {
+                            batch::<T, N>(0..count, false, args.0, args.1, args.2, T::alpha(0));
+                        } else {
+                            batch_scalar::<T, N>(
+                                0..count,
+                                false,
+                                args.0,
+                                args.1,
+                                args.2,
+                                T::alpha(0),
+                            );
+                        }
+                    }
+                }
+                t.elapsed().as_nanos() as f64 / (200 * count) as f64
+            };
+            let (v, s) = (run(true, &mut d), run(false, &mut d));
+            let (v2, s2) = (run(true, &mut d), run(false, &mut d));
+            println!(
+                "{} N={N}: vector {:.2} {:.2} ns, scalar {:.2} {:.2} ns",
+                core::any::type_name::<T>(),
+                v,
+                v2,
+                s,
+                s2
+            );
+        }
+        time::<f64, 2>();
+        time::<f64, 3>();
+        time::<f64, 4>();
+        time::<f64, 5>();
+        time::<Complex64, 2>();
+        time::<Complex64, 3>();
+        time::<Complex64, 4>();
+        time::<Complex64, 5>();
+    }
+
+    /// The result does not depend on the dispatched ISA: the portable scalar
+    /// `Simd` (one lane), SSE2-class (`V2`, two lanes, when the CPU has it) and
+    /// the runtime-chosen one all equal the scalar kernel bit for bit.
+    #[test]
+    fn every_dispatch_level_is_bit_identical() {
+        const N: usize = 3;
+        let nn = N * N;
+        let count = 21usize;
+        let len = nn * count;
+        let (a, b, d0) = (
+            <Complex64 as Case>::make(len, 5),
+            <Complex64 as Case>::make(len, 6),
+            <Complex64 as Case>::make(len, 7),
+        );
+        let alpha = Complex64::new(0.75, -0.25);
+        let l = (1isize, N as isize, nn as isize);
+        let mut want = d0.clone();
+        // SAFETY: back-to-back `N x N` items inside `len` elements.
+        unsafe {
+            batch_scalar::<Complex64, N>(
+                0..count,
+                true,
+                (want.as_mut_ptr(), l.2, (l.0, l.1)),
+                (a.as_ptr(), l.2, (l.0, l.1), true),
+                (b.as_ptr(), l.2, (l.0, l.1), false),
+                alpha,
+            );
+        }
+        let op = |d: &mut Vec<Complex64>| ComplexBatch::<N> {
+            items: 0..count,
+            accumulate: true,
+            d: (d.as_mut_ptr(), l.2, (l.0, l.1)),
+            a: (a.as_ptr(), l.2, (l.0, l.1), true),
+            b: (b.as_ptr(), l.2, (l.0, l.1), false),
+            alpha,
+        };
+        let mut got = [d0.clone(), d0.clone(), d0.clone()];
+        op(&mut got[0]).with_simd(pulp::Scalar::new());
+        #[cfg(target_arch = "x86_64")]
+        if let Some(v2) = pulp::x86::V2::try_new() {
+            op(&mut got[1]).with_simd(v2);
+        } else {
+            got[1] = want.clone();
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            got[1] = want.clone();
+        }
+        Arch::new().dispatch(op(&mut got[2]));
+        for g in &got {
+            assert!(g.iter().zip(&want).all(|(x, y)| x.bits() == y.bits()));
+        }
     }
 
     #[test]
