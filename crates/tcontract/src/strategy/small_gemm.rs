@@ -130,7 +130,7 @@ pub(crate) unsafe fn batch<T: Scalar, const N: usize>(
                 (b.0 as *const f64, b.1, b.2, b.3),
             );
             let alpha = *(&alpha as *const T as *const f64);
-            Arch::new().dispatch(RealBatch::<N> {
+            run(RealBatch::<N> {
                 items,
                 accumulate,
                 d,
@@ -145,7 +145,7 @@ pub(crate) unsafe fn batch<T: Scalar, const N: usize>(
                 (b.0 as *const Complex64, b.1, b.2, b.3),
             );
             let alpha = *(&alpha as *const T as *const Complex64);
-            Arch::new().dispatch(ComplexBatch::<N> {
+            run(ComplexBatch::<N> {
                 items,
                 accumulate,
                 d,
@@ -192,6 +192,25 @@ pub(crate) unsafe fn batch_scalar<T: Scalar, const N: usize>(
             );
         }
     }
+}
+
+/// Run `op` at the widest level this kernel is tuned for, chosen at run time.
+///
+/// `pulp::Arch::new().dispatch` picks the widest level the CPU has. This
+/// kernel's register transposes are written for two and four lanes, and a
+/// 256-bit level (`V3`) measured at least as fast as 512-bit on the
+/// `2x2` .. `5x5` products (their data is 32 to 400 bytes per matrix, too
+/// little to fill wider registers), so on x86-64 a CPU with `V3` runs it and
+/// every other CPU takes `Arch`'s choice (NEON: two lanes; none: scalar). The
+/// result is bit-identical at every level.
+#[inline(always)]
+fn run<Op: WithSimd<Output = ()>>(op: Op) {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(v3) = pulp::x86::V3::try_new() {
+        v3.vectorize(move || op.with_simd(v3));
+        return;
+    }
+    Arch::new().dispatch(op);
 }
 
 /// Most lanes of any `pulp` f64 vector (AVX-512).
@@ -307,7 +326,7 @@ unsafe impl<R: pulp::bytemuck::Pod, const K: usize> pulp::bytemuck::Pod for Rows
 /// lane count.
 #[inline(always)]
 fn transposable<S: Simd>() -> bool {
-    matches!(S::F64_LANES, 2 | 4 | 8)
+    matches!(S::F64_LANES, 2 | 4)
 }
 
 /// The `nf` contiguous reals of each of `S::F64_LANES` back-to-back items at
@@ -354,7 +373,7 @@ unsafe fn load_fields<S: Simd>(simd: S, p: *const f64, nf: usize, out: &mut [S::
         match S::F64_LANES {
             2 => load_fields_k::<S, 2>(simd, p, nf, out),
             4 => load_fields_k::<S, 4>(simd, p, nf, out),
-            _ => load_fields_k::<S, 8>(simd, p, nf, out),
+            _ => unreachable!("guarded by `transposable`"),
         }
     }
 }
@@ -399,7 +418,7 @@ unsafe fn store_fields<S: Simd>(simd: S, p: *mut f64, nf: usize, v: &[S::f64s; M
         match S::F64_LANES {
             2 => store_fields_k::<S, 2>(simd, p, nf, v),
             4 => store_fields_k::<S, 4>(simd, p, nf, v),
-            _ => store_fields_k::<S, 8>(simd, p, nf, v),
+            _ => unreachable!("guarded by `transposable`"),
         }
     }
 }
