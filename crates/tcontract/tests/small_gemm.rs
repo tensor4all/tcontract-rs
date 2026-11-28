@@ -135,7 +135,7 @@ fn check<T: Scalar>(tol: f64) {
         Layout::Padded,
     ];
     let mut cases = 0;
-    for n in [2usize, 3] {
+    for n in [2usize, 3, 4, 5] {
         // 1 (no tail), 5 and 33 (odd tails), 64.
         for h in [1usize, 5, 33, 64] {
             for (ia, &la) in layouts.iter().enumerate() {
