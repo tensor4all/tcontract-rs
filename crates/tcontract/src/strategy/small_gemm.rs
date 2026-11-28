@@ -292,49 +292,114 @@ fn aos(h: isize, (rs, cs): (isize, isize), n: isize) -> bool {
 /// Most real fields of one item (`Complex64`, `N = 5`).
 const MAX_FIELDS: usize = 2 * MAX_BLOCK;
 
-/// The `nf` contiguous reals of each of 4 back-to-back items at `p`, as `nf`
-/// vectors (field `f` of item `l` in lane `l`): 4x4 register transposes of
-/// each block of four fields, then a lane gather for the `nf % 4` left over.
+/// `K` registers, for `pulp`'s lane transposes (which take a plain-old-data
+/// value; bytemuck implements `Pod` only for arrays of fixed sizes).
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct Rows<R, const K: usize>([R; K]);
+// SAFETY: a transparent array of plain-old-data registers has no padding and
+// every bit pattern valid.
+unsafe impl<R: pulp::bytemuck::Zeroable, const K: usize> pulp::bytemuck::Zeroable for Rows<R, K> {}
+// SAFETY: as above.
+unsafe impl<R: pulp::bytemuck::Pod, const K: usize> pulp::bytemuck::Pod for Rows<R, K> {}
+
+/// Whether back-to-back items can use [`load_fields`] / [`store_fields`] at this
+/// lane count.
+#[inline(always)]
+fn transposable<S: Simd>() -> bool {
+    matches!(S::F64_LANES, 2 | 4 | 8)
+}
+
+/// The `nf` contiguous reals of each of `S::F64_LANES` back-to-back items at
+/// `p`, as `nf` vectors (field `f` of item `l` in lane `l`): `K x K` register
+/// transposes (`K` the lane count) of each block of `K` fields, then a lane
+/// gather for the `nf % K` left over.
 ///
 /// # Safety
 ///
-/// `4 * nf` reals at `p` are valid for reads and `S::F64_LANES == 4`.
+/// `K * nf` reals at `p` are valid for reads, `S::F64_LANES == K`.
 #[inline(always)]
-unsafe fn load_fields<S: Simd>(simd: S, p: *const f64, nf: usize, out: &mut [S::f64s; MAX_FIELDS]) {
+unsafe fn load_fields_k<S: Simd, const K: usize>(
+    simd: S,
+    p: *const f64,
+    nf: usize,
+    out: &mut [S::f64s; MAX_FIELDS],
+) {
     // SAFETY: the caller's contract; each unaligned read is one register of
-    // four reals inside item `l`'s `nf` fields.
+    // `K` reals inside item `l`'s `nf` fields.
     unsafe {
-        for q in 0..nf / 4 {
-            let mut rows = [simd.splat_f64s(0.0); 4];
+        for q in 0..nf / K {
+            let mut rows = [simd.splat_f64s(0.0); K];
             for (l, row) in rows.iter_mut().enumerate() {
-                *row = core::ptr::read_unaligned(p.add(l * nf + 4 * q) as *const S::f64s);
+                *row = core::ptr::read_unaligned(p.add(l * nf + K * q) as *const S::f64s);
             }
-            let t = simd.deinterleave_shfl_f64s(rows);
-            out[4 * q..4 * q + 4].copy_from_slice(&t);
+            let t = simd.deinterleave_shfl_f64s(Rows(rows)).0;
+            out[K * q..K * q + K].copy_from_slice(&t);
         }
-        for f in nf / 4 * 4..nf {
+        for f in nf / K * K..nf {
             out[f] = gather(simd, p.add(f), nf as isize);
         }
     }
 }
 
-/// The inverse of [`load_fields`].
+/// [`load_fields_k`] at the lane count of `S`.
 ///
 /// # Safety
 ///
-/// `4 * nf` reals at `p` are valid for writes and `S::F64_LANES == 4`.
+/// As [`load_fields_k`], with `transposable::<S>()`.
 #[inline(always)]
-unsafe fn store_fields<S: Simd>(simd: S, p: *mut f64, nf: usize, v: &[S::f64s; MAX_FIELDS]) {
-    // SAFETY: as `load_fields`.
+unsafe fn load_fields<S: Simd>(simd: S, p: *const f64, nf: usize, out: &mut [S::f64s; MAX_FIELDS]) {
+    // SAFETY: the caller's contract.
     unsafe {
-        for q in 0..nf / 4 {
-            let t = simd.interleave_shfl_f64s([v[4 * q], v[4 * q + 1], v[4 * q + 2], v[4 * q + 3]]);
+        match S::F64_LANES {
+            2 => load_fields_k::<S, 2>(simd, p, nf, out),
+            4 => load_fields_k::<S, 4>(simd, p, nf, out),
+            _ => load_fields_k::<S, 8>(simd, p, nf, out),
+        }
+    }
+}
+
+/// The inverse of [`load_fields_k`].
+///
+/// # Safety
+///
+/// `K * nf` reals at `p` are valid for writes, `S::F64_LANES == K`.
+#[inline(always)]
+unsafe fn store_fields_k<S: Simd, const K: usize>(
+    simd: S,
+    p: *mut f64,
+    nf: usize,
+    v: &[S::f64s; MAX_FIELDS],
+) {
+    // SAFETY: as `load_fields_k`.
+    unsafe {
+        for q in 0..nf / K {
+            let mut rows = [simd.splat_f64s(0.0); K];
+            rows.copy_from_slice(&v[K * q..K * q + K]);
+            let t = simd.interleave_shfl_f64s(Rows(rows)).0;
             for (l, row) in t.iter().enumerate() {
-                core::ptr::write_unaligned(p.add(l * nf + 4 * q) as *mut S::f64s, *row);
+                core::ptr::write_unaligned(p.add(l * nf + K * q) as *mut S::f64s, *row);
             }
         }
-        for f in nf / 4 * 4..nf {
+        for f in nf / K * K..nf {
             scatter(simd, p.add(f), nf as isize, v[f]);
+        }
+    }
+}
+
+/// [`store_fields_k`] at the lane count of `S`.
+///
+/// # Safety
+///
+/// As [`store_fields_k`], with `transposable::<S>()`.
+#[inline(always)]
+unsafe fn store_fields<S: Simd>(simd: S, p: *mut f64, nf: usize, v: &[S::f64s; MAX_FIELDS]) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        match S::F64_LANES {
+            2 => store_fields_k::<S, 2>(simd, p, nf, v),
+            4 => store_fields_k::<S, 4>(simd, p, nf, v),
+            _ => store_fields_k::<S, 8>(simd, p, nf, v),
         }
     }
 }
@@ -370,7 +435,7 @@ impl<const N: usize> WithSimd for RealBatch<N> {
         let valpha = simd.splat_f64s(alpha);
         let zero = simd.splat_f64s(0.0);
         // Back-to-back matrices are read and written as register transposes.
-        let fast = |h, s: Strides| lanes == 4 && aos(h, s, N as isize);
+        let fast = |h, s: Strides| transposable::<S>() && aos(h, s, N as isize);
         let (fa, fb, fd) = (
             fast(ha, (ars, acs)),
             fast(hb, (brs, bcs)),
@@ -460,14 +525,14 @@ impl<const N: usize> WithSimd for RealBatch<N> {
 
 /// The `N x N` complex block of `S::F64_LANES` items at `p` as real and
 /// imaginary vectors, entry `(r, c)` at index `r + c * N`. With back-to-back
-/// items (`back_to_back`, lanes = 4) the real part of entry `e` is field
+/// items (`back_to_back`) the real part of entry `e` is field
 /// `2 * e` and its imaginary part field `2 * e + 1`. Conjugation negates the
 /// imaginary part, as `Element::conj`.
 ///
 /// # Safety
 ///
 /// The block's elements are valid for reads; `back_to_back` only if the items
-/// are contiguous `N x N` matrices and `S::F64_LANES == 4`.
+/// are contiguous `N x N` matrices and `transposable::<S>()`.
 #[inline(always)]
 unsafe fn load_c<S: Simd, const N: usize>(
     simd: S,
@@ -534,7 +599,7 @@ impl<const N: usize> WithSimd for ComplexBatch<N> {
         let scale = alpha != Complex64::new(1.0, 0.0);
         let (alr, ali) = (simd.splat_f64s(alpha.re), simd.splat_f64s(alpha.im));
         let zero = simd.splat_f64s(0.0);
-        let fast = |h, s: Strides| lanes == 4 && aos(h, s, N as isize);
+        let fast = |h, s: Strides| transposable::<S>() && aos(h, s, N as isize);
         let (fa, fb, fd) = (
             fast(ha, (ars, acs)),
             fast(hb, (brs, bcs)),
@@ -758,67 +823,10 @@ mod tests {
         bit_identical::<Complex64, 5>();
     }
 
-    /// Timing probe: `cargo test -p tcontract --release --lib probe -- --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    fn probe() {
-        fn time<T: Case, const N: usize>() {
-            let count = 4096usize;
-            let nn = N * N;
-            let a = T::make(nn * count, 1);
-            let b = T::make(nn * count, 2);
-            let mut d = T::make(nn * count, 3);
-            let l = (1isize, N as isize, nn as isize);
-            let run = |vec: bool, d: &mut [T]| {
-                let t = std::time::Instant::now();
-                for _ in 0..200 {
-                    // SAFETY: AoS layout within `nn * count`.
-                    unsafe {
-                        let args = (
-                            (d.as_mut_ptr(), l.2, (l.0, l.1)),
-                            (a.as_ptr(), l.2, (l.0, l.1), false),
-                            (b.as_ptr(), l.2, (l.0, l.1), false),
-                        );
-                        if vec {
-                            batch::<T, N>(0..count, false, args.0, args.1, args.2, T::alpha(0));
-                        } else {
-                            batch_scalar::<T, N>(
-                                0..count,
-                                false,
-                                args.0,
-                                args.1,
-                                args.2,
-                                T::alpha(0),
-                            );
-                        }
-                    }
-                }
-                t.elapsed().as_nanos() as f64 / (200 * count) as f64
-            };
-            let (v, s) = (run(true, &mut d), run(false, &mut d));
-            let (v2, s2) = (run(true, &mut d), run(false, &mut d));
-            println!(
-                "{} N={N}: vector {:.2} {:.2} ns, scalar {:.2} {:.2} ns",
-                core::any::type_name::<T>(),
-                v,
-                v2,
-                s,
-                s2
-            );
-        }
-        time::<f64, 2>();
-        time::<f64, 3>();
-        time::<f64, 4>();
-        time::<f64, 5>();
-        time::<Complex64, 2>();
-        time::<Complex64, 3>();
-        time::<Complex64, 4>();
-        time::<Complex64, 5>();
-    }
-
     /// The result does not depend on the dispatched ISA: the portable scalar
-    /// `Simd` (one lane), SSE2-class (`V2`, two lanes, when the CPU has it) and
-    /// the runtime-chosen one all equal the scalar kernel bit for bit.
+    /// `Simd` (one lane), SSE2-class (`V2`, two lanes), AVX2 (`V3`, four lanes),
+    /// AVX-512 (`V4`, eight lanes) where the CPU has them, and the
+    /// runtime-chosen level all equal the scalar kernel bit for bit.
     #[test]
     fn every_dispatch_level_is_bit_identical() {
         const N: usize = 3;
@@ -852,19 +860,29 @@ mod tests {
             b: (b.as_ptr(), l.2, (l.0, l.1), false),
             alpha,
         };
-        let mut got = [d0.clone(), d0.clone(), d0.clone()];
+        // One result per level; a level the CPU lacks reproduces `want`.
+        let mut got = vec![want.clone(); 5];
+        let fresh = || d0.clone();
+        got[0] = fresh();
         op(&mut got[0]).with_simd(pulp::Scalar::new());
         #[cfg(target_arch = "x86_64")]
-        if let Some(v2) = pulp::x86::V2::try_new() {
-            op(&mut got[1]).with_simd(v2);
-        } else {
-            got[1] = want.clone();
-        }
-        #[cfg(not(target_arch = "x86_64"))]
         {
-            got[1] = want.clone();
+            if let Some(v) = pulp::x86::V2::try_new() {
+                got[1] = fresh();
+                op(&mut got[1]).with_simd(v);
+            }
+            if let Some(v) = pulp::x86::V3::try_new() {
+                got[2] = fresh();
+                op(&mut got[2]).with_simd(v);
+            }
+            // Eight lanes (the `x86-v4` dev-dependency feature compiles it in).
+            if let Some(v) = pulp::x86::V4::try_new() {
+                got[3] = fresh();
+                op(&mut got[3]).with_simd(v);
+            }
         }
-        Arch::new().dispatch(op(&mut got[2]));
+        got[4] = fresh();
+        Arch::new().dispatch(op(&mut got[4]));
         for g in &got {
             assert!(g.iter().zip(&want).all(|(x, y)| x.bits() == y.bits()));
         }
