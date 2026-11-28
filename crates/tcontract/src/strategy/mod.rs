@@ -7,3 +7,4 @@ pub(crate) mod faer_time;
 pub(crate) mod fuse;
 pub(crate) mod inner_product;
 pub(crate) mod rank_k;
+pub(crate) mod small_gemm;

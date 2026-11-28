@@ -10,6 +10,17 @@ from. Releases before 0.13.0 are recorded in their annotated tags
 
 ## [Unreleased]
 
+### Changed — `tcontract`: fixed-size `2x2` / `3x3` batched products (tenferro-rs#2745)
+
+- A faer-route batch whose fused `m = n = k` is 2 or 3 now runs a fixed-size
+  kernel instead of one general GEMM per item. It reads both operands through
+  the fused strides, so conjugation, a transposed operand and a batch-first
+  layout need no copy; it allocates and packs nothing, and covers overwrite,
+  `alpha`, and accumulation in D for the four storage types. The route report
+  is unchanged (`Algorithm::Faer`); no API change. Other sizes keep the general
+  route. Serial, one core, i9-13900HX, c64 `[N, N, 32769]`: 2x2 67.2 -> 11.3
+  ns per product, 3x3 76.6 -> 47.9 ns.
+
 ### Added — `tcontract`: the fused grouped-GEMM route (#208)
 
 - `FusedGemmPlan<T>`: prepares a `t4a_desc::gemm::GemmBatch` once (one
