@@ -21,6 +21,17 @@ from. Releases before 0.13.0 are recorded in their annotated tags
   route. Serial, one core, i9-13900HX, c64 `[N, N, 32769]`: 2x2 67.2 -> 11.3
   ns per product, 3x3 76.6 -> 47.9 ns.
 
+### Changed — `tcontract`: the tiny square kernels run across the batch (tenferro-rs#2745)
+
+- The fixed-size kernels now run several items of a batch per SIMD register
+  for `f64` and `c64` (`2x2`, `3x3`), and for `f64` also `4x4` and `5x5`
+  (previously the general route). Back-to-back matrices are read and written
+  through register transposes; other layouts gather lane by lane. Dispatch is
+  `pulp` at run time (256-bit level on x86-64, `Arch::new()` elsewhere), never
+  the build target. The result is bit-identical to the scalar fixed-size
+  kernel on every dispatch level: separate multiply and add (no FMA), the same
+  operation order per item. No API change.
+
 ### Added — `tcontract`: the fused grouped-GEMM route (#208)
 
 - `FusedGemmPlan<T>`: prepares a `t4a_desc::gemm::GemmBatch` once (one

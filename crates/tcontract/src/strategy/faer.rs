@@ -37,7 +37,7 @@
 //!
 //! # Tiny square products
 //!
-//! A batch whose fused `m = n = k` is 2 or 3 (4 or 5 for `f64` / `c64`) skips
+//! A batch whose fused `m = n = k` is 2 or 3 (also 4 or 5 for `f64`) skips
 //! the general GEMM for the fixed-size kernels of [`super::small_gemm`]
 //! (tenferro-rs#2745): the general call's per-item setup dominates the 8 to 125
 //! multiply-adds. For `f64` and `c64` those kernels run several items per SIMD

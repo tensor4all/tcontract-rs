@@ -35,18 +35,20 @@ use pulp::{Arch, Simd, WithSimd};
 use crate::api::Scalar;
 use tcontract_kernel::Element;
 
-/// Whether `T` has batch-vectorised kernels (`f64`, `Complex<f64>`).
+/// Whether `T` is `f64`.
 #[inline]
-fn vectorised<T: Scalar>() -> bool {
-    TypeId::of::<T>() == TypeId::of::<f64>() || TypeId::of::<T>() == TypeId::of::<Complex64>()
+fn real_f64<T: Scalar>() -> bool {
+    TypeId::of::<T>() == TypeId::of::<f64>()
 }
 
 /// Whether `(m, n, k)` has a fixed-size kernel for `T`: `2x2` and `3x3` for
 /// every dtype (scalar, plus the batch-vectorised path for `f64` / `c64`), and
-/// `4x4` / `5x5` for the dtypes with a vectorised kernel.
+/// `4x4` / `5x5` for `f64` only. A `c64` `4x4` / `5x5` vector kernel measured
+/// no faster than the scalar one and slower than the general path on batches
+/// that miss the cache, so those sizes keep the general route.
 #[inline]
 pub(crate) fn supports<T: Scalar>(m: usize, n: usize, k: usize) -> bool {
-    m == n && n == k && (m == 2 || m == 3 || ((m == 4 || m == 5) && vectorised::<T>()))
+    m == n && n == k && (m == 2 || m == 3 || ((m == 4 || m == 5) && real_f64::<T>()))
 }
 
 /// `D (+)= alpha * op(A) * op(B)` for one `N x N` product.
@@ -912,7 +914,8 @@ mod tests {
 
     #[test]
     fn supports_follows_the_dtype() {
-        assert!(supports::<f64>(5, 5, 5) && supports::<Complex64>(4, 4, 4));
+        assert!(supports::<f64>(5, 5, 5) && supports::<f64>(4, 4, 4));
+        assert!(!supports::<Complex64>(4, 4, 4) && supports::<Complex64>(3, 3, 3));
         assert!(!supports::<f32>(4, 4, 4) && supports::<f32>(3, 3, 3));
         assert!(!supports::<f64>(6, 6, 6) && !supports::<f64>(2, 3, 2));
     }
