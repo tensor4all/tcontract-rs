@@ -35,6 +35,12 @@
 //!   entry ([`FaerWrite::Fresh`]) instead of a zero-fill followed by the
 //!   replace path, so no separate initialization pass over D is needed.
 //!
+//! # Tiny square products
+//!
+//! A batch whose fused `m = n = k` is 2 or 3 skips the general GEMM for the
+//! fixed-size kernels of [`super::small_gemm`] (tenferro-rs#2745): the general
+//! call's per-item setup dominates 8 or 27 multiply-adds.
+//!
 //! # Allocation
 //!
 //! What a call allocates on the product path is faer's, not this crate's, and
@@ -62,6 +68,7 @@ use tcontract_kernel::Element;
 use crate::api::{CSpec, OperandId, Problem, Scalar};
 use crate::strategy::faer_time;
 use crate::strategy::fuse::{fuse_group, Fused};
+use crate::strategy::small_gemm;
 
 /// What the product may assume about the destination when it starts, decided
 /// by the executor from the caller's output contract and the C mode.
@@ -277,6 +284,40 @@ impl FaerPlan {
                 )
             }
         };
+        // Tiny square products skip the general GEMM (tenferro-rs#2745). The
+        // strides and flags are hoisted into locals so the item loop keeps them
+        // in registers across the output stores.
+        let small = small_gemm::supports(self.m.extent, self.n.extent, self.k.extent);
+        let small_items = |items: core::ops::Range<usize>| {
+            let (m, h) = (&self.m, &self.h);
+            let (ds, as_, bs) = ((m.d, self.n.d), (m.a, self.k.a), (self.k.b, self.n.b));
+            let (ha, hb, hd) = (h.a, h.b, h.d);
+            let accumulate = matches!(write, FaerWrite::Accumulate);
+            let (ap, bp, dp) = (ap.get(), bp.get(), dp.get());
+            // SAFETY: as `item`: offsets `i * stride` stay inside the validated
+            // layouts and output items are disjoint.
+            unsafe {
+                if m.extent == 2 {
+                    small_gemm::batch::<T, 2>(
+                        items,
+                        accumulate,
+                        (dp, hd, ds),
+                        (ap, ha, as_, ca),
+                        (bp, hb, bs, cb),
+                        alpha,
+                    );
+                } else {
+                    small_gemm::batch::<T, 3>(
+                        items,
+                        accumulate,
+                        (dp, hd, ds),
+                        (ap, ha, as_, ca),
+                        (bp, hb, bs, cb),
+                        alpha,
+                    );
+                }
+            }
+        };
         // INVARIANT: a decision never has zero lanes or zero item threads.
         let nz = |n: usize| NonZeroUsize::new(n).unwrap_or(NonZeroUsize::MIN);
         // Without a team every item runs `Par::Seq`, so a forced split's item
@@ -299,19 +340,27 @@ impl FaerPlan {
                 .fork(lanes, |lane, mut child| {
                     // Contiguous items per lane, as the batch partition always was.
                     let items = lane * count / lanes..(lane + 1) * count / lanes;
-                    with_faer_par(child.reborrow(), |mut par| {
-                        for i in items {
-                            item(i, par.reborrow());
-                        }
-                    });
+                    if small {
+                        small_items(items);
+                    } else {
+                        with_faer_par(child.reborrow(), |mut par| {
+                            for i in items {
+                                item(i, par.reborrow());
+                            }
+                        });
+                    }
                 });
         } else {
             // One pool entry (or one team section sequence) for the whole batch.
-            with_faer_par(exec.token().limit(nz(item_threads)), |mut par| {
-                for i in 0..count {
-                    item(i, par.reborrow());
-                }
-            });
+            if small {
+                small_items(0..count);
+            } else {
+                with_faer_par(exec.token().limit(nz(item_threads)), |mut par| {
+                    for i in 0..count {
+                        item(i, par.reborrow());
+                    }
+                });
+            }
         }
         Ok(())
     }
