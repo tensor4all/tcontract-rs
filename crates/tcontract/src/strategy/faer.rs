@@ -315,7 +315,9 @@ impl FaerPlan {
                     2 => run!(2),
                     3 => run!(3),
                     4 => run!(4),
-                    _ => run!(5),
+                    5 => run!(5),
+                    // INVARIANT: `small_gemm::supports` admits only 2..=5.
+                    _ => unreachable!("no fixed-size kernel for extent {}", m.extent),
                 }
             }
         };

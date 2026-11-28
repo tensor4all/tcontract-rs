@@ -1,10 +1,11 @@
-//! Fixed-size kernels for the tiny square products of a batched contraction.
+//! Fixed-size kernels for the tiny square products of a batched contraction
+//! (`2x2` and `3x3` for every dtype, `4x4` and `5x5` for `f64`).
 //!
 //! A batch of `2x2 * 2x2` or `3x3 * 3x3` products (tenferro-rs#2745) spends
 //! its time in the general GEMM's per-item setup, not in arithmetic: 8 or 27
 //! multiply-adds per product against a plan, feature dispatch and a wrapper
-//! stack. The faer strategy therefore routes an item whose `m = n = k` is 2 or
-//! 3 here. The kernel reads both operands through the strides the strategy
+//! stack. The faer strategy therefore routes an item whose `m = n = k` is one
+//! of those sizes (see [`supports`]) here. The kernel reads both operands through the strides the strategy
 //! already fused, so conjugation flags, transposed operands (a stride
 //! permutation) and any batch stride need no copy and no layout condition.
 //! It allocates nothing and packs nothing.
@@ -229,7 +230,7 @@ const MAX_BLOCK: usize = 25;
 /// forwarding for every gathered operand.
 #[inline(always)]
 fn pack<S: Simd>(lanes: &[f64; MAX_LANES]) -> S::f64s {
-    debug_assert!(core::mem::size_of::<S::f64s>() <= core::mem::size_of::<[f64; MAX_LANES]>());
+    assert!(core::mem::size_of::<S::f64s>() <= core::mem::size_of::<[f64; MAX_LANES]>());
     // SAFETY: `f64s` is plain old data of at most `MAX_LANES` f64s.
     unsafe { core::ptr::read_unaligned(lanes.as_ptr() as *const S::f64s) }
 }
@@ -237,6 +238,7 @@ fn pack<S: Simd>(lanes: &[f64; MAX_LANES]) -> S::f64s {
 /// The lanes of `v`, in the first `F64_LANES` entries.
 #[inline(always)]
 fn unpack<S: Simd>(v: S::f64s) -> [f64; MAX_LANES] {
+    assert!(core::mem::size_of::<S::f64s>() <= core::mem::size_of::<[f64; MAX_LANES]>());
     let mut out = [0.0f64; MAX_LANES];
     // SAFETY: as `pack`.
     unsafe { core::ptr::write_unaligned(out.as_mut_ptr() as *mut S::f64s, v) };
