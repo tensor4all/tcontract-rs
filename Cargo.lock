@@ -1025,6 +1025,7 @@ dependencies = [
  "colmat",
  "num-complex",
  "num-traits",
+ "pulp",
  "rand",
  "rand_chacha",
  "strided-basic",

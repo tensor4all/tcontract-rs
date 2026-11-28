@@ -12,6 +12,7 @@ description = "Binary tensor contraction for the tcontract stack: one Problem, a
 faer = { workspace = true }
 num-complex = { workspace = true }
 num-traits = { workspace = true }
+pulp = { workspace = true }
 strided-basic = { workspace = true, features = ["parallel"] }
 strided-view = { workspace = true }
 thiserror = { workspace = true }
@@ -28,6 +29,9 @@ tcontract-kernel = { workspace = true, features = ["std"] }
 phase-timing = []
 
 [dev-dependencies]
+# Eight-lane (AVX-512) code is only reachable with this feature; the tests
+# cover it, and the benchmark build enables it anyway through colmat.
+pulp = { workspace = true, features = ["x86-v4"] }
 rand = { workspace = true }
 rand_chacha = "0.3"
 threadteam = { workspace = true, features = ["ledger"] }

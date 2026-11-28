@@ -37,9 +37,11 @@
 //!
 //! # Tiny square products
 //!
-//! A batch whose fused `m = n = k` is 2 or 3 skips the general GEMM for the
-//! fixed-size kernels of [`super::small_gemm`] (tenferro-rs#2745): the general
-//! call's per-item setup dominates 8 or 27 multiply-adds.
+//! A batch whose fused `m = n = k` is 2 or 3 (also 4 or 5 for `f64`) skips
+//! the general GEMM for the fixed-size kernels of [`super::small_gemm`]
+//! (tenferro-rs#2745): the general call's per-item setup dominates the 8 to 125
+//! multiply-adds. For `f64` and `c64` those kernels run several items per SIMD
+//! register.
 //!
 //! # Allocation
 //!
@@ -287,7 +289,7 @@ impl FaerPlan {
         // Tiny square products skip the general GEMM (tenferro-rs#2745). The
         // strides and flags are hoisted into locals so the item loop keeps them
         // in registers across the output stores.
-        let small = small_gemm::supports(self.m.extent, self.n.extent, self.k.extent);
+        let small = small_gemm::supports::<T>(self.m.extent, self.n.extent, self.k.extent);
         let small_items = |items: core::ops::Range<usize>| {
             let (m, h) = (&self.m, &self.h);
             let (ds, as_, bs) = ((m.d, self.n.d), (m.a, self.k.a), (self.k.b, self.n.b));
@@ -297,24 +299,25 @@ impl FaerPlan {
             // SAFETY: as `item`: offsets `i * stride` stay inside the validated
             // layouts and output items are disjoint.
             unsafe {
-                if m.extent == 2 {
-                    small_gemm::batch::<T, 2>(
-                        items,
-                        accumulate,
-                        (dp, hd, ds),
-                        (ap, ha, as_, ca),
-                        (bp, hb, bs, cb),
-                        alpha,
-                    );
-                } else {
-                    small_gemm::batch::<T, 3>(
-                        items,
-                        accumulate,
-                        (dp, hd, ds),
-                        (ap, ha, as_, ca),
-                        (bp, hb, bs, cb),
-                        alpha,
-                    );
+                macro_rules! run {
+                    ($n:literal) => {
+                        small_gemm::batch::<T, $n>(
+                            items,
+                            accumulate,
+                            (dp, hd, ds),
+                            (ap, ha, as_, ca),
+                            (bp, hb, bs, cb),
+                            alpha,
+                        )
+                    };
+                }
+                match m.extent {
+                    2 => run!(2),
+                    3 => run!(3),
+                    4 => run!(4),
+                    5 => run!(5),
+                    // INVARIANT: `small_gemm::supports` admits only 2..=5.
+                    _ => unreachable!("no fixed-size kernel for extent {}", m.extent),
                 }
             }
         };

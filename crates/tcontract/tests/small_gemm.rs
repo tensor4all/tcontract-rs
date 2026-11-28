@@ -1,7 +1,7 @@
-//! Fixed-size `2x2` / `3x3` batched products (tensor4all/tenferro-rs#2745).
+//! Fixed-size batched products: `2x2` / `3x3` for every dtype, `4x4` / `5x5`
+//! for `f64` and the rest on the general route (tensor4all/tenferro-rs#2745).
 //!
-//! The faer strategy hands a batch whose `m = n = k` is 2 or 3 to a fixed-size
-//! kernel. Every case here runs the default plan (which must be that kernel's
+//! The faer strategy hands a batch whose `m = n = k` has a fixed-size kernel to it. Every case here runs the default plan (which must be that kernel's
 //! route: `Algorithm::Faer`) and the same problem forced through the packed
 //! driver, an independent general path, and requires the two to agree within a
 //! rounding tolerance. Layouts cover a batch-contiguous and a batch-strided
@@ -135,14 +135,14 @@ fn check<T: Scalar>(tol: f64) {
         Layout::Padded,
     ];
     let mut cases = 0;
-    for n in [2usize, 3] {
+    for n in [2usize, 3, 4, 5] {
         // 1 (no tail), 5 and 33 (odd tails), 64.
         for h in [1usize, 5, 33, 64] {
             for (ia, &la) in layouts.iter().enumerate() {
                 for (ib, &lb) in layouts.iter().enumerate() {
                     // Pair the output layout with the operands so every layout
                     // is an output once without the full cube.
-                    let ld = layouts[(ia + ib) % 2];
+                    let ld = layouts[(ia + ib) % layouts.len()];
                     for (conj_a, conj_b) in [(false, false), (false, true), (true, false)] {
                         for (alpha, beta) in [(1.0, None), (0.75, None), (1.0, Some(0.5))] {
                             let c = Case {
